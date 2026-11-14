@@ -1,0 +1,62 @@
+# A tour of every pane type. Open it with:
+#
+#   open "krang-desktop://layout/demo"
+#
+# after copying it to the app's layouts folder (see the README).
+name = "demo"
+title = "demo"
+color = "blue"
+
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["left", "middle", "right"]
+
+[[panes]]
+id = "left"
+split = "horizontal"
+children = ["files", "shell"]
+
+[[panes]]
+id = "middle"
+split = "horizontal"
+children = ["notes", "agent"]
+
+[[panes]]
+id = "right"
+split = "horizontal"
+children = ["page", "chat"]
+
+[[panes]]
+id = "files"
+type = "files"
+directory = "~/src/krang-desktop"
+
+[[panes]]
+id = "shell"
+type = "terminal"
+directory = "~/src/krang-desktop"
+is_focused = true
+commands = ["git status -sb"]
+
+[[panes]]
+id = "notes"
+type = "editor"
+path = "~/src/krang-desktop/README.md"
+
+[[panes]]
+id = "agent"
+type = "terminal"
+title = "agent"
+directory = "~/src/krang-desktop"
+
+[[panes]]
+id = "page"
+type = "web"
+url = "~/src/krang-desktop/apps/desktop/examples/hello.html"
+
+[[panes]]
+id = "chat"
+type = "chat"
+agent = "claude"
+directory = "~/src/krang-desktop"

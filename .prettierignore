@@ -8,3 +8,4 @@ packages/eslint-config/fixtures
 packages/tsconfig-config/fixtures
 docs
 apps/desktop/src-tauri/gen
+.claude
