@@ -2,25 +2,33 @@
 //! Obsidian: a new node note, a relation between two nodes, and the skill
 //! file that teaches an agent to do both.
 //!
-//! Every file is written in the plugin's own format, so the plugin reads
-//! the result as if it had written it. The plugin's settings file is read
-//! for its node types, relation types and allowed relations. The same file
-//! holds account details, which are never copied out of it.
+//! Every file is written in the plugin's file format. The plugin's
+//! settings file is read for its node types, relation types and allowed
+//! relations. The same file holds account details, which are never copied
+//! out of it.
+//!
+//! A vault may be a directory someone downloaded. Every path that is read
+//! or written goes through `vault_guard` first, so a link in the vault
+//! cannot send a read or a write outside it.
 //!
 //! Every function here is a plain file operation, so the command-line tool
 //! can call them when the app is not running.
 
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{json, Map, Value};
 
 use crate::startup::expand_home;
+use crate::vault_guard;
 
 const VAULT_MARKER: &str = ".obsidian";
 const SETTINGS_PATH: &str = ".obsidian/plugins/discourse-graphs/data.json";
@@ -186,25 +194,6 @@ fn open_vault(vault: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-/// Reads a whole file unless it is over `limit`. A missing file is `None`.
-fn read_capped(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("{}: {error}", path.display())),
-    };
-    if metadata.len() > limit {
-        return Err(format!(
-            "{} is {} bytes, over the {limit} byte limit",
-            path.display(),
-            metadata.len()
-        ));
-    }
-    fs::read(path)
-        .map(Some)
-        .map_err(|error| format!("{}: {error}", path.display()))
-}
-
 fn string_field(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -326,7 +315,10 @@ fn schema_from(bytes: &[u8]) -> Result<Schema, String> {
 
 fn load_schema(root: &Path) -> Result<Schema, String> {
     let path = root.join(SETTINGS_PATH);
-    let bytes = read_capped(&path, MAX_JSON_BYTES)
+    // A refusal names a path and never quotes the file. Any other fault
+    // could quote it, so it is reported without its detail.
+    vault_guard::file_inside(root, &path)?;
+    let bytes = vault_guard::read_inside(root, &path, MAX_JSON_BYTES)
         .map_err(|_| String::from("the plugin settings could not be read"))?
         .ok_or_else(|| {
             format!(
@@ -494,8 +486,9 @@ fn is_skipped_dir(name: &str, with_templates: bool) -> bool {
 }
 
 /// The paths of the notes under `root`, in a fixed order. A linked
-/// directory is not entered. Templates are notes too, but not nodes, so
-/// they are listed only when asked for.
+/// directory is not entered and a linked note is left out, so every path
+/// is a real file inside the vault. Templates are notes too, but not
+/// nodes, so they are listed only when asked for.
 fn walk(root: &Path, with_templates: bool) -> Vec<PathBuf> {
     let mut notes = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0_usize)];
@@ -517,7 +510,7 @@ fn walk(root: &Path, with_templates: bool) -> Vec<PathBuf> {
                 }
                 continue;
             }
-            if !name.ends_with(NOTE_SUFFIX) || !entry.path().is_file() {
+            if !name.ends_with(NOTE_SUFFIX) || !kind.is_file() {
                 continue;
             }
             if notes.len() >= MAX_NOTES {
@@ -574,45 +567,137 @@ fn front_of(text: &str) -> Option<Front> {
     })
 }
 
-/// The value of a one-line frontmatter entry, without quotes. `None` when
-/// nothing follows the colon on the same line.
-fn scalar(value: &str) -> Option<String> {
+/// What follows the colon of a frontmatter entry, on the same line.
+#[derive(Debug, PartialEq)]
+enum Scalar {
+    /// Nothing, or an empty pair of quotes.
+    Empty,
+    /// One plain value, without its quotes.
+    Plain(String),
+    /// Anything else: the start of a block or a list, a value with a
+    /// comment after it, or quotes with an escape inside.
+    Other,
+}
+
+/// Whether text with no quotes around it is one plain value. A YAML reader
+/// gives other meanings to the rest, such as a block, a list or a comment.
+fn is_plain(value: &str) -> bool {
+    let mut letters = value.chars();
+    let first = letters.next();
+    let second = letters.next();
+    let starts_plain = match first {
+        None => false,
+        Some(first) if "|>[]{}&*!%@`#,\"'".contains(first) => false,
+        Some('-' | '?' | ':') => second.is_some_and(|second| !second.is_whitespace()),
+        Some(_) => true,
+    };
+    starts_plain
+        && !value.contains(" #")
+        && !value.contains("\t#")
+        && !value.contains(": ")
+        && !value.ends_with(':')
+        && value != "~"
+        && !value.eq_ignore_ascii_case("null")
+}
+
+/// Reads the value of a one-line frontmatter entry.
+fn scalar(value: &str) -> Scalar {
     let value = value.trim();
-    let unquoted = ['"', '\'']
-        .iter()
-        .find_map(|quote| {
-            value
-                .strip_prefix(*quote)
-                .and_then(|rest| rest.strip_suffix(*quote))
-        })
-        .unwrap_or(value)
-        .trim();
-    if unquoted.is_empty() {
-        None
+    if value.is_empty() {
+        return Scalar::Empty;
+    }
+    for (quote, escapes) in [('"', &['"', '\\'][..]), ('\'', &['\''][..])] {
+        let Some(rest) = value.strip_prefix(quote) else {
+            continue;
+        };
+        return match rest.strip_suffix(quote).map(str::trim) {
+            Some("") => Scalar::Empty,
+            Some(inner) if !inner.contains(escapes) => Scalar::Plain(inner.to_string()),
+            _ => Scalar::Other,
+        };
+    }
+    if is_plain(value) {
+        Scalar::Plain(value.to_string())
     } else {
-        Some(unquoted.to_string())
+        Scalar::Other
     }
 }
 
-/// The last top-level `key: value` line for `key`: its byte range and its
-/// value. The graph reader takes the last such line too.
-fn entry_of(text: &str, front: &Front, key: &str) -> Option<(usize, usize, Option<String>)> {
+/// A top-level frontmatter line as its key and what follows the colon. The
+/// key is given without quotes. An indented line belongs to the entry above
+/// it, so it has no key of its own.
+fn key_and_value(line: &str) -> Option<(&str, &str)> {
+    if line.starts_with([' ', '\t']) {
+        return None;
+    }
+    let (name, value) = line.trim_end().split_once(':')?;
+    let name = name.trim_end();
+    let bare = ['"', '\'']
+        .iter()
+        .find_map(|quote| {
+            name.strip_prefix(*quote)
+                .and_then(|rest| rest.strip_suffix(*quote))
+        })
+        .unwrap_or(name);
+    Some((bare, value))
+}
+
+/// One frontmatter entry: the byte range of its line and its value.
+struct Entry {
+    start: usize,
+    end: usize,
+    value: Scalar,
+    /// The lines after it are part of its value.
+    continued: bool,
+}
+
+/// Whether the lines that follow an entry carry on its value: an indented
+/// line, or a list item.
+fn continues(rest: &str) -> bool {
+    rest.split_inclusive('\n')
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.starts_with([' ', '\t']) || line.starts_with("- "))
+}
+
+/// The last top-level `key: value` line for `key`. The graph reader takes
+/// the last such line too.
+fn entry_of(text: &str, front: &Front, key: &str) -> Option<Entry> {
     let mut found = None;
     let mut offset = front.start;
     for line in text[front.start..front.close].split_inclusive('\n') {
-        if let Some((name, value)) = line.trim_end().split_once(':') {
+        let end = offset + line.len();
+        if let Some((name, value)) = key_and_value(line) {
             if name == key {
-                found = Some((offset, offset + line.len(), scalar(value)));
+                found = Some(Entry {
+                    start: offset,
+                    end,
+                    value: scalar(value),
+                    continued: continues(&text[end..front.close]),
+                });
             }
         }
-        offset += line.len();
+        offset = end;
     }
     found
 }
 
+/// A top-level key that is `key` in other letter case, as it is written.
+/// A YAML reader takes it for a different key.
+fn other_case_key(text: &str, front: &Front, key: &str) -> Option<String> {
+    text[front.start..front.close]
+        .split_inclusive('\n')
+        .filter_map(key_and_value)
+        .map(|(name, _)| name)
+        .find(|name| *name != key && name.eq_ignore_ascii_case(key))
+        .map(str::to_string)
+}
+
 fn value_of(text: &str, key: &str) -> Option<String> {
     let front = front_of(text)?;
-    entry_of(text, &front, key).and_then(|(_, _, value)| value)
+    match entry_of(text, &front, key)?.value {
+        Scalar::Plain(value) => Some(value),
+        Scalar::Empty | Scalar::Other => None,
+    }
 }
 
 /// The note's text with an instance id added to its frontmatter. Only that
@@ -623,7 +708,7 @@ fn with_instance_id(text: &str, id: &str) -> Result<String, String> {
         .ok_or_else(|| String::from("the note has no closed frontmatter block"))?;
     let mut out = String::with_capacity(text.len() + 64);
     match entry_of(text, &front, INSTANCE_KEY) {
-        Some((start, end, _)) => {
+        Some(Entry { start, end, .. }) => {
             let line = &text[start..end];
             let ending = &line[line.trim_end_matches(['\r', '\n']).len()..];
             out.push_str(&text[..start]);
@@ -641,7 +726,7 @@ fn with_instance_id(text: &str, id: &str) -> Result<String, String> {
 
 fn read_head(path: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
-    File::open(path)?
+    vault_guard::open_regular(path)?
         .take(FRONTMATTER_BYTES)
         .read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -716,18 +801,19 @@ fn temp_beside(path: &Path) -> PathBuf {
 }
 
 fn write_temp(temp: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
+    let mut file = vault_guard::create_new(temp)?;
     file.write_all(bytes)?;
     file.set_permissions(fs::Permissions::from_mode(mode))?;
     file.sync_all()
 }
 
-/// Replaces a file in one step, so a reader sees the old text or the new
-/// text and never half of each. The file keeps its mode.
-fn write_replacing(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    // A linked file is written through the link, not over it.
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mode = fs::metadata(&target)
+/// Replaces a file inside the vault in one step, so a reader sees the old
+/// text or the new text and never half of each. The file keeps its mode.
+fn write_replacing(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    // A linked file is refused. The rename below would replace a link put
+    // there after this check, and would not write through it.
+    let target = vault_guard::file_inside(root, path)?;
+    let mode = fs::symlink_metadata(&target)
         .map(|metadata| metadata.permissions().mode() & 0o777)
         .unwrap_or(NOTE_MODE);
     let temp = temp_beside(&target);
@@ -739,9 +825,15 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Writes a file that must not exist yet. If another program makes the
-/// same file first, this fails and that file is left alone.
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// same file first, this fails and that file is left alone. The file's
+/// directory must be inside the vault.
+fn write_new(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
     let exists = || format!("{} already exists", path.display());
+    if fs::symlink_metadata(path).is_ok() {
+        return Err(exists());
+    }
+    let checked = vault_guard::inside(root, path)?;
+    let path = checked.as_path();
     let temp = temp_beside(path);
     write_temp(&temp, bytes, NOTE_MODE)
         .map_err(|error| format!("could not write {}: {error}", path.display()))?;
@@ -779,7 +871,7 @@ fn folder_in(root: &Path, folder: &str) -> Result<PathBuf, String> {
 }
 
 fn is_on(root: &Path, plugin: &str) -> bool {
-    read_capped(&root.join(CORE_PLUGINS_PATH), MAX_JSON_BYTES)
+    vault_guard::read_inside(root, &root.join(CORE_PLUGINS_PATH), MAX_JSON_BYTES)
         .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -788,19 +880,27 @@ fn is_on(root: &Path, plugin: &str) -> bool {
 }
 
 /// The text of a node type's template note. The plugin applies a template
-/// only when the vault's Templates feature is on and names a folder.
+/// only when the vault's Templates feature is on and names a folder. The
+/// template is a note in that folder itself: a name with a folder in it,
+/// or a note that is a link or leads outside the vault, gives no template.
 fn template_text(root: &Path, kind: &NodeKind) -> Option<String> {
     let name = kind.template.as_deref()?;
+    if name.contains(['/', '\\']) || name == ".." || name == "." {
+        return None;
+    }
     if !is_on(root, "templates") {
         return None;
     }
-    let settings = read_capped(&root.join(TEMPLATES_SETTINGS_PATH), MAX_JSON_BYTES)
-        .ok()
-        .flatten()?;
+    let settings =
+        vault_guard::read_inside(root, &root.join(TEMPLATES_SETTINGS_PATH), MAX_JSON_BYTES)
+            .ok()
+            .flatten()?;
     let settings: Value = serde_json::from_slice(&settings).ok()?;
     let folder = folder_in(root, &string_field(&settings, "folder")?).ok()?;
     let path = folder.join(format!("{name}{NOTE_SUFFIX}"));
-    let bytes = read_capped(&path, MAX_NOTE_BYTES).ok().flatten()?;
+    let bytes = vault_guard::read_inside(root, &path, MAX_NOTE_BYTES)
+        .ok()
+        .flatten()?;
     String::from_utf8(bytes).ok()
 }
 
@@ -887,14 +987,15 @@ pub fn create_node(
         .as_deref()
         .or(schema.nodes_folder.as_deref())
         .unwrap_or_default();
-    let dir = folder_in(&root, folder)?;
-    fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    // The folder is checked before it is made and again after, and the
+    // note is written to the folder's real path.
+    let dir = vault_guard::create_dir_inside(&root, &folder_in(&root, folder)?)?;
     let path = dir.join(format!("{title}{NOTE_SUFFIX}"));
 
     let id = new_id();
     let template = template_text(&root, kind);
     let content = note_text(kind, &id, template.as_deref(), body);
-    write_new(&path, content.as_bytes())?;
+    write_new(&root, &path, content.as_bytes())?;
     Ok(CreatedNode {
         id,
         title,
@@ -970,33 +1071,71 @@ fn lock_vault(root: &Path) -> Option<File> {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     let path = std::env::temp_dir().join(format!("vault-write-{hash:016x}.lock"));
+    // A link at the lock's name is not followed.
     let file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     file.lock().ok()?;
     Some(file)
 }
 
 /// The note's instance id. A note without one gets one written into its
-/// frontmatter, as the plugin does the first time it needs it.
-fn ensure_instance_id(note: &Note) -> Result<String, String> {
+/// frontmatter, as the plugin does the first time it needs it. A note
+/// whose id cannot be read for certain is left alone and is an error.
+fn ensure_instance_id(root: &Path, note: &Note) -> Result<String, String> {
     let path = &note.path;
-    let bytes =
-        read_capped(path, MAX_NOTE_BYTES)?.ok_or_else(|| format!("{} is gone", path.display()))?;
+    let bytes = vault_guard::read_inside(root, path, MAX_NOTE_BYTES)?
+        .ok_or_else(|| format!("{} is gone", path.display()))?;
     let text =
         String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))?;
     // Read again from the whole file: the note may have been given an id
     // since the vault was listed.
-    if let Some(id) = value_of(&text, INSTANCE_KEY) {
-        return Ok(id);
+    let front = front_of(&text);
+    let entry = front
+        .as_ref()
+        .and_then(|front| entry_of(&text, front, INSTANCE_KEY));
+    match entry {
+        Some(Entry {
+            value: Scalar::Plain(id),
+            continued: false,
+            ..
+        }) => return Ok(id),
+        Some(Entry {
+            value: Scalar::Empty,
+            continued: false,
+            ..
+        })
+        | None => {}
+        Some(_) => {
+            return Err(format!(
+                "{}: its {INSTANCE_KEY} is not one plain value on one line, so no relation \
+                 was made. Write the id on the same line as the key, with no comment after it.",
+                path.display()
+            ));
+        }
+    }
+    let other = front
+        .as_ref()
+        .and_then(|front| other_case_key(&text, front, INSTANCE_KEY));
+    if let Some(other) = other {
+        return Err(format!(
+            "{}: its frontmatter has the key {other}, which differs from {INSTANCE_KEY} only \
+             in the case of its letters, so no relation was made. Rename the key to \
+             {INSTANCE_KEY}.",
+            path.display()
+        ));
     }
     let id = new_id();
     let changed =
         with_instance_id(&text, &id).map_err(|error| format!("{}: {error}", path.display()))?;
-    write_replacing(path, changed.as_bytes())?;
+    write_replacing(root, path, changed.as_bytes())?;
     Ok(id)
 }
 
@@ -1068,25 +1207,96 @@ fn insert_relation(doc: &mut Value, ends: &Ends, now: u64) -> Result<String, Str
     Ok(id)
 }
 
+/// A JSON object as its keys and the text of each value, in file order.
+/// A value's text is kept as it stands in the file, so a number this tool
+/// cannot hold exactly, such as a very long one, is written back digit for
+/// digit.
+struct RawObject(Vec<(String, String)>);
+
+impl<'de> Deserialize<'de> for RawObject {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> Visitor<'de> for Entries {
+            type Value = RawObject;
+
+            fn expecting(&self, out: &mut fmt::Formatter) -> fmt::Result {
+                out.write_str("a JSON object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<RawObject, A::Error> {
+                let mut entries = Vec::new();
+                while let Some((key, value)) = map.next_entry::<String, Box<RawValue>>()? {
+                    entries.push((key, value.get().to_string()));
+                }
+                Ok(RawObject(entries))
+            }
+        }
+        deserializer.deserialize_map(Entries)
+    }
+}
+
+/// An object's entries, one to a line, each value as its own text.
+fn object_text(entries: &[(String, String)], indent: &str) -> String {
+    if entries.is_empty() {
+        return String::from("{}");
+    }
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|(key, value)| format!("{indent}  {}: {value}", Value::from(key.as_str())))
+        .collect();
+    format!("{{\n{}\n{indent}}}", lines.join(",\n"))
+}
+
+/// Gives the last entry called `key` a new value, or adds the entry.
+fn set_entry(entries: &mut Vec<(String, String)>, key: &str, value: String) {
+    match entries.iter().rposition(|(name, _)| name == key) {
+        Some(at) => entries[at].1 = value,
+        None => entries.push((key.to_string(), value)),
+    }
+}
+
+/// The relations file's text with one more entry. `text` is the file as
+/// it stands, and `doc` is the same file after `insert_relation` added the
+/// entry called `id`. Only the new entry and the time of the change come
+/// from `doc`. Every other value is copied from `text` as it is written
+/// there.
+fn text_with_relation(text: &str, doc: &Value, id: &str) -> Result<String, String> {
+    let fault = |error: serde_json::Error| format!("could not write {RELATIONS_FILE}: {error}");
+    let RawObject(mut top) = serde_json::from_str(text).map_err(fault)?;
+    let mut relations = match top.iter().rfind(|(key, _)| key == "relations") {
+        Some((_, held)) => serde_json::from_str::<RawObject>(held).map_err(fault)?.0,
+        None => Vec::new(),
+    };
+    let entry = serde_json::to_string_pretty(&doc["relations"][id]).map_err(fault)?;
+    relations.push((id.to_string(), entry.replace('\n', "\n    ")));
+    if !top.iter().any(|(key, _)| key == "version") {
+        set_entry(&mut top, "version", doc["version"].to_string());
+    }
+    set_entry(&mut top, "relations", object_text(&relations, "  "));
+    set_entry(&mut top, "lastModified", doc["lastModified"].to_string());
+    Ok(object_text(&top, ""))
+}
+
 /// Reads the relations file, adds one entry and writes it back. The file
 /// is read here, just before it is written, so an entry another program
 /// added a moment ago is kept.
 fn append_relation(root: &Path, ends: &Ends) -> Result<String, String> {
     let path = root.join(RELATIONS_FILE);
-    let mut doc = match read_capped(&path, MAX_JSON_BYTES)? {
-        None => empty_relations(),
-        Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            format!(
-                "{RELATIONS_FILE} is not valid JSON (line {}, column {}), so it was left alone",
-                error.line(),
-                error.column()
-            )
-        })?,
+    let text = match vault_guard::read_inside(root, &path, MAX_JSON_BYTES)? {
+        None => empty_relations().to_string(),
+        Some(bytes) => String::from_utf8(bytes)
+            .map_err(|_| format!("{RELATIONS_FILE} is not UTF-8 text, so it was left alone"))?,
     };
+    let mut doc: Value = serde_json::from_str(&text).map_err(|error| {
+        format!(
+            "{RELATIONS_FILE} is not valid JSON (line {}, column {}), so it was left alone",
+            error.line(),
+            error.column()
+        )
+    })?;
     let id = insert_relation(&mut doc, ends, now_ms())?;
-    let text = serde_json::to_string_pretty(&doc)
-        .map_err(|error| format!("could not write {RELATIONS_FILE}: {error}"))?;
-    write_replacing(&path, text.as_bytes())?;
+    let text = text_with_relation(&text, &doc, &id)?;
+    write_replacing(root, &path, text.as_bytes())?;
     Ok(id)
 }
 
@@ -1193,8 +1403,8 @@ pub fn add_relation(
     }
 
     let _lock = lock_vault(&root);
-    let source_id = ensure_instance_id(from)?;
-    let destination_id = ensure_instance_id(to)?;
+    let source_id = ensure_instance_id(&root, from)?;
+    let destination_id = ensure_instance_id(&root, to)?;
     let id = append_relation(
         &root,
         &Ends {
@@ -1224,25 +1434,25 @@ pub fn skill_destination(vault: &Path) -> PathBuf {
 pub fn install_skill(vault: &Path, force: bool) -> Result<(PathBuf, SkillInstall), String> {
     let root = open_vault(vault)?;
     let path = skill_destination(&root);
-    match fs::read(&path) {
-        Ok(existing) if existing == SKILL_TEXT.as_bytes() => {
+    // A linked file or folder is refused here, before anything is read or
+    // made, so `--force` does not write through a link either.
+    match vault_guard::read_inside(&root, &path, MAX_NOTE_BYTES)? {
+        Some(existing) if existing == SKILL_TEXT.as_bytes() => {
             return Ok((path, SkillInstall::Unchanged));
         }
-        Ok(_) if !force => {
+        Some(_) if !force => {
             return Err(format!(
                 "{} exists and differs from the skill this tool ships. \
                  Pass --force to replace it.",
                 path.display()
             ));
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("{}: {error}", path.display())),
+        Some(_) | None => {}
     }
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+        vault_guard::create_dir_inside(&root, dir)?;
     }
-    write_replacing(&path, SKILL_TEXT.as_bytes())?;
+    write_replacing(&root, &path, SKILL_TEXT.as_bytes())?;
     Ok((path, SkillInstall::Written))
 }
 
@@ -1600,7 +1810,7 @@ mod tests {
         let root = scratch("race");
         let path = root.join("note.md");
         fs::write(&path, "theirs").unwrap();
-        let error = write_new(&path, b"ours").unwrap_err();
+        let error = write_new(&root, &path, b"ours").unwrap_err();
         assert!(error.ends_with("already exists"), "{error}");
         assert_eq!(read(&path), "theirs");
         assert_eq!(leftovers(&root), Vec::<String>::new());
@@ -2308,6 +2518,278 @@ mod tests {
             Ok((path.clone(), SkillInstall::Written))
         );
         assert_eq!(read(&path), SKILL_TEXT);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn link(target: impl AsRef<Path>, at: impl AsRef<Path>) {
+        std::os::unix::fs::symlink(target, at).unwrap();
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_linked_relations_file_is_refused_and_its_target_is_untouched() {
+        let root = linked_vault("link-relations");
+        let outside = scratch("link-relations-outside");
+        let kept = r#"{"version":1,"lastModified":0,"relations":{},"theirs":true}"#;
+        fs::write(outside.join("theirs.json"), kept).unwrap();
+        let relate = || {
+            add_relation(
+                &root,
+                "EVD - birds fly",
+                "supports",
+                "CLM - birds have wings",
+                false,
+            )
+        };
+
+        link(outside.join("theirs.json"), root.join(RELATIONS_FILE));
+        let error = relate().unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert_eq!(read(outside.join("theirs.json")), kept);
+        assert_eq!(names_in(&outside), ["theirs.json"]);
+
+        // A link to a file inside the vault is refused as well.
+        fs::remove_file(root.join(RELATIONS_FILE)).unwrap();
+        fs::write(root.join("inner.json"), kept).unwrap();
+        link(root.join("inner.json"), root.join(RELATIONS_FILE));
+        assert!(relate().unwrap_err().contains("symbolic link"));
+        assert_eq!(read(root.join("inner.json")), kept);
+
+        fs::remove_file(root.join(RELATIONS_FILE)).unwrap();
+        relate().unwrap();
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn a_nodes_folder_that_links_out_of_the_vault_is_refused() {
+        let root = scratch("link-folder");
+        let outside = scratch("link-folder-outside");
+        write(&root, SETTINGS_PATH, &settings("Graph"));
+        link(&outside, root.join("Graph"));
+        let error = create_node(&root, "claim", "Planted", Some("body")).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+
+        // A folder below the link is not made on the far side either.
+        write(&root, SETTINGS_PATH, &settings("Graph/deep/er"));
+        let error = create_node(&root, "claim", "Planted", None).unwrap_err();
+        assert!(error.contains("outside the vault"), "{error}");
+        // A node type's own folder is checked the same way.
+        link(&outside, root.join("Sources"));
+        let error = create_node(&root, "source", "smith2020", None).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert_eq!(names_in(&outside), Vec::<String>::new());
+
+        // A link that stays inside the vault leads to a folder that is used.
+        fs::remove_file(root.join("Graph")).unwrap();
+        fs::create_dir_all(root.join("Real/Nodes")).unwrap();
+        link(root.join("Real"), root.join("Graph"));
+        write(&root, SETTINGS_PATH, &settings("Graph/Nodes"));
+        let made = create_node(&root, "claim", "Kept inside", None).unwrap();
+        assert!(root.join("Real/Nodes/CLM - Kept inside.md").is_file());
+        assert!(Path::new(&made.path).starts_with(&root));
+        // The folder that takes the note may not itself be a link.
+        write(&root, SETTINGS_PATH, &settings("Graph"));
+        let error = create_node(&root, "claim", "Through a link", None).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn a_template_outside_the_vault_is_never_copied() {
+        let root = vault("link-template");
+        let outside = scratch("link-template-outside");
+        fs::write(outside.join("private.md"), "PRIVATE WORDS\n").unwrap();
+        with_templates(&root);
+        let set_template = |name: &str| {
+            let mut value: Value = serde_json::from_str(&settings("Graph")).unwrap();
+            value["nodeTypes"][1]["template"] = json!(name);
+            write(&root, SETTINGS_PATH, &value.to_string());
+        };
+        let plain = |made: &CreatedNode| {
+            format!(
+                "---\nnodeTypeId: node_c\nnodeInstanceId: {}\n---\n",
+                made.id
+            )
+        };
+
+        // A name that climbs out of the templates folder.
+        let far = outside.file_name().unwrap().to_string_lossy().into_owned();
+        set_template(&format!("../../../{far}/private"));
+        let made = create_node(&root, "claim", "By dots", None).unwrap();
+        assert_eq!(read(&made.path), plain(&made));
+        // A name with a folder in it, even one inside the vault.
+        write(&root, "Meta/Templates/sub/Inner.md", "INNER WORDS\n");
+        set_template("sub/Inner");
+        let made = create_node(&root, "claim", "By folder", None).unwrap();
+        assert_eq!(read(&made.path), plain(&made));
+        // A template that is a link.
+        link(
+            outside.join("private.md"),
+            root.join("Meta/Templates/Linked.md"),
+        );
+        set_template("Linked");
+        let made = create_node(&root, "claim", "By link", None).unwrap();
+        assert_eq!(read(&made.path), plain(&made));
+        // A templates folder that is a link out of the vault.
+        link(&outside, root.join("Out"));
+        write(&root, TEMPLATES_SETTINGS_PATH, r#"{"folder": "Out"}"#);
+        set_template("private");
+        let made = create_node(&root, "claim", "By folder link", None).unwrap();
+        assert_eq!(read(&made.path), plain(&made));
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn a_linked_note_is_never_given_an_instance_id() {
+        let root = linked_vault("link-note");
+        let outside = scratch("link-note-outside");
+        let far = "---\nnodeTypeId: node_e\n---\nFar away.\n";
+        fs::write(outside.join("far.md"), far).unwrap();
+        link(outside.join("far.md"), root.join("Graph/EVD - far.md"));
+
+        for wanted in ["EVD - far", "Graph/EVD - far.md"] {
+            let error = add_relation(&root, wanted, "supports", "CLM - birds have wings", false);
+            assert!(error.is_err(), "{wanted}: {error:?}");
+            let back = add_relation(&root, "CLM - birds have wings", "supports", wanted, true);
+            assert!(back.is_err(), "{wanted}: {back:?}");
+        }
+        assert_eq!(read(outside.join("far.md")), far);
+        assert_eq!(names_in(&outside), ["far.md"]);
+        assert!(!root.join(RELATIONS_FILE).exists());
+        // A linked note is not listed as a node either.
+        let titles: Vec<String> = list_nodes(&root, Some("evidence"))
+            .unwrap()
+            .into_iter()
+            .map(|node| node.title)
+            .collect();
+        assert_eq!(titles, ["EVD - birds fly"]);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn the_skill_is_not_installed_through_a_link() {
+        let root = vault("link-skill");
+        let outside = scratch("link-skill-outside");
+        link(&outside, root.join(".claude"));
+        for force in [false, true] {
+            let error = install_skill(&root, force).unwrap_err();
+            assert!(error.contains("outside the vault"), "{error}");
+        }
+        assert_eq!(names_in(&outside), Vec::<String>::new());
+
+        // A linked skill file is not replaced or written through, even forced.
+        fs::remove_file(root.join(".claude")).unwrap();
+        fs::write(outside.join("theirs.md"), "theirs").unwrap();
+        let path = skill_destination(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        link(outside.join("theirs.md"), &path);
+        for force in [false, true] {
+            let error = install_skill(&root, force).unwrap_err();
+            assert!(error.contains("symbolic link"), "{error}");
+        }
+        assert_eq!(read(outside.join("theirs.md")), "theirs");
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn an_instance_id_that_is_not_one_plain_value_stops_the_relation() {
+        let root = linked_vault("odd-id");
+        let path = root.join("Graph/EVD - odd.md");
+        let relate = || {
+            add_relation(
+                &root,
+                "EVD - odd",
+                "supports",
+                "CLM - birds have wings",
+                false,
+            )
+        };
+        for (front, said) in [
+            ("nodeInstanceId: |\n  id-block\n", "one plain value"),
+            ("nodeInstanceId: >-\n  id-folded\n", "one plain value"),
+            ("nodeInstanceId: id-odd # a note\n", "one plain value"),
+            ("nodeInstanceId: \"id-odd\" # a note\n", "one plain value"),
+            ("nodeInstanceId: [id-odd]\n", "one plain value"),
+            ("nodeInstanceId: \"id\\todd\"\n", "one plain value"),
+            ("nodeInstanceId:\n  id-next-line\n", "one plain value"),
+            ("NodeInstanceId: id-odd\n", "NodeInstanceId"),
+            ("\"nodeinstanceid\" : id-odd\n", "nodeinstanceid"),
+        ] {
+            let text = format!("---\nnodeTypeId: node_e\n{front}---\nBody.\n");
+            fs::write(&path, &text).unwrap();
+            let error = relate().unwrap_err();
+            assert!(error.contains(said), "{front}: {error}");
+            assert!(error.contains("EVD - odd.md"), "{front}: {error}");
+            assert_eq!(read(&path), text, "{front}");
+            assert!(!root.join(RELATIONS_FILE).exists(), "{front}");
+        }
+
+        // A quoted id is used without its quotes, and the note is not rewritten.
+        for (front, id) in [
+            ("nodeInstanceId: \"id-double\"\n", "id-double"),
+            ("nodeInstanceId: 'id-single'  \n", "id-single"),
+            ("\"nodeInstanceId\": id-quoted-key\n", "id-quoted-key"),
+        ] {
+            let text = format!("---\nnodeTypeId: node_e\n{front}---\nBody.\n");
+            fs::write(&path, &text).unwrap();
+            let added = relate().unwrap();
+            assert_eq!(
+                relations(&root)["relations"][&added.id]["source"],
+                json!(id)
+            );
+            assert_eq!(read(&path), text);
+            fs::remove_file(root.join(RELATIONS_FILE)).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn numbers_the_tool_does_not_know_keep_their_digits() {
+        let root = linked_vault("numbers");
+        let existing = "{\n  \"version\": 1,\n  \"lastModified\": 5,\n  \"relations\": {\n    \
+                        \"r-1\": {\n      \"id\": \"r-1\",\n      \"type\": \"rel_o\",\n      \
+                        \"source\": \"a\",\n      \"destination\": \"b\",\n      \
+                        \"big\": 12345678901234567890123,\n      \"exact\": 1.10,\n      \
+                        \"tiny\": 1e-400,\n      \"negative\": -0.0\n    }\n  },\n  \
+                        \"ratio\": 0.30000000000000004000\n}";
+        fs::write(root.join(RELATIONS_FILE), existing).unwrap();
+        add_relation(
+            &root,
+            "EVD - birds fly",
+            "supports",
+            "CLM - birds have wings",
+            false,
+        )
+        .unwrap();
+        let text = read(root.join(RELATIONS_FILE));
+        for kept in [
+            "\"big\": 12345678901234567890123,",
+            "\"exact\": 1.10,",
+            "\"tiny\": 1e-400,",
+            "\"negative\": -0.0\n",
+            "\"ratio\": 0.30000000000000004000\n",
+        ] {
+            assert!(text.contains(kept), "{kept} is missing from:\n{text}");
+        }
+        assert_eq!(relations(&root)["relations"].as_object().unwrap().len(), 2);
         fs::remove_dir_all(root).unwrap();
     }
 

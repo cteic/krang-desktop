@@ -173,6 +173,11 @@ modified. The node and relation commands write nothing inside `.obsidian`.
 replaces one that exists. The commands are described in
 `apps/desktop/docs/pane-cli.md`.
 
+The commands write only inside the vault, and never through a symbolic link.
+The editor pane does not open the plugin's settings file,
+`.obsidian/plugins/discourse-graphs/data.json`, because that file can hold an
+account password.
+
 ## Shortcuts
 
 | Keys                        | Action                                        |
