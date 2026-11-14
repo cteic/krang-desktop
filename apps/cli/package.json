@@ -1,0 +1,30 @@
+{
+  "name": "@trath/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./placeholder": "./src/placeholder.ts"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@trath/core": "workspace:*",
+    "@trath/db": "workspace:*",
+    "commander": "catalog:"
+  },
+  "devDependencies": {
+    "@trath/eslint-config": "workspace:*",
+    "@trath/tsconfig-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

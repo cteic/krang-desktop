@@ -1,0 +1,10 @@
+node_modules
+dist
+.turbo
+target
+coverage
+pnpm-lock.yaml
+packages/eslint-config/fixtures
+packages/tsconfig-config/fixtures
+docs
+apps/desktop/src-tauri/gen
