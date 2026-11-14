@@ -31,7 +31,16 @@ export interface ChatContent {
   directory: string | null;
 }
 
-export type PaneContent = TerminalContent | FilesContent | EditorContent | WebContent | ChatContent;
+export interface GraphContent {
+  type: 'graph';
+  /** A notes vault that uses the Discourse Graphs plugin. Null asks for one. */
+  directory: string | null;
+  /** A canvas in the vault, by file name. Null shows every node. */
+  view: string | null;
+}
+
+export type PaneContent =
+  TerminalContent | FilesContent | EditorContent | WebContent | ChatContent | GraphContent;
 
 export type PaneType = PaneContent['type'];
 
@@ -103,6 +112,7 @@ const FALLBACK_TITLES: Record<PaneType, string> = {
   editor: 'untitled',
   web: 'web',
   chat: 'chat',
+  graph: 'graph',
 };
 
 function lastSegment(path: string): string {
@@ -118,7 +128,7 @@ export function paneTitle(leaf: LeafNode): string {
     return leaf.title;
   }
   const content = leaf.content;
-  if (content.type === 'files' && content.directory !== null) {
+  if ((content.type === 'files' || content.type === 'graph') && content.directory !== null) {
     return lastSegment(content.directory);
   }
   if (content.type === 'editor' && content.path !== null) {

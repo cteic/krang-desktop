@@ -1,5 +1,6 @@
 mod agents;
 mod fs;
+mod graph;
 mod ipc;
 mod links;
 mod local_files;
@@ -73,6 +74,8 @@ pub fn run() {
             fs::fs_list,
             fs::fs_read_text,
             fs::fs_write_text,
+            graph::graph_read,
+            graph::graph_fingerprint,
             agents::agent_run,
             agents::agent_cancel,
             ipc::ipc_reply,

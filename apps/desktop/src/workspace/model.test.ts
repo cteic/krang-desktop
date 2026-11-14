@@ -28,6 +28,17 @@ describe('paneTitle', () => {
     expect(paneTitle(leaf({ type: 'editor', path: '~/notes/today.md' }))).toBe('today.md');
   });
 
+  it('names a graph pane after its vault folder', () => {
+    expect(paneTitle(leaf({ type: 'graph', directory: '~/notes/lab vault/', view: null }))).toBe(
+      'lab vault',
+    );
+    expect(paneTitle(leaf({ type: 'graph', directory: '/vault', view: 'Overview' }))).toBe('vault');
+    expect(paneTitle(leaf({ type: 'graph', directory: null, view: null }))).toBe('graph');
+    expect(paneTitle(leaf({ type: 'graph', directory: '/vault', view: null }, 'claims'))).toBe(
+      'claims',
+    );
+  });
+
   it('falls back to the pane type', () => {
     expect(paneTitle(leaf({ type: 'terminal', directory: null, commands: [] }))).toBe('terminal');
     expect(paneTitle(leaf({ type: 'editor', path: null }))).toBe('untitled');

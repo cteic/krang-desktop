@@ -1,8 +1,8 @@
 # Krang Desktop
 
 One desktop app for a working day: terminals, a file browser, a Markdown
-editor, web pages and a chat with command-line agents, side by side in tiling
-panes.
+editor, web pages, a chat with command-line agents and a graph of a notes
+vault, side by side in tiling panes.
 
 Built with Tauri 2 (a Rust core) and React. macOS only for now.
 
@@ -15,6 +15,7 @@ Built with Tauri 2 (a Rust core) and React. macOS only for now.
 | Editor   | CodeMirror, with a live Markdown preview, wikilinks and save               |
 | Web      | A page from a URL, a dev server or an HTML file on disk                    |
 | Chat     | A chat window over Claude Code or Codex, using the login each already has  |
+| Graph    | The questions, claims and evidence of a Discourse Graphs vault, as a graph |
 
 Panes live in tabs, tabs live in windows. Split, resize, magnify and close
 panes while you work. A plain window reopens with the tabs and panes you left.
@@ -57,7 +58,7 @@ commands = ["git status -sb"]
 
 [[panes]]
 id = "notes"
-type = "editor"             # terminal, files, editor, web or chat
+type = "editor"             # terminal, files, editor, web, chat or graph
 path = "~/src/project/README.md"
 ```
 
@@ -68,10 +69,12 @@ path = "~/src/project/README.md"
 | `editor`   | `path`                                                          |
 | `web`      | `url` (a URL, `localhost:3000`, or a path to an HTML file)      |
 | `chat`     | `agent` (`claude` or `codex`), `directory`                      |
+| `graph`    | `directory` (the vault), `view` (`all` or a canvas file name)   |
 
 Every pane also takes `title` and `is_focused`.
 
-A full example is in `apps/desktop/examples/demo.toml`.
+A full example is in `apps/desktop/examples/demo.toml`. A tour of the graph
+pane is in `apps/desktop/examples/lab.toml`.
 
 ### Opening a layout
 
@@ -86,6 +89,26 @@ A link names a layout by its file name without `.toml`. The app looks in
 `~/.warp/tab_configs/`, whose files use the same format.
 
 A link opens a new window. If the app is already running, it opens there.
+
+## The graph pane
+
+The graph pane reads an Obsidian vault that uses the open-source Discourse
+Graphs plugin. It never writes to the vault.
+
+- **All nodes** shows every note that has a configured `nodeTypeId` in its
+  frontmatter, joined by the relations in the vault's `relations.json`.
+- Each canvas file is its own view, drawn with the positions saved in the
+  canvas. A canvas with several pages gets a page list.
+- Click a node to highlight what it relates to. Double-click it, or press
+  Enter, to open its note in an editor pane beside the graph.
+- Click a node type in the legend to hide or show it.
+- Drag to pan, scroll or pinch to zoom, and press F to fit the graph again.
+- The pane checks the vault every few seconds and redraws when a note or a
+  relation changes on disk.
+
+Notes in a `Templates` folder are left out. A dashed line is a relation the
+vault marks as not tentative. A dotted line is a relation whose end names an
+instance id that several notes share, so it may point at the wrong note.
 
 ## Shortcuts
 

@@ -146,6 +146,9 @@ fn to_wire(command: args::Command, cwd: &Path) -> Result<Command, String> {
             agent,
             directory: existing_directory(cwd, dir.as_deref())?,
         }),
+        args::Command::Graph { dir } => Ok(Command::Graph {
+            directory: existing_directory(cwd, dir.as_deref())?,
+        }),
         args::Command::Title(title) => Ok(Command::Title { title }),
         args::Command::Badge(badge) => Ok(Command::Badge {
             badge: badge.map(|badge| Badge {
@@ -340,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn term_and_chat_default_to_the_working_directory() {
+    fn term_chat_and_graph_default_to_the_working_directory() {
         let dir = temp_dir("term");
         fs::create_dir(dir.join("api")).unwrap();
 
@@ -366,6 +369,20 @@ mod tests {
             })
         );
         let missing = to_wire(parsed(&["chat", "nope"]), &dir).unwrap_err();
+        assert!(missing.ends_with("is not a directory"), "{missing}");
+        assert_eq!(
+            to_wire(parsed(&["graph"]), &dir),
+            Ok(Command::Graph {
+                directory: text(&dir),
+            })
+        );
+        assert_eq!(
+            to_wire(parsed(&["graph", "api"]), &dir),
+            Ok(Command::Graph {
+                directory: text(&dir.join("api")),
+            })
+        );
+        let missing = to_wire(parsed(&["graph", "nope"]), &dir).unwrap_err();
         assert!(missing.ends_with("is not a directory"), "{missing}");
 
         fs::remove_dir_all(dir).unwrap();

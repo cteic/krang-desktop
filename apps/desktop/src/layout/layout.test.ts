@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { leavesOf } from '../workspace/model';
@@ -131,6 +133,68 @@ agent = "claude"
     expect(layout.root.kind === 'split' ? layout.root.shares : []).toEqual([
       0.25, 0.25, 0.25, 0.25,
     ]);
+  });
+
+  it('reads a graph pane and the view it opens on', () => {
+    const layout = parseLayout(`
+name = "lab"
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["everything", "named", "canvas", "bare"]
+[[panes]]
+id = "everything"
+type = "graph"
+directory = "~/vault"
+[[panes]]
+id = "named"
+type = "graph"
+directory = "~/vault"
+view = "all"
+[[panes]]
+id = "canvas"
+type = "graph"
+directory = "~/vault"
+view = "Overview.md"
+[[panes]]
+id = "bare"
+type = "graph"
+`);
+
+    expect(leavesOf(layout.root).map((leaf) => leaf.content)).toEqual([
+      { type: 'graph', directory: '~/vault', view: null },
+      { type: 'graph', directory: '~/vault', view: null },
+      { type: 'graph', directory: '~/vault', view: 'Overview.md' },
+      { type: 'graph', directory: null, view: null },
+    ]);
+  });
+
+  it('reads the example tour of the graph pane', () => {
+    const text = readFileSync(new URL('../../examples/lab.toml', import.meta.url), 'utf8');
+    const layout = parseLayout(text);
+    const leaves = leavesOf(layout.root);
+
+    expect(leaves.map((leaf) => leaf.content.type)).toEqual([
+      'files',
+      'terminal',
+      'editor',
+      'graph',
+      'chat',
+    ]);
+    // Every pane has a title a person wrote, not its id.
+    expect(leaves.every((leaf) => leaf.title !== null && leaf.title !== leaf.id)).toBe(true);
+    expect(layout.focusedId).toBe('graph');
+    const graph = leaves.find((leaf) => leaf.content.type === 'graph');
+    expect(graph?.content).toMatchObject({ type: 'graph', view: null });
+    // The graph's column is as wide as the other two together.
+    expect(layout.root.kind === 'split' ? layout.root.shares : []).toEqual([0.5, 0.5]);
+  });
+
+  it('rejects a split that also names a graph view', () => {
+    expectLayoutError(
+      'name = "x"\n[[panes]]\nid = "r"\nsplit = "vertical"\nchildren = ["a"]\nview = "all"\n[[panes]]\nid = "a"\n',
+      'cannot also hold content',
+    );
   });
 
   it('rejects a web pane with no url', () => {
