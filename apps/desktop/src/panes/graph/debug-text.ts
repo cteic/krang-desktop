@@ -5,7 +5,10 @@ export interface DebugStats {
   /** Nodes with no relations that are not drawn. */
   unlinkedHidden: number;
   claims: number;
+  /** False when no relation type means supports or opposes. */
+  supportCounted: boolean;
   unsupported: number;
+  opposed: number;
   contested: number;
   supported: number;
   candidates: number;
@@ -39,7 +42,9 @@ export function debugText(
     if (stats !== null) {
       lines.push(
         `unlinked hidden: ${String(stats.unlinkedHidden)}`,
-        `claims: ${String(stats.claims)} (${String(stats.unsupported)} unsupported, ${String(stats.contested)} contested, ${String(stats.supported)} supported)`,
+        stats.supportCounted
+          ? `claims: ${String(stats.claims)} (${String(stats.unsupported)} unsupported, ${String(stats.opposed)} opposed, ${String(stats.contested)} contested, ${String(stats.supported)} supported)`
+          : `claims: ${String(stats.claims)} (support not counted)`,
         `candidates: ${String(stats.candidates)}`,
         `issues: ${String(stats.issues)}`,
       );

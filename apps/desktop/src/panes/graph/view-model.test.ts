@@ -129,7 +129,8 @@ describe('the all nodes view', () => {
   it('marks what each relation says and which node it is about', () => {
     expect(edgeOf(view, 'r1')).toMatchObject({ kind: 'supports', acted: 'id-q' });
     expect(edgeOf(view, 'r2')).toMatchObject({ kind: 'opposes', acted: 'id-q' });
-    // Stored from the claim to the evidence, which the settings allow only the other way.
+    // Stored from the claim to the evidence, which the settings allow only
+    // the other way. It is read as stored: the settings do not turn it round.
     const turned: VaultGraph = {
       ...GRAPH,
       relations: [
@@ -146,7 +147,7 @@ describe('the all nodes view', () => {
     expect(edgeOf(buildView(turned, ALL_VIEW), 'r1')).toMatchObject({
       kind: 'supports',
       target: 'id-e',
-      acted: 'id-c1',
+      acted: 'id-e',
     });
   });
 

@@ -327,11 +327,18 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     if (panel !== 'claims' || lens === null || fullView === null) {
       return null;
     }
-    const byId = new Map<string, SupportStatus>(lens.rows.map((row) => [row.id, row.status]));
+    // With nothing to count, no claim has a status and no box is marked.
+    const byId = new Map<string, SupportStatus>();
+    const byPath = new Map<string, SupportStatus>();
+    for (const row of lens.rows) {
+      if (row.status !== null) {
+        byId.set(row.id, row.status);
+        byPath.set(row.path, row.status);
+      }
+    }
     if (fullView.key === ALL_VIEW) {
       return byId;
     }
-    const byPath = new Map(lens.rows.map((row) => [row.path, row.status]));
     const onCanvas = new Map<string, SupportStatus>();
     for (const node of fullView.nodes) {
       const status = node.path === null ? undefined : byPath.get(node.path);
@@ -421,7 +428,9 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
         : {
             unlinkedHidden: showUnlinked ? 0 : unlinkedCount,
             claims: lens.rows.length,
+            supportCounted: lens.counted,
             unsupported: lens.unsupported,
+            opposed: lens.opposed,
             contested: lens.contested,
             supported: lens.supported,
             candidates: candidateCount,

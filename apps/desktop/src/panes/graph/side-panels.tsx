@@ -5,7 +5,7 @@ import { noteName } from './candidates';
 import type { CandidateGroup } from './candidates';
 import type { IssueGroup } from './issues';
 import { lensSummary } from './lens';
-import type { Backer, ClaimRow, Lens } from './lens';
+import type { Backer, ClaimRow, Lens, ListedNote } from './lens';
 
 /** The lists that open beside the drawing: claims, candidates and issues. */
 
@@ -44,42 +44,73 @@ function Bar({ count, side }: BarProps) {
   );
 }
 
+function isListedNote(backer: Backer | ListedNote): backer is ListedNote {
+  return 'kind' in backer;
+}
+
 interface BackersProps {
   title: string;
-  side: 'for' | 'against';
-  backers: readonly Backer[];
+  side: 'for' | 'against' | 'tentative' | 'related';
+  /** A line shown above the list, for the lists the counts leave out. */
+  heading?: string;
+  backers: readonly (Backer | ListedNote)[];
   onSelect: (id: string) => void;
   onOpen: (path: string) => void;
 }
 
-function Backers({ title, side, backers, onSelect, onOpen }: BackersProps) {
+function Backers({ title, side, heading, backers, onSelect, onOpen }: BackersProps) {
   if (backers.length === 0) {
     return null;
   }
   return (
-    <ul className="graph-backers" aria-label={title} data-side={side}>
-      {backers.map((backer) => (
-        <li key={backer.id}>
-          <button
-            type="button"
-            title={`${backer.title}\nClick to find it in the graph. Double-click or Enter opens the note.`}
-            onClick={() => {
-              onSelect(backer.id);
-            }}
-            onDoubleClick={() => {
-              onOpen(backer.path);
-            }}
-            onKeyDown={(event) => {
-              openOnEnter(event, () => {
-                onOpen(backer.path);
-              });
-            }}
-          >
-            {backer.title}
-          </button>
-        </li>
-      ))}
-    </ul>
+    <>
+      {heading === undefined ? null : <p className="graph-backers-head">{heading}</p>}
+      <ul className="graph-backers" aria-label={title} data-side={side}>
+        {backers.map((backer) => (
+          <BackerItem
+            key={isListedNote(backer) ? `${backer.kind} ${backer.id}` : backer.id}
+            backer={backer}
+            onSelect={onSelect}
+            onOpen={onOpen}
+          />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+interface BackerItemProps {
+  backer: Backer | ListedNote;
+  onSelect: (id: string) => void;
+  onOpen: (path: string) => void;
+}
+
+function BackerItem({ backer, onSelect, onOpen }: BackerItemProps) {
+  return (
+    <li>
+      <button
+        type="button"
+        title={`${backer.title}\nClick to find it in the graph. Double-click or Enter opens the note.`}
+        onClick={() => {
+          onSelect(backer.id);
+        }}
+        onDoubleClick={() => {
+          onOpen(backer.path);
+        }}
+        onKeyDown={(event) => {
+          openOnEnter(event, () => {
+            onOpen(backer.path);
+          });
+        }}
+      >
+        {isListedNote(backer) ? (
+          <span className="graph-backer-kind" data-kind={backer.kind}>
+            {backer.kind}:{' '}
+          </span>
+        ) : null}
+        {backer.title}
+      </button>
+    </li>
   );
 }
 
@@ -110,16 +141,21 @@ export function ClaimsPanel({ lens, looks, selectedId, onSelect, onOpen }: Claim
   function row(claim: ClaimRow) {
     const look = looks.get(claim.typeId);
     const open = expanded.has(claim.id);
-    const backed = claim.supports.length + claim.opposes.length > 0;
+    const backed =
+      claim.supports.length + claim.opposes.length + claim.tentative.length + claim.related.length >
+      0;
+    const status = claim.status ?? 'not counted';
     return (
-      <li key={claim.id} className="graph-claim" data-status={claim.status}>
+      <li key={claim.id} className="graph-claim" data-status={claim.status ?? undefined}>
         <div className="graph-claim-row">
           <button
             type="button"
             className="graph-claim-more"
             aria-expanded={open}
             aria-label={`Evidence for ${claim.title}`}
-            title={backed ? 'Show the evidence' : 'Nothing supports or opposes this'}
+            title={
+              backed ? 'Show what supports or opposes this' : 'Nothing supports or opposes this'
+            }
             disabled={!backed}
             onClick={() => {
               toggle(claim.id);
@@ -131,7 +167,7 @@ export function ClaimsPanel({ lens, looks, selectedId, onSelect, onOpen }: Claim
             type="button"
             className="graph-claim-main"
             aria-pressed={claim.id === selectedId}
-            aria-label={`${claim.title}, ${claim.status}, ${String(claim.supports.length)} supporting, ${String(claim.opposes.length)} opposing`}
+            aria-label={`${claim.title}, ${status}, ${String(claim.supports.length)} supporting, ${String(claim.opposes.length)} opposing`}
             title={`${claim.title}\nClick to find it in the graph. Double-click or Enter opens the note.`}
             onClick={() => {
               onSelect(claim.id);
@@ -145,7 +181,7 @@ export function ClaimsPanel({ lens, looks, selectedId, onSelect, onOpen }: Claim
               });
             }}
           >
-            <span className="graph-mark" data-status={claim.status} />
+            <span className="graph-mark" data-status={claim.status ?? undefined} />
             <span
               className="graph-type-chip"
               style={{ background: look?.fill, color: look?.ink }}
@@ -171,6 +207,22 @@ export function ClaimsPanel({ lens, looks, selectedId, onSelect, onOpen }: Claim
               title={`Opposes ${claim.title}`}
               side="against"
               backers={claim.opposes}
+              onSelect={onSelect}
+              onOpen={onOpen}
+            />
+            <Backers
+              title={`Tentative evidence for ${claim.title}`}
+              side="tentative"
+              heading="Tentative, not counted"
+              backers={claim.tentative}
+              onSelect={onSelect}
+              onOpen={onOpen}
+            />
+            <Backers
+              title={`Related claims for ${claim.title}`}
+              side="related"
+              heading="Related claims, not counted"
+              backers={claim.related}
               onSelect={onSelect}
               onOpen={onOpen}
             />
