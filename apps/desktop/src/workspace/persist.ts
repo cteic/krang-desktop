@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { EDITOR_MODES, leavesOf } from './model';
+import { CHAT_MODES, EDITOR_MODES, leavesOf } from './model';
 import type { PaneContent, PaneTree, Tab, Workspace } from './model';
 
 /**
@@ -30,6 +30,7 @@ const contentSchema: z.ZodType<PaneContent> = z.discriminatedUnion('type', [
     type: z.literal('chat'),
     agent: z.string().nullable(),
     directory: z.string().nullable(),
+    mode: z.enum(CHAT_MODES).optional(),
   }),
   z.object({
     type: z.literal('graph'),

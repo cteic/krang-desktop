@@ -30,11 +30,17 @@ export interface WebContent {
   url: string;
 }
 
+export const CHAT_MODES = ['read-only', 'edit'] as const;
+
+export type ChatMode = (typeof CHAT_MODES)[number];
+
 export interface ChatContent {
   type: 'chat';
   /** Which command-line agent answers. Null means the pane's default. */
   agent: string | null;
   directory: string | null;
+  /** What the agent may do. Left out, the chat is read only. */
+  mode?: ChatMode | undefined;
 }
 
 export interface GraphContent {

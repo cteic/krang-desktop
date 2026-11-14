@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -111,6 +111,27 @@ pub fn agent_path(home: Option<&str>, inherited: Option<&str>) -> String {
     parts.join(":")
 }
 
+/// The PATH an agent's own commands are found on: the pane tool's directory
+/// first, so an agent can create graph nodes with it, then the agent's PATH.
+pub fn child_path(tool_dir: Option<&Path>, home: Option<&str>, inherited: Option<&str>) -> String {
+    let rest = agent_path(home, inherited);
+    match tool_dir {
+        Some(dir) => format!("{}:{rest}", dir.to_string_lossy()),
+        None => rest,
+    }
+}
+
+/// Sets what an agent inherits. It gets the pane tool on its PATH for the
+/// commands that work on files. It does not get the variables that let the
+/// tool drive the app: a chat is not a pane's shell, and a command typed
+/// into a terminal pane would run outside the agent's permission checks.
+fn set_environment(command: &mut Command, path: String) {
+    command.env("PATH", path);
+    for name in crate::ipc::PANE_ONLY_ENV {
+        command.env_remove(name);
+    }
+}
+
 fn find_agent(name: &str, home: Option<&str>) -> Option<PathBuf> {
     let inherited = std::env::var("PATH").unwrap_or_default();
     agent_path(home, Some(&inherited))
@@ -145,12 +166,16 @@ pub fn agent_run(
         .ok_or_else(|| format!("{agent} was not found. Is it installed?"))?;
 
     let mut command = Command::new(program);
+    set_environment(
+        &mut command,
+        child_path(
+            crate::ipc::tool_dir().as_deref(),
+            home.as_deref(),
+            std::env::var("PATH").ok().as_deref(),
+        ),
+    );
     command
         .args(args)
-        .env(
-            "PATH",
-            agent_path(home.as_deref(), std::env::var("PATH").ok().as_deref()),
-        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -290,5 +315,58 @@ mod tests {
             agent_path(None, Some("")),
             "/opt/homebrew/bin:/usr/local/bin"
         );
+    }
+
+    #[test]
+    fn an_agent_finds_the_pane_tool_by_name() {
+        let base = std::env::temp_dir().join(format!("agent-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let tool_dir = base.join("bin");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        let tool = tool_dir.join("kd");
+        std::fs::write(&tool, "#!/bin/sh\necho ran-the-tool\n").unwrap();
+        std::fs::set_permissions(
+            &tool,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+        )
+        .unwrap();
+
+        let path = child_path(Some(&tool_dir), Some("/Users/x"), Some("/usr/bin:/bin"));
+        assert_eq!(
+            path,
+            format!(
+                "{}:/Users/x/.local/bin:/Users/x/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                tool_dir.display()
+            )
+        );
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "kd types"]);
+        set_environment(&mut command, path);
+        let output = command.output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "ran-the-tool\n");
+
+        assert_eq!(
+            child_path(None, Some("/Users/x"), Some("/usr/bin")),
+            agent_path(Some("/Users/x"), Some("/usr/bin"))
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn an_agent_is_not_told_how_to_drive_the_app() {
+        let mut command = Command::new("/usr/bin/env");
+        command
+            .env("DESKTOP_SOCKET", "/tmp/s.sock")
+            .env("DESKTOP_WINDOW", "window-1")
+            .env("DESKTOP_PANE_ID", "p1")
+            .env("KEPT", "yes");
+        set_environment(&mut command, String::from("/usr/bin:/bin"));
+        let output = command.output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("KEPT=yes"), "{text}");
+        assert!(text.contains("PATH=/usr/bin:/bin"), "{text}");
+        for name in ["DESKTOP_SOCKET", "DESKTOP_WINDOW", "DESKTOP_PANE_ID"] {
+            assert!(!text.contains(name), "{name} reached the agent: {text}");
+        }
     }
 }

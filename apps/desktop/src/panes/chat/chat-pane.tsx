@@ -128,7 +128,7 @@ const ChatItem = memo(function ChatItem({ item, onOpenLink }: ChatItemProps) {
 export function ChatPane({ name, content, active, debug, actions }: PaneProps<ChatContent>) {
   const [transcript, dispatch] = useReducer(transcriptReducer, EMPTY_TRANSCRIPT);
   const [agent, setAgent] = useState<AgentId>(() => toAgentId(content.agent));
-  const [mode, setMode] = useState<ModeId>(DEFAULT_MODE);
+  const [mode, setMode] = useState<ModeId>(content.mode ?? DEFAULT_MODE);
   const [draft, setDraft] = useState('');
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -241,13 +241,15 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
     agentRef.current = next;
     setAgent(next);
     startNewChat();
-    actions.replaceContent({ type: 'chat', agent: next, directory });
+    actions.replaceContent({ ...content, agent: next });
   }
 
   function onModeChange(event: ChangeEvent<HTMLSelectElement>) {
     const next = event.target.value;
-    if (isModeId(next)) {
+    if (isModeId(next) && next !== mode) {
       setMode(next);
+      // Kept in the pane's content, so a restored window opens in it.
+      actions.replaceContent({ ...content, mode: next });
     }
   }
 
@@ -279,6 +281,11 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
       dispatch({ type: 'reset' });
     }
   }, [content.agent]);
+
+  // The mode changed from outside the pane, a layout file for example.
+  useEffect(() => {
+    setMode(content.mode ?? DEFAULT_MODE);
+  }, [content.mode]);
 
   useEffect(() => {
     if (active) {

@@ -211,3 +211,36 @@ describe('an editor pane mode', () => {
     expect(parseWorkspace(withEditor('reading'))).toBeNull();
   });
 });
+
+describe('a chat pane mode', () => {
+  function withChat(mode: unknown): string {
+    const start = createWorkspace(defaultDraft());
+    const paneId = activeTab(start)?.focusedId ?? '';
+    const saved: unknown = JSON.parse(
+      serializeWorkspace(
+        workspaceReducer(start, {
+          type: 'replace-content',
+          paneId,
+          content: { type: 'chat', agent: 'claude', directory: '~/v', mode: 'edit' },
+        }),
+      ),
+    );
+    return JSON.stringify(saved).replace('"mode":"edit"', `"mode":${JSON.stringify(mode)}`);
+  }
+
+  it('survives a save and a load', () => {
+    const restored = parseWorkspace(withChat('edit'));
+    const tab = restored === null ? null : activeTab(restored);
+    expect(tab === null ? null : leavesOf(tab.root)[0]?.content).toEqual({
+      type: 'chat',
+      agent: 'claude',
+      directory: '~/v',
+      mode: 'edit',
+    });
+  });
+
+  it('is refused when it is not a known mode', () => {
+    expect(parseWorkspace(withChat('bypassPermissions'))).toBeNull();
+    expect(parseWorkspace(withChat('preview'))).toBeNull();
+  });
+});
