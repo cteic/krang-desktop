@@ -25,9 +25,16 @@ pub enum Source {
     Missing(String),
 }
 
+/// The restore key of the window that reopens as the person left it.
+const DEFAULT_RESTORE_KEY: &str = "default";
+
 #[derive(Default)]
 pub struct WindowLayouts {
     by_label: Mutex<HashMap<String, Source>>,
+    /// Which windows save their workspace, and under which key. A key is
+    /// held by one live window at a time, so two windows never overwrite
+    /// each other's saved state.
+    restore_keys: Mutex<HashMap<String, String>>,
     counter: AtomicU32,
 }
 
@@ -44,6 +51,25 @@ impl WindowLayouts {
         if let Ok(mut map) = self.by_label.lock() {
             map.remove(label);
         }
+        if let Ok(mut keys) = self.restore_keys.lock() {
+            keys.remove(label);
+        }
+    }
+
+    pub fn restore_key(&self, label: &str) -> Option<String> {
+        self.restore_keys.lock().ok()?.get(label).cloned()
+    }
+
+    /// Gives `label` the default restore key if no live window holds it.
+    pub fn claim_default(&self, label: &str) -> bool {
+        let Ok(mut keys) = self.restore_keys.lock() else {
+            return false;
+        };
+        if keys.values().any(|key| key == DEFAULT_RESTORE_KEY) {
+            return false;
+        }
+        keys.insert(label.to_string(), DEFAULT_RESTORE_KEY.to_string());
+        true
     }
 }
 
@@ -98,6 +124,11 @@ pub fn open_window(app: &AppHandle, source: Source) -> tauri::Result<()> {
     let layouts = app.state::<WindowLayouts>();
     let number = layouts.counter.fetch_add(1, Ordering::SeqCst) + 1;
     let label = format!("window-{number}");
+    // Only a plain window restores, and never in an automated run, which
+    // must neither read nor overwrite the person's saved arrangement.
+    if source == Source::Default && debug_dir().is_none() {
+        layouts.claim_default(&label);
+    }
     if let Ok(mut map) = layouts.by_label.lock() {
         map.insert(label.clone(), source);
     }
@@ -140,6 +171,18 @@ mod tests {
         );
         layouts.forget("window-1");
         assert_eq!(layouts.source_of("window-1"), Source::Default);
+    }
+
+    #[test]
+    fn one_live_window_holds_the_default_restore_key() {
+        let layouts = WindowLayouts::default();
+        assert!(layouts.claim_default("window-1"));
+        assert!(!layouts.claim_default("window-2"));
+        assert_eq!(layouts.restore_key("window-1").as_deref(), Some("default"));
+        assert_eq!(layouts.restore_key("window-2"), None);
+
+        layouts.forget("window-1");
+        assert!(layouts.claim_default("window-2"));
     }
 
     #[test]

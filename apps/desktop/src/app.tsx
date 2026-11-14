@@ -8,10 +8,12 @@ import type { Session } from './startup';
 import { actionForMenu, isMenuAction } from './workspace/menu-actions';
 import { activeTab } from './workspace/model';
 import type { Workspace } from './workspace/model';
+import { serializeWorkspace } from './workspace/persist';
 import { createWorkspace, workspaceReducer } from './workspace/reducer';
 import { WorkspaceView } from './workspace-view';
 
 const MENU_EVENT = 'menu-action';
+const SAVE_DELAY_MS = 400;
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -45,7 +47,11 @@ interface WindowProps {
 }
 
 function Window({ session }: WindowProps) {
-  const [workspace, dispatch] = useReducer(workspaceReducer, session.layout, createWorkspace);
+  const [workspace, dispatch] = useReducer(
+    workspaceReducer,
+    session,
+    (initial) => initial.saved ?? createWorkspace(initial.layout),
+  );
   const workspaceRef = useRef<Workspace>(workspace);
   workspaceRef.current = workspace;
 
@@ -78,6 +84,21 @@ function Window({ session }: WindowProps) {
         });
     };
   }, []);
+
+  const persist = session.persist;
+  useEffect(() => {
+    if (!persist) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      invoke('workspace_save', { json: serializeWorkspace(workspace) }).catch((error: unknown) => {
+        console.error('[app] save workspace', error);
+      });
+    }, SAVE_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [persist, workspace]);
 
   const getWorkspace = useCallback(() => workspaceRef.current, []);
   useIpcRequests(dispatch, getWorkspace);

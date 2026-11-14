@@ -6,6 +6,7 @@ mod local_files;
 mod menu;
 mod pty;
 mod startup;
+mod state;
 mod windows;
 
 use std::thread;
@@ -66,6 +67,7 @@ pub fn run() {
             pty::pty_kill,
             startup::startup,
             startup::debug_snapshot,
+            state::workspace_save,
             fs::fs_home,
             fs::fs_list,
             fs::fs_read_text,
