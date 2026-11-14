@@ -1,6 +1,7 @@
 mod agents;
 mod fs;
 mod graph;
+mod graph_write;
 mod ipc;
 mod links;
 mod local_files;
@@ -76,6 +77,10 @@ pub fn run() {
             fs::fs_write_text,
             graph::graph_read,
             graph::graph_fingerprint,
+            graph_write::graph_vault_root,
+            graph_write::graph_types,
+            graph_write::graph_create_node,
+            graph_write::graph_add_relation,
             agents::agent_run,
             agents::agent_cancel,
             ipc::ipc_reply,

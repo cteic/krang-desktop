@@ -12,6 +12,7 @@ mod paths;
 mod pending;
 mod protocol;
 mod socket;
+mod vault;
 
 use std::ffi::OsStr;
 use std::fs;
