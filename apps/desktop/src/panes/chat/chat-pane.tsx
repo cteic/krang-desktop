@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import type { ChatContent } from '../../workspace/model';
 import { useDebugSnapshot } from '../debug-snapshot';
+import { homeDirectory } from '../editor/fs-api';
 import type { PaneActions, PaneProps } from '../pane-props';
 
 import { ADAPTERS, AGENT_IDS, type AgentId, isAgentId, toAgentId } from './adapters';
@@ -29,6 +30,7 @@ import {
   transcriptReducer,
   transcriptText,
 } from './transcript';
+import { folderKey, isHomeDirectory, isTrustedFolder, needsHome, trustFolder } from './trust';
 
 const exitSchema = z.object({
   exitCode: z.number().nullable(),
@@ -130,6 +132,13 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
   const [agent, setAgent] = useState<AgentId>(() => toAgentId(content.agent));
   const [mode, setMode] = useState<ModeId>(content.mode ?? DEFAULT_MODE);
   const [draft, setDraft] = useState('');
+  /** The home directory, asked for only when the directory starts with `~/`. */
+  const [home, setHome] = useState<string | null>(null);
+  const [homeSettled, setHomeSettled] = useState(false);
+  /** The folder the person answered "Not now" for, so it is asked once. */
+  const [declinedFolder, setDeclinedFolder] = useState<string | null>(null);
+  /** Bumped when a folder is trusted, so the pane reads the list again. */
+  const [, setTrustVersion] = useState(0);
 
   const listRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -145,6 +154,15 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
 
   const running = transcript.status === 'running';
   const directory = content.directory;
+
+  // Trust comes only from the list the Trust button writes. The pane's
+  // content, which a layout file or a link can set, has no say in it.
+  const folder = folderKey(directory, home);
+  const trusted = isHomeDirectory(directory) || (folder !== null && isTrustedFolder(folder));
+  const needsTrust = ADAPTERS[agent].asksFolderTrust && !trusted;
+  const resolvingFolder = folder === null && needsHome(directory) && !homeSettled;
+  const askingTrust = needsTrust && folder !== null && declinedFolder !== folder;
+  const showUntrusted = needsTrust && !askingTrust && !resolvingFolder;
 
   useDebugSnapshot(name, debug, () => transcriptText(agent, mode, transcript));
 
@@ -170,7 +188,7 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
 
   function send() {
     const text = draft.trim();
-    if (text === '' || running) {
+    if (text === '' || running || askingTrust) {
       return;
     }
     // A run that reported an error may not have exited yet. Let it go.
@@ -212,7 +230,7 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
     invoke('agent_run', {
       id,
       agent,
-      args: adapter.buildArgs({ mode, directory, sessionId: transcript.sessionId }),
+      args: adapter.buildArgs({ mode, directory, sessionId: transcript.sessionId, trusted }),
       cwd: directory,
       prompt: text,
       onLine,
@@ -229,6 +247,18 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
     if (cancelRun()) {
       dispatch({ type: 'stop' });
     }
+  }
+
+  function onTrust() {
+    if (folder !== null && trustFolder(folder)) {
+      setTrustVersion((version) => version + 1);
+      composerRef.current?.focus();
+    }
+  }
+
+  function onNotNow() {
+    setDeclinedFolder(folder);
+    composerRef.current?.focus();
   }
 
   function onAgentChange(event: ChangeEvent<HTMLSelectElement>) {
@@ -270,6 +300,28 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
   const onOpenLink = useCallback((url: string) => {
     actionsRef.current.openPane({ type: 'web', url });
   }, []);
+
+  useEffect(() => {
+    if (!needsHome(directory)) {
+      return;
+    }
+    let current = true;
+    homeDirectory()
+      .then((path) => {
+        if (current) {
+          setHome(path);
+        }
+      })
+      .catch(report)
+      .finally(() => {
+        if (current) {
+          setHomeSettled(true);
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [directory]);
 
   // The agent changed from outside the pane, a layout file for example.
   useEffect(() => {
@@ -360,6 +412,33 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
         {running ? <div className="chat-working">Working…</div> : null}
       </div>
 
+      {askingTrust ? (
+        <div className="chat-trust" role="group" aria-label="Folder trust">
+          <p className="chat-trust-text">
+            Trust this folder? Its own agent settings, skills and hooks will apply.
+          </p>
+          <button type="button" className="chat-trust-yes" onClick={onTrust}>
+            Trust
+          </button>
+          <button type="button" className="chat-trust-no" onClick={onNotNow}>
+            Not now
+          </button>
+        </div>
+      ) : null}
+      {showUntrusted ? (
+        <div className="chat-trust" role="status">
+          <p className="chat-trust-text">
+            Folder not trusted. Its own agent settings, hooks, skills, instructions file (CLAUDE.md)
+            and tool servers are off, so a skill installed in this folder will not run.
+          </p>
+          {folder === null ? null : (
+            <button type="button" className="chat-trust-yes" onClick={onTrust}>
+              Trust folder
+            </button>
+          )}
+        </div>
+      ) : null}
+
       <div className="chat-composer">
         <textarea
           ref={composerRef}
@@ -378,7 +457,13 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
             Stop
           </button>
         ) : (
-          <button type="button" className="chat-send" disabled={draft.trim() === ''} onClick={send}>
+          <button
+            type="button"
+            className="chat-send"
+            disabled={draft.trim() === '' || askingTrust}
+            title={askingTrust ? 'Answer the question above first' : undefined}
+            onClick={send}
+          >
             Send
           </button>
         )}

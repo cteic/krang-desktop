@@ -7,4 +7,9 @@ export interface RunRequest {
   directory: string | null;
   /** The agent's id for the conversation so far. Null for a first message. */
   sessionId: string | null;
+  /**
+   * Whether the person has trusted the directory. Until they have, the
+   * directory's own agent settings must not load.
+   */
+  trusted: boolean;
 }

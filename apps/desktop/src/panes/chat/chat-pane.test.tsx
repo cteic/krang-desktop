@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import type { ChatContent } from '../../workspace/model';
+import { parseLayout } from '../../layout/layout';
+import { type ChatContent, leavesOf } from '../../workspace/model';
 import type { PaneActions } from '../pane-props';
 
 import { ChatPane } from './chat-pane';
@@ -37,7 +38,17 @@ const CLAUDE_FIRST_ARGS = [
   '--include-partial-messages',
   '--permission-mode',
   'plan',
+  '--disallowedTools',
+  'Read(.obsidian/**)',
+  'Read(**/.obsidian/**)',
 ];
+
+const TRUST_KEY = 'chat.trusted-folders';
+const UNTRUSTED: ChatContent = { type: 'chat', agent: null, directory: '/work/download' };
+
+function trustQuestion(): HTMLElement | null {
+  return screen.queryByRole('group', { name: 'Folder trust' });
+}
 
 function commandCalls(command: string): unknown[] {
   return tauri.invoke.mock.calls.flatMap((call: unknown[]) =>
@@ -96,7 +107,7 @@ interface Options {
 }
 
 function renderPane({
-  content = { type: 'chat', agent: null, directory: '~/src/demo' },
+  content = { type: 'chat', agent: null, directory: '/work/demo' },
   active = true,
   debug = false,
   actions = makeActions(),
@@ -142,6 +153,8 @@ function texts(selector: string): string[] {
 beforeEach(() => {
   tauri.invoke.mockReset();
   tauri.invoke.mockResolvedValue(undefined);
+  window.localStorage.clear();
+  window.localStorage.setItem(TRUST_KEY, JSON.stringify(['/work/demo', '/work/v']));
 });
 
 afterEach(() => {
@@ -157,7 +170,7 @@ describe('ChatPane', () => {
     const run = lastRun();
     expect(run.agent).toBe('claude');
     expect(run.args).toEqual(CLAUDE_FIRST_ARGS);
-    expect(run.cwd).toBe('~/src/demo');
+    expect(run.cwd).toBe('/work/demo');
     expect(run.prompt).toBe('What is in this repo?');
     expect(run.args).not.toContain('What is in this repo?');
     expect(run.id).not.toBe('');
@@ -235,7 +248,12 @@ describe('ChatPane', () => {
   });
 
   it('starts in the mode its content names, and follows a change from outside', () => {
-    const content: ChatContent = { type: 'chat', agent: 'claude', directory: '~/v', mode: 'edit' };
+    const content: ChatContent = {
+      type: 'chat',
+      agent: 'claude',
+      directory: '/work/v',
+      mode: 'edit',
+    };
     const { rerender } = renderPane({ content });
     expect(screen.getByLabelText('Mode')).toHaveProperty('value', 'edit');
     sendMessage('add a claim');
@@ -252,20 +270,20 @@ describe('ChatPane', () => {
     expect(actions.replaceContent).toHaveBeenCalledWith({
       type: 'chat',
       agent: null,
-      directory: '~/src/demo',
+      directory: '/work/demo',
       mode: 'edit',
     });
   });
 
   it('keeps the mode when the agent changes', () => {
     const { actions } = renderPane({
-      content: { type: 'chat', agent: 'claude', directory: '~/v', mode: 'edit' },
+      content: { type: 'chat', agent: 'claude', directory: '/work/v', mode: 'edit' },
     });
     fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'codex' } });
     expect(actions.replaceContent).toHaveBeenCalledWith({
       type: 'chat',
       agent: 'codex',
-      directory: '~/v',
+      directory: '/work/v',
       mode: 'edit',
     });
   });
@@ -362,7 +380,7 @@ describe('ChatPane', () => {
     expect(actions.replaceContent).toHaveBeenCalledWith({
       type: 'chat',
       agent: 'codex',
-      directory: '~/src/demo',
+      directory: '/work/demo',
     });
     expect(texts('.chat-user')).toEqual([]);
     expect(texts('.chat-assistant')).toEqual([]);
@@ -374,13 +392,15 @@ describe('ChatPane', () => {
       'exec',
       '--json',
       '--skip-git-repo-check',
+      '-C',
+      '/work/demo',
       '-s',
       'read-only',
       '-',
     ]);
 
     // The workspace echoes the change back. The chat in progress survives it.
-    rerender({ content: { type: 'chat', agent: 'codex', directory: '~/src/demo' } });
+    rerender({ content: { type: 'chat', agent: 'codex', directory: '/work/demo' } });
     expect(texts('.chat-user')).toEqual(['to codex']);
     expect(commandCalls('agent_cancel')).toEqual([]);
     expect(actions.replaceContent).toHaveBeenCalledTimes(1);
@@ -449,7 +469,7 @@ describe('ChatPane', () => {
     const first = lastRun();
     feed(first, delta('Hello'));
 
-    rerender({ content: { type: 'chat', agent: 'codex', directory: '~/src/demo' } });
+    rerender({ content: { type: 'chat', agent: 'codex', directory: '/work/demo' } });
 
     expect(commandCalls('agent_cancel')).toEqual([{ id: first.id }]);
     expect(texts('.chat-user')).toEqual([]);
@@ -574,5 +594,160 @@ describe('ChatPane', () => {
 
     expect(document.querySelector('.chat-assistant img')).toBeNull();
     expect(screen.getByText('image: chart')).toBeTruthy();
+  });
+});
+
+describe('ChatPane folder trust', () => {
+  it('asks before the first run in a folder that is not trusted, and holds the message', () => {
+    renderPane({ content: UNTRUSTED });
+    expect(trustQuestion()?.textContent).toContain(
+      'Trust this folder? Its own agent settings, skills and hooks will apply.',
+    );
+
+    type('hello');
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveProperty('disabled', true);
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    expect(runs()).toHaveLength(0);
+    expect(composer()).toHaveProperty('value', 'hello');
+  });
+
+  it('keeps the folder settings out after "Not now", says what is off, and asks once', () => {
+    renderPane({ content: UNTRUSTED });
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    expect(trustQuestion()).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain(
+      'Its own agent settings, hooks, skills, instructions file (CLAUDE.md) and tool servers are off',
+    );
+
+    sendMessage('first');
+    const first = lastRun();
+    expect(first.args).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--permission-mode',
+      'plan',
+      '--setting-sources',
+      'user',
+      '--disallowedTools',
+      'Read(.obsidian/**)',
+      'Read(**/.obsidian/**)',
+    ]);
+    feed(first, { type: 'system', subtype: 'init', session_id: 's-1' });
+    exit(first);
+
+    sendMessage('second');
+    expect(trustQuestion()).toBeNull();
+    expect(lastRun().args.slice(7, 9)).toEqual(['--setting-sources', 'user']);
+    expect(window.localStorage.getItem(TRUST_KEY)).not.toContain('/work/download');
+  });
+
+  it('loads the folder settings after "Trust", and remembers the folder', () => {
+    renderPane({ content: UNTRUSTED });
+    fireEvent.click(screen.getByRole('button', { name: 'Trust' }));
+    expect(trustQuestion()).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+
+    sendMessage('hello');
+    expect(lastRun().args).toEqual(CLAUDE_FIRST_ARGS);
+    expect(window.localStorage.getItem(TRUST_KEY)).toContain('/work/download');
+
+    // A new pane on the same folder, as after a restart, does not ask again.
+    cleanup();
+    renderPane({ content: UNTRUSTED });
+    expect(trustQuestion()).toBeNull();
+    sendMessage('again');
+    expect(lastRun().args).not.toContain('--setting-sources');
+  });
+
+  it('can be trusted later from the notice', () => {
+    renderPane({ content: UNTRUSTED });
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Trust folder' }));
+    expect(screen.queryByRole('status')).toBeNull();
+    sendMessage('hello');
+    expect(lastRun().args).not.toContain('--setting-sources');
+  });
+
+  it('trusts one folder at a time: a folder below or beside it still asks', () => {
+    renderPane({ content: { type: 'chat', agent: null, directory: '/work/demo/inner' } });
+    expect(trustQuestion()).not.toBeNull();
+    cleanup();
+    renderPane({ content: { type: 'chat', agent: null, directory: '/work/demo/../download' } });
+    expect(trustQuestion()).not.toBeNull();
+  });
+
+  it('gives a layout file no way to mark a folder trusted', () => {
+    const tab = parseLayout(`
+name = "t"
+
+[[panes]]
+id = "c"
+type = "chat"
+directory = "/work/download"
+mode = "edit"
+trusted = true
+trust = "yes"
+`);
+    const content = leavesOf(tab.root)[0]?.content;
+    if (content?.type !== 'chat') {
+      throw new Error('the layout did not give a chat pane');
+    }
+    expect(Object.keys(content).sort()).toEqual(['agent', 'directory', 'mode', 'type']);
+
+    renderPane({ content });
+    expect(trustQuestion()).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    sendMessage('hello');
+    expect(lastRun().args).toContain('--setting-sources');
+    expect(window.localStorage.getItem(TRUST_KEY)).not.toContain('/work/download');
+  });
+
+  it('ignores a trust field smuggled into the pane content', () => {
+    const smuggled = { ...UNTRUSTED, trusted: true, trust: 'trusted' };
+    renderPane({ content: smuggled });
+    expect(trustQuestion()).not.toBeNull();
+  });
+
+  it("does not ask for the home directory, whose settings are the person's own", () => {
+    renderPane({ content: { type: 'chat', agent: null, directory: null } });
+    expect(trustQuestion()).toBeNull();
+    sendMessage('hello');
+    expect(lastRun().args).toEqual(CLAUDE_FIRST_ARGS);
+  });
+
+  it('remembers a folder under home by its absolute path', async () => {
+    tauri.invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === 'fs_home' ? '/Users/tester' : undefined),
+    );
+    renderPane({ content: { type: 'chat', agent: null, directory: '~/vault' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Trust' }));
+    expect(window.localStorage.getItem(TRUST_KEY)).toContain('/Users/tester/vault');
+    sendMessage('hello');
+    expect(lastRun().args).not.toContain('--setting-sources');
+  });
+
+  it('runs untrusted, with no way to trust, when the folder cannot be made absolute', async () => {
+    tauri.invoke.mockImplementation((command: string) =>
+      command === 'fs_home' ? Promise.reject(new Error('no home')) : Promise.resolve(undefined),
+    );
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    renderPane({ content: { type: 'chat', agent: null, directory: '~/vault' } });
+    await screen.findByRole('status');
+    expect(trustQuestion()).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Trust folder' })).toBeNull();
+    sendMessage('hello');
+    expect(lastRun().args).toContain('--setting-sources');
+    logged.mockRestore();
+  });
+
+  it('does not ask for Codex, which keeps its own record of trusted projects', () => {
+    renderPane({ content: { ...UNTRUSTED, agent: 'codex' } });
+    expect(trustQuestion()).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    sendMessage('hello');
+    expect(lastRun().args.some((arg) => arg.includes('bypass'))).toBe(false);
   });
 });
