@@ -15,6 +15,13 @@ Usage:
   kd panes                                     print this window's tabs and panes as JSON
   kd <command> --help                          show help for one command
 
+Discourse graph files. These work in any terminal, without the app running:
+  kd node <type> <text...> [--body <text>]     create a node note and print its path
+  kd relate <source> <relation> <destination>  link two nodes
+  kd types [--json]                            list node types, relation types and allowed relations
+  kd nodes [--type <type>] [--json]            list the nodes that exist
+  kd skill install | path                      put the discourse-graph skill in a vault
+
 The app binary accepts the same commands after `ctl`.";
 
 const VIEW_USAGE: &str = "\
@@ -81,6 +88,62 @@ Usage: kd panes
 
 Prints this window's tabs and panes as JSON.";
 
+const NODE_USAGE: &str = "\
+Usage: kd node <type> <text...> [--vault <dir>] [--body <text>] [--body-file <path|->]
+
+Creates a node note in a Discourse Graphs vault and prints its path. <type>
+is a node type's name, prefix, tag or id: `claim`, `CLM` or `clm-candidate`.
+The text becomes the note's title, in the type's naming pattern. `kd types`
+lists the types. A note that already has the title is never replaced.
+
+  --vault <dir>        the vault. Without it, the nearest directory above the
+                       current one that holds `.obsidian`
+  --body <text>        the note's text below its frontmatter
+  --body-file <path>   read the note's text from a file, or from stdin with -";
+
+const RELATE_USAGE: &str = "\
+Usage: kd relate <source> <relation> <destination> [--vault <dir>] [--force]
+
+Adds a relation between two node notes to the vault's relations.json.
+<source> and <destination> each name a note: a path, or the note's title
+with or without `.md`. <relation> is a relation type's label or id, such as
+`supports`. `kd types` lists the relations the vault allows.
+
+  --vault <dir>   the vault. Without it, the nearest directory above the
+                  current one that holds `.obsidian`
+  --force         add a relation the vault's settings do not allow";
+
+const TYPES_USAGE: &str = "\
+Usage: kd types [--vault <dir>] [--json]
+
+Lists a vault's node types, its relation types, and the relations it allows
+between node types, in words.
+
+  --vault <dir>   the vault. Without it, the nearest directory above the
+                  current one that holds `.obsidian`
+  --json          print JSON";
+
+const NODES_USAGE: &str = "\
+Usage: kd nodes [--vault <dir>] [--type <type>] [--json]
+
+Lists the titles of the node notes in a vault, one per line.
+
+  --vault <dir>   the vault. Without it, the nearest directory above the
+                  current one that holds `.obsidian`
+  --type <type>   only nodes of this type: a name, prefix, tag or id
+  --json          print JSON, with each node's id, type and path";
+
+const SKILL_USAGE: &str = "\
+Usage: kd skill install [--vault <dir>] [--force]
+       kd skill path [--vault <dir>]
+
+`install` copies the discourse-graph skill for Claude Code into the vault, at
+.claude/skills/discourse-graph/SKILL.md. `path` prints where that is.
+
+  --vault <dir>   the vault. Without it, the nearest directory above the
+                  current one that holds `.obsidian`
+  --force         replace a skill file that differs from the shipped one";
+
 const AGENTS: [&str; 2] = ["claude", "codex"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +182,49 @@ pub enum Command {
     Badge(Option<BadgeArgs>),
     Layout(String),
     Panes,
+    /// Work on a vault's files, which needs no running app.
+    Vault(VaultCommand),
+}
+
+/// Where the text of a new note comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Body {
+    Text(String),
+    /// A file's path, or `-` for standard input.
+    File(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VaultAction {
+    Node {
+        type_name: String,
+        text: String,
+        body: Option<Body>,
+    },
+    Relate {
+        source: String,
+        relation: String,
+        destination: String,
+        force: bool,
+    },
+    Types {
+        json: bool,
+    },
+    Nodes {
+        type_name: Option<String>,
+        json: bool,
+    },
+    SkillInstall {
+        force: bool,
+    },
+    SkillPath,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VaultCommand {
+    /// The `--vault` option, as typed.
+    pub vault: Option<String>,
+    pub action: VaultAction,
 }
 
 /// A command line the tool cannot act on. It exits 2 after printing both.
@@ -139,6 +245,11 @@ fn usage_for(name: &str) -> Option<&'static str> {
         "badge" => Some(BADGE_USAGE),
         "layout" => Some(LAYOUT_USAGE),
         "panes" => Some(PANES_USAGE),
+        "node" => Some(NODE_USAGE),
+        "relate" => Some(RELATE_USAGE),
+        "types" => Some(TYPES_USAGE),
+        "nodes" => Some(NODES_USAGE),
+        "skill" => Some(SKILL_USAGE),
         _ => None,
     }
 }
@@ -410,6 +521,126 @@ fn parse_panes(args: &[String]) -> Result<Command, UsageError> {
     }
 }
 
+fn vault_command(scanned: &Scanned, action: VaultAction) -> Command {
+    Command::Vault(VaultCommand {
+        vault: scanned.value("--vault").map(str::to_string),
+        action,
+    })
+}
+
+fn parse_node(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: NODE_USAGE,
+        switches: &[],
+        valued: &["--vault", "--body", "--body-file"],
+    };
+    let scanned = spec.scan(args)?;
+    let words = scanned.words();
+    let Some((type_name, text)) = words.split_first() else {
+        return Err(spec.error("missing node type"));
+    };
+    let text = spec
+        .text(text)
+        .ok_or_else(|| spec.error("missing node text"))?;
+    let body = match (scanned.value("--body"), scanned.value("--body-file")) {
+        (Some(_), Some(_)) => return Err(spec.error("--body and --body-file cannot both be given")),
+        (Some(text), None) => Some(Body::Text(text.to_string())),
+        (None, Some(path)) => Some(Body::File(path.to_string())),
+        (None, None) => None,
+    };
+    Ok(vault_command(
+        &scanned,
+        VaultAction::Node {
+            type_name: type_name.clone(),
+            text,
+            body,
+        },
+    ))
+}
+
+fn parse_relate(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: RELATE_USAGE,
+        switches: &["--force"],
+        valued: &["--vault"],
+    };
+    let scanned = spec.scan(args)?;
+    let words = scanned.words();
+    let [source, relation, destination] = words.as_slice() else {
+        return Err(spec.error(format!(
+            "expected a source, a relation and a destination, and got {} arguments \
+             (quote a title that has spaces in it)",
+            words.len()
+        )));
+    };
+    Ok(vault_command(
+        &scanned,
+        VaultAction::Relate {
+            source: source.clone(),
+            relation: relation.clone(),
+            destination: destination.clone(),
+            force: scanned.has("--force"),
+        },
+    ))
+}
+
+fn parse_types(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: TYPES_USAGE,
+        switches: &["--json"],
+        valued: &["--vault"],
+    };
+    let scanned = spec.scan(args)?;
+    match scanned.words().first() {
+        Some(extra) => Err(spec.error(format!("unexpected argument {extra}"))),
+        None => Ok(vault_command(
+            &scanned,
+            VaultAction::Types {
+                json: scanned.has("--json"),
+            },
+        )),
+    }
+}
+
+fn parse_nodes(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: NODES_USAGE,
+        switches: &["--json"],
+        valued: &["--vault", "--type"],
+    };
+    let scanned = spec.scan(args)?;
+    match scanned.words().first() {
+        Some(extra) => Err(spec.error(format!("unexpected argument {extra}"))),
+        None => Ok(vault_command(
+            &scanned,
+            VaultAction::Nodes {
+                type_name: scanned.value("--type").map(str::to_string),
+                json: scanned.has("--json"),
+            },
+        )),
+    }
+}
+
+fn parse_skill(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: SKILL_USAGE,
+        switches: &["--force"],
+        valued: &["--vault"],
+    };
+    let scanned = spec.scan(args)?;
+    let force = scanned.has("--force");
+    let action = match spec
+        .exactly_one(scanned.words(), "install or path")?
+        .as_str()
+    {
+        "install" => VaultAction::SkillInstall { force },
+        "path" if force => return Err(spec.error("--force goes with install")),
+        "path" => VaultAction::SkillPath,
+        other => return Err(spec.error(format!("unknown skill command {other}"))),
+    };
+    Ok(vault_command(&scanned, action))
+}
+
 /// Reads the arguments that follow the tool's own name.
 pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
     let general = |message: String| UsageError {
@@ -451,6 +682,11 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         "badge" => parse_badge(rest),
         "layout" => parse_layout(rest),
         "panes" => parse_panes(rest),
+        "node" => parse_node(rest),
+        "relate" => parse_relate(rest),
+        "types" => parse_types(rest),
+        "nodes" => parse_nodes(rest),
+        "skill" => parse_skill(rest),
         _ => Err(general(format!("unknown command {name}"))),
     }
 }
@@ -750,5 +986,107 @@ mod tests {
             parse(&["title", "-"]),
             Ok(Command::Title(Some(String::from("-"))))
         );
+    }
+
+    fn vault(line: &[&str]) -> VaultCommand {
+        match parse(line) {
+            Ok(Command::Vault(command)) => command,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn node_takes_a_type_then_free_text() {
+        assert_eq!(
+            vault(&["node", "claim", "Birds", "fly", "--vault", "lab", "--body", "Seen."]),
+            VaultCommand {
+                vault: Some(String::from("lab")),
+                action: VaultAction::Node {
+                    type_name: String::from("claim"),
+                    text: String::from("Birds fly"),
+                    body: Some(Body::Text(String::from("Seen."))),
+                },
+            }
+        );
+        assert_eq!(
+            vault(&["node", "CLM", "--body-file", "-", "--", "--odd title"]).action,
+            VaultAction::Node {
+                type_name: String::from("CLM"),
+                text: String::from("--odd title"),
+                body: Some(Body::File(String::from("-"))),
+            }
+        );
+        assert_eq!(message(&["node"]), "missing node type");
+        assert_eq!(message(&["node", "claim"]), "missing node text");
+        assert_eq!(
+            message(&["node", "claim", "x", "--body", "a", "--body-file", "b"]),
+            "--body and --body-file cannot both be given"
+        );
+    }
+
+    #[test]
+    fn relate_takes_exactly_three_words() {
+        assert_eq!(
+            vault(&["relate", "EVD - a", "supports", "CLM - b", "--force"]),
+            VaultCommand {
+                vault: None,
+                action: VaultAction::Relate {
+                    source: String::from("EVD - a"),
+                    relation: String::from("supports"),
+                    destination: String::from("CLM - b"),
+                    force: true,
+                },
+            }
+        );
+        let error = message(&["relate", "EVD", "-", "a", "supports", "b"]);
+        assert!(error.contains("got 5 arguments"), "{error}");
+        assert!(error.contains("quote a title"), "{error}");
+    }
+
+    #[test]
+    fn types_nodes_and_skill_take_options_only() {
+        assert_eq!(
+            vault(&["types", "--json"]).action,
+            VaultAction::Types { json: true }
+        );
+        assert_eq!(
+            vault(&["nodes", "--type=claim", "--vault", "/v"]),
+            VaultCommand {
+                vault: Some(String::from("/v")),
+                action: VaultAction::Nodes {
+                    type_name: Some(String::from("claim")),
+                    json: false,
+                },
+            }
+        );
+        assert_eq!(message(&["types", "extra"]), "unexpected argument extra");
+        assert_eq!(message(&["nodes", "extra"]), "unexpected argument extra");
+        assert_eq!(
+            vault(&["skill", "install", "--force"]).action,
+            VaultAction::SkillInstall { force: true }
+        );
+        assert_eq!(vault(&["skill", "path"]).action, VaultAction::SkillPath);
+        assert_eq!(message(&["skill"]), "missing install or path");
+        assert_eq!(
+            message(&["skill", "remove"]),
+            "unknown skill command remove"
+        );
+        assert_eq!(
+            message(&["skill", "path", "--force"]),
+            "--force goes with install"
+        );
+    }
+
+    #[test]
+    fn every_vault_command_has_its_own_help() {
+        for name in ["node", "relate", "types", "nodes", "skill"] {
+            let Ok(Command::Help(text)) = parse(&[name, "--help"]) else {
+                panic!("{name} --help");
+            };
+            assert!(text.starts_with(&format!("Usage: kd {name}")), "{text}");
+            assert!(text.contains("--vault <dir>"), "{text}");
+            assert_eq!(parse(&["help", name]), Ok(Command::Help(text)));
+            assert!(USAGE.contains(&format!("  kd {name} ")), "{name}");
+        }
     }
 }

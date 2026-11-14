@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use super::args::{self, parse_args};
 use super::protocol::{Badge, Command, Direction, LayoutTarget, PathKind, Request, WebTarget};
 use super::socket;
+use super::vault;
 
 pub const SOCKET_ENV: &str = "DESKTOP_SOCKET";
 pub const CLI_ENV: &str = "DESKTOP_CLI";
@@ -169,6 +170,7 @@ fn to_wire(command: args::Command, cwd: &Path) -> Result<Command, String> {
             Ok(Command::Layout { target })
         }
         args::Command::Panes => Ok(Command::Panes),
+        args::Command::Vault(_) => Err(String::from("vault commands are not sent to the app")),
     }
 }
 
@@ -216,6 +218,19 @@ pub fn run(args: &[String]) -> i32 {
         Ok(args::Command::Help(text)) => {
             println!("{text}");
             0
+        }
+        Ok(args::Command::Vault(command)) => {
+            let cwd = std::env::current_dir().ok();
+            match vault::run(&command, cwd.as_deref(), &mut std::io::stdin().lock()) {
+                Ok(output) => {
+                    println!("{output}");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    1
+                }
+            }
         }
         Ok(command) => match execute(command, &Caller::from_process()) {
             Ok(Some(output)) => {
