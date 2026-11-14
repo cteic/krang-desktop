@@ -5,6 +5,7 @@ mod links;
 mod local_files;
 mod menu;
 mod pty;
+mod shell_env;
 mod startup;
 mod state;
 mod windows;

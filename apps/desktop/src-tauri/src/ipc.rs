@@ -260,8 +260,32 @@ pub fn pane_env() -> Vec<(String, String)> {
             String::from("PATH"),
             paths::pane_path(&tool.dir, inherited.as_deref()),
         ));
+        env.extend(zsh_wrapper_env(tool));
     }
     env
+}
+
+/// For zsh, the settings that keep the tool on PATH whatever the person's
+/// startup files do to it. Other shells get the plain PATH entry only.
+fn zsh_wrapper_env(tool: &Tool) -> Vec<(String, String)> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/zsh"));
+    if !crate::shell_env::is_zsh(&shell) {
+        return Vec::new();
+    }
+    let Some(base) = tool.dir.parent() else {
+        return Vec::new();
+    };
+    let zsh_dir = base.join("zsh");
+    if let Err(error) = crate::shell_env::write_zsh_dir(&zsh_dir) {
+        eprintln!("could not write the zsh startup files: {error}");
+        return Vec::new();
+    }
+    crate::shell_env::zsh_env(
+        &zsh_dir,
+        &tool.dir,
+        std::env::var("ZDOTDIR").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
 }
 
 /// The tool's own arguments, when the command line asks for the tool: the
