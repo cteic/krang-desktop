@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -26,7 +27,19 @@ const EXTRA_BIN_DIRS: [&str; 4] = [
 
 struct Run {
     window: String,
-    child: Arc<Mutex<Child>>,
+    /// The agent leads a process group of its own, so its id names the
+    /// whole group: the agent and everything it started.
+    group: i32,
+}
+
+/// Stops an agent and everything it started, such as a test run or a tool
+/// server. Killing only the agent would leave those running.
+fn stop_group(group: i32) {
+    // SAFETY: `killpg` takes plain integers and touches no memory of ours.
+    // The group id came from a child this process spawned as a group leader.
+    unsafe {
+        libc::killpg(group, libc::SIGTERM);
+    }
 }
 
 type Runs = Arc<Mutex<HashMap<String, Run>>>;
@@ -49,9 +62,7 @@ impl AgentState {
             .collect();
         for id in ids {
             if let Some(run) = runs.remove(&id) {
-                if let Ok(mut child) = run.child.lock() {
-                    let _ = child.kill();
-                }
+                stop_group(run.group);
             }
         }
     }
@@ -142,7 +153,8 @@ pub fn agent_run(
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
     match cwd {
         Some(dir) => {
             command.current_dir(expand_home(&dir, home.as_deref()));
@@ -160,7 +172,7 @@ pub fn agent_run(
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let child = Arc::new(Mutex::new(child));
+    let group = i32::try_from(child.id()).map_err(|_| String::from("process id out of range"))?;
 
     {
         let mut runs = state
@@ -171,7 +183,7 @@ pub fn agent_run(
             id.clone(),
             Run {
                 window: window.label().to_string(),
-                child: Arc::clone(&child),
+                group,
             },
         );
     }
@@ -204,11 +216,7 @@ pub fn agent_run(
             }
         }
         let stderr = stderr_reader.join().unwrap_or_default();
-        let exit_code = child
-            .lock()
-            .ok()
-            .and_then(|mut child| child.wait().ok())
-            .and_then(|status| status.code());
+        let exit_code = child.wait().ok().and_then(|status| status.code());
         if let Ok(mut runs) = runs.lock() {
             runs.remove(&id);
         }
@@ -219,7 +227,7 @@ pub fn agent_run(
 }
 
 /// Stops a run. An unknown id is not an error: the run may have finished.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_cancel(state: State<'_, AgentState>, id: String) -> Result<(), String> {
     let run = state
         .runs
@@ -227,9 +235,7 @@ pub fn agent_cancel(state: State<'_, AgentState>, id: String) -> Result<(), Stri
         .map_err(|_| String::from("run table is poisoned"))?
         .remove(&id);
     if let Some(run) = run {
-        if let Ok(mut child) = run.child.lock() {
-            child.kill().map_err(|error| format!("stop: {error}"))?;
-        }
+        stop_group(run.group);
     }
     Ok(())
 }
@@ -237,6 +243,27 @@ pub fn agent_cancel(state: State<'_, AgentState>, id: String) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_a_group_ends_the_child_and_what_it_started() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30 & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = i32::try_from(child.id()).unwrap();
+        // Give the shell a moment to start its background job.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        stop_group(group);
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        // SAFETY: signal 0 only asks whether the group still has members.
+        let alive = unsafe { libc::killpg(group, 0) } == 0;
+        assert!(!alive, "a process in the group outlived the stop");
+    }
 
     #[test]
     fn only_listed_agents_are_allowed() {
