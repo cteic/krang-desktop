@@ -6,7 +6,7 @@
 //! the moment of writing. They hold node types, relation types and allowed
 //! relations, and nothing about an account.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::graph_write;
+use crate::vault_guard;
 
 const SETTINGS_PATH: &str = ".obsidian/plugins/discourse-graphs/data.json";
 const NODES_FOLDER: &str = "Discourse Graph";
@@ -223,14 +224,16 @@ fn is_empty(dir: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Writes a file that must not exist yet. `Ok(false)` means a file of that
-/// name was already there and was left alone.
-fn write_new(path: &Path, text: &str) -> Result<bool, String> {
+/// Writes a file that must not exist yet, at a path inside the vault at
+/// `root`. `Ok(false)` means a file of that name was already there and was
+/// left alone. Nothing is written through a link.
+fn write_new(root: &Path, path: &Path, text: &str) -> Result<bool, String> {
     let failed = |error: io::Error| format!("could not write {}: {error}", path.display());
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(failed)?;
+    let real = vault_guard::file_inside(root, path)?;
+    if let Some(dir) = real.parent() {
+        vault_guard::create_dir_inside(root, dir)?;
     }
-    match OpenOptions::new().write(true).create_new(true).open(path) {
+    match vault_guard::create_new(&real) {
         Ok(mut file) => {
             file.write_all(text.as_bytes()).map_err(failed)?;
             Ok(true)
@@ -289,21 +292,32 @@ pub fn init(dir: &Path, example: bool, force: bool) -> Result<String, String> {
     if fs::symlink_metadata(&settings).is_ok() {
         return Err(settings_exist(&settings));
     }
-    let mut random =
-        File::open(RANDOM_SOURCE).map_err(|error| format!("{RANDOM_SOURCE}: {error}"))?;
-    let text = settings_text(now_ms(), &mut random)?;
-    if !write_new(&settings, &text)? {
-        return Err(settings_exist(&settings));
-    }
-
-    let mut lines = vec![report(true, &settings)];
     let mut notes = vec![(START_NOTE, START_TEXT)];
     if example {
         notes.push((EXAMPLE_NOTE, EXAMPLE_TEXT));
     }
+    // The directory may hold links when `--force` adds to what is there.
+    // Every file is checked before the first is written, so a refusal
+    // leaves nothing behind but the directory.
+    fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let root = fs::canonicalize(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    vault_guard::file_inside(&root, &root.join(SETTINGS_PATH))?;
+    for (name, _) in &notes {
+        vault_guard::file_inside(&root, &root.join(name))?;
+    }
+    vault_guard::file_inside(&root, &graph_write::skill_destination(&root))?;
+
+    let mut random =
+        File::open(RANDOM_SOURCE).map_err(|error| format!("{RANDOM_SOURCE}: {error}"))?;
+    let text = settings_text(now_ms(), &mut random)?;
+    if !write_new(&root, &root.join(SETTINGS_PATH), &text)? {
+        return Err(settings_exist(&settings));
+    }
+
+    let mut lines = vec![report(true, &settings)];
     for (name, text) in notes {
-        let path = dir.join(name);
-        lines.push(report(write_new(&path, text)?, &path));
+        let written = write_new(&root, &root.join(name), text)?;
+        lines.push(report(written, &dir.join(name)));
     }
     let skill = graph_write::skill_destination(dir);
     if skill.exists() {
@@ -617,6 +631,56 @@ mod tests {
             .unwrap_err()
             .ends_with("is not a directory"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_forced_init_writes_nothing_through_a_link() {
+        let base = fs::canonicalize(temp_dir("init-link")).unwrap();
+        let (dir, far) = (base.join("vault"), base.join("far"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&far).unwrap();
+        let names = |dir: &Path| {
+            let mut names: Vec<String> = fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        // A linked settings folder or skill folder that leaves the vault.
+        for name in [".obsidian", ".claude"] {
+            std::os::unix::fs::symlink(&far, dir.join(name)).unwrap();
+            let error = init(&dir, true, true).unwrap_err();
+            assert!(error.contains("outside the vault"), "{name}: {error}");
+            assert_eq!(names(&far), Vec::<String>::new(), "{name}");
+            assert_eq!(names(&dir), [name], "{name}");
+            fs::remove_file(dir.join(name)).unwrap();
+        }
+
+        // A note that is a link is refused before anything is written.
+        fs::write(far.join("theirs.md"), "theirs").unwrap();
+        std::os::unix::fs::symlink(far.join("theirs.md"), dir.join(START_NOTE)).unwrap();
+        let error = init(&dir, true, true).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert_eq!(fs::read_to_string(far.join("theirs.md")).unwrap(), "theirs");
+        assert_eq!(names(&dir), [START_NOTE]);
+
+        // The vault's own directory may be reached through a link.
+        fs::remove_file(dir.join(START_NOTE)).unwrap();
+        std::os::unix::fs::symlink(&dir, base.join("alias")).unwrap();
+        let printed = init(&base.join("alias"), false, true).unwrap();
+        assert!(
+            printed.starts_with(&format!(
+                "created {}",
+                base.join("alias").join(SETTINGS_PATH).display()
+            )),
+            "{printed}"
+        );
+        assert!(dir.join(SETTINGS_PATH).is_file());
+        assert!(dir.join(START_NOTE).is_file());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
