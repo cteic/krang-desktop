@@ -1,0 +1,45 @@
+# Lab board: a saved canvas from a Discourse Graphs vault, beside a project
+# note and the daily notes.
+#
+# Change the vault path below to your own vault. It appears in three places.
+# Then copy this file and lab.toml to the app's layouts folder (see the
+# README) and open both as tabs of one window:
+#
+#   open "krang-desktop://layout/lab+board"
+name = "board"
+title = "Lab board"
+color = "blue"
+
+# The canvas takes about two thirds of the width.
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["canvas", "side"]
+sizes = [2, 1]
+
+[[panes]]
+id = "side"
+split = "horizontal"
+children = ["project", "daily"]
+sizes = [3, 2]
+
+[[panes]]
+id = "canvas"
+type = "graph"
+title = "Matthew effect"
+directory = "~/src/obsidian-lab-example"
+view = "Canvas - QUE - Matthew Effect"
+is_focused = true
+
+[[panes]]
+id = "project"
+type = "editor"
+title = "Project: songbird cargo capacity"
+path = "~/src/obsidian-lab-example/Projects/PRJ - Passarine Songbird Cargo Capacity.md"
+mode = "preview"
+
+[[panes]]
+id = "daily"
+type = "files"
+title = "Daily notes"
+directory = "~/src/obsidian-lab-example/Daily Notes"

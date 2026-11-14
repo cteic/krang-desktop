@@ -10,6 +10,21 @@ export function equalShares(count: number): number[] {
 }
 
 /**
+ * Turns relative sizes, such as `[1, 2]`, into shares that sum to 1. Null
+ * when a size is not a positive, finite number, or when there are none.
+ */
+export function sharesFromSizes(sizes: readonly number[]): number[] | null {
+  if (sizes.length === 0 || sizes.some((size) => !Number.isFinite(size) || size <= 0)) {
+    return null;
+  }
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  if (!Number.isFinite(total)) {
+    return null;
+  }
+  return sizes.map((size) => size / total);
+}
+
+/**
  * Moves the divider after child `index` by `delta`, a fraction of the whole
  * split. Only the two children beside the divider change, and neither drops
  * below `MIN_SHARE`. A divider that does not exist changes nothing.

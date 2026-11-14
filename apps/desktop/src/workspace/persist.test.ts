@@ -180,3 +180,34 @@ describe('serializeWorkspace and parseWorkspace', () => {
     expect(JSON.stringify(contents)).not.toContain('curl evil');
   });
 });
+
+describe('an editor pane mode', () => {
+  function withEditor(mode: unknown): string {
+    const start = createWorkspace(defaultDraft());
+    const paneId = activeTab(start)?.focusedId ?? '';
+    const saved: unknown = JSON.parse(
+      serializeWorkspace(
+        workspaceReducer(start, {
+          type: 'replace-content',
+          paneId,
+          content: { type: 'editor', path: '/a.md', mode: 'preview' },
+        }),
+      ),
+    );
+    return JSON.stringify(saved).replace('"mode":"preview"', `"mode":${JSON.stringify(mode)}`);
+  }
+
+  it('survives a save and a load', () => {
+    const restored = parseWorkspace(withEditor('preview'));
+    const tab = restored === null ? null : activeTab(restored);
+    expect(tab === null ? null : leavesOf(tab.root)[0]?.content).toEqual({
+      type: 'editor',
+      path: '/a.md',
+      mode: 'preview',
+    });
+  });
+
+  it('is refused when it is not a known mode', () => {
+    expect(parseWorkspace(withEditor('reading'))).toBeNull();
+  });
+});
