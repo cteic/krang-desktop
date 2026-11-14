@@ -282,6 +282,13 @@ function PaneFrame({ leaf, accent, active, magnified, dispatch, debug }: PaneFra
   const paneId = leaf.id;
   const title = paneTitle(leaf);
 
+  // A pane may put a temporary title up, such as an unsaved marker, and
+  // later ask for "the default" again. The default is whatever the title was
+  // before the pane first changed it, which may be one a layout file set.
+  const ownTitleRef = useRef<{ before: string | null } | null>(null);
+  const currentTitleRef = useRef(leaf.title);
+  currentTitleRef.current = leaf.title;
+
   const actions = useMemo<PaneActions>(
     () => ({
       openPane(content, options) {
@@ -297,6 +304,13 @@ function PaneFrame({ leaf, accent, active, magnified, dispatch, debug }: PaneFra
         dispatch({ type: 'replace-content', paneId, content });
       },
       setTitle(next) {
+        if (next === null) {
+          const restored = ownTitleRef.current?.before ?? null;
+          ownTitleRef.current = null;
+          dispatch({ type: 'set-title', paneId, title: restored });
+          return;
+        }
+        ownTitleRef.current ??= { before: currentTitleRef.current };
         dispatch({ type: 'set-title', paneId, title: next });
       },
       setBadge(badge) {
