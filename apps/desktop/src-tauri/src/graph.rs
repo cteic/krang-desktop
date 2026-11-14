@@ -39,11 +39,20 @@ const BLOCK_REF_PREFIX: &str = "asset:obsidian.blockref.";
 /// cut short.
 const MAX_NOTES: usize = 20_000;
 const MAX_DEPTH: usize = 32;
-/// How much of an ordinary note is read. Frontmatter sits at the very top.
+/// How much of a note is read for its frontmatter, which sits at the very
+/// top.
 const FRONTMATTER_BYTES: u64 = 16 * 1024;
 const MAX_JSON_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CANVAS_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CANVASES: usize = 200;
+/// A note over this size is not searched for candidate tags.
+const CANDIDATE_BYTES: u64 = 512 * 1024;
+/// Once this much text has been searched for candidate tags, the rest of
+/// the notes are read for their frontmatter only.
+const CANDIDATE_BUDGET: u64 = 96 * 1024 * 1024;
+const MAX_CANDIDATES: usize = 2_000;
+const MAX_CANDIDATE_CHARS: usize = 300;
+const MAX_ISSUES: usize = 500;
 
 const CANVAS_START: &str = "```json !!!_START_OF_TLDRAW_DG_DATA__DO_NOT_CHANGE_THIS_PHRASE_!!!";
 const CANVAS_END: &str = "!!!_END_OF_TLDRAW_DG_DATA__DO_NOT_CHANGE_THIS_PHRASE_!!!";
@@ -59,6 +68,43 @@ pub struct NodeType {
     format: String,
     /// A hex colour. Missing when the settings give none.
     color: Option<String>,
+    /// The tag, without its `#`, that marks a line as a candidate for a
+    /// node of this type. Missing when the settings give none.
+    tag: Option<String>,
+}
+
+/// One row of the settings' list of which node types a relation type may
+/// join, and which way round.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedRelation {
+    source_type_id: String,
+    destination_type_id: String,
+    relation_type_id: String,
+}
+
+/// A line in a note that carries a node type's candidate tag.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    /// The absolute path of the note the line is in.
+    path: String,
+    /// The line's number in the note, counted from 1.
+    line: usize,
+    /// The line, trimmed and cut to a fixed length.
+    text: String,
+    type_id: String,
+}
+
+/// Something in the vault that a reader should look at.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Issue {
+    /// `sharedId`, `skippedRelation`, `file`, `limit` or `more`.
+    kind: &'static str,
+    text: String,
+    /// The absolute path of the note the row is about, when there is one.
+    path: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -121,6 +167,8 @@ pub struct CanvasNode {
     y: f64,
     w: f64,
     h: f64,
+    /// The canvas size step of the box's text: `s`, `m`, `l` or `xl`.
+    size: String,
     /// The file name, without extension, of the note the box stands for.
     /// When the note cannot be found, the title the canvas last saved.
     title: String,
@@ -189,6 +237,7 @@ pub struct VaultGraph {
     incomplete: bool,
     node_types: Vec<NodeType>,
     relation_types: Vec<RelationType>,
+    allowed_relations: Vec<AllowedRelation>,
     nodes: Vec<Node>,
     relations: Vec<Relation>,
     /// Relations left out because an end names no note, or the entry is
@@ -197,6 +246,10 @@ pub struct VaultGraph {
     /// Notes whose instance id another note already uses.
     repeated_ids: usize,
     canvases: Vec<Canvas>,
+    /// Lines that carry a node type's candidate tag, in path then line order.
+    candidates: Vec<Candidate>,
+    /// What was left out or may be wrong, one row per note, relation or file.
+    issues: Vec<Issue>,
 }
 
 #[derive(Debug)]
@@ -223,6 +276,7 @@ struct Frontmatter {
 struct Settings {
     node_types: Vec<NodeType>,
     relation_types: Vec<RelationType>,
+    allowed_relations: Vec<AllowedRelation>,
 }
 
 fn resolve(path: &str) -> String {
@@ -302,13 +356,6 @@ fn walk(root: &Path, limit: usize) -> Walk {
         notes,
         truncated: false,
     }
-}
-
-/// Reads the first `limit` bytes of a file as text.
-fn read_head(path: &Path, limit: u64) -> io::Result<String> {
-    let mut bytes = Vec::new();
-    File::open(path)?.take(limit).read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Reads a whole file unless it is over `limit`. A missing file is `None`.
@@ -421,6 +468,9 @@ fn settings_from(bytes: &[u8]) -> Result<Settings, String> {
                 name: string_field(entry, "name").unwrap_or_else(|| id.clone()),
                 format: string_field(entry, "format").unwrap_or_default(),
                 color: string_field(entry, "color"),
+                tag: string_field(entry, "tag")
+                    .map(|tag| tag.trim_start_matches('#').to_string())
+                    .filter(|tag| !tag.is_empty()),
                 id,
             })
         })
@@ -437,23 +487,51 @@ fn settings_from(bytes: &[u8]) -> Result<Settings, String> {
             })
         })
         .collect();
+    let allowed_relations = list_field(&value, "discourseRelations")
+        .iter()
+        .filter_map(|entry| {
+            Some(AllowedRelation {
+                source_type_id: string_field(entry, "sourceId")?,
+                destination_type_id: string_field(entry, "destinationId")?,
+                relation_type_id: string_field(entry, "relationshipTypeId")?,
+            })
+        })
+        .collect();
     Ok(Settings {
         node_types,
         relation_types,
+        allowed_relations,
     })
 }
 
+#[derive(Default)]
 struct Resolved {
     relations: Vec<Relation>,
     skipped: usize,
+    /// One line per relation left out, saying what it points at.
+    skipped_notes: Vec<String>,
 }
 
-/// Keeps the relations whose two ends are both known nodes. `shared` holds
-/// the instance ids that more than one note carries.
+/// Names one end of a relation that was left out: the note's title when a
+/// note carries the id, and otherwise the id, marked as unknown.
+fn end_text(end: Option<&str>, titles: &HashMap<&str, &str>) -> String {
+    match end {
+        None => String::from("nothing"),
+        Some(id) => match titles.get(id) {
+            Some(title) => format!("\"{title}\""),
+            None => format!("unknown id {id}"),
+        },
+    }
+}
+
+/// Keeps the relations whose two ends are both known nodes. `titles` has
+/// the title of the note that holds each instance id. `shared` holds the
+/// instance ids that more than one note carries.
 fn resolve_relations(
     bytes: &[u8],
-    known: &HashSet<&str>,
+    titles: &HashMap<&str, &str>,
     shared: &HashSet<&str>,
+    labels: &HashMap<&str, &str>,
 ) -> Result<Resolved, String> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| {
         format!(
@@ -464,6 +542,7 @@ fn resolve_relations(
     })?;
     let mut relations = Vec::new();
     let mut skipped = 0;
+    let mut skipped_notes = Vec::new();
     let entries = value.get("relations").and_then(Value::as_object);
     for (key, entry) in entries.into_iter().flatten() {
         let ends = (
@@ -473,7 +552,8 @@ fn resolve_relations(
         );
         match ends {
             (Some(type_id), Some(source), Some(destination))
-                if known.contains(source.as_str()) && known.contains(destination.as_str()) =>
+                if titles.contains_key(source.as_str())
+                    && titles.contains_key(destination.as_str()) =>
             {
                 relations.push(Relation {
                     id: string_field(entry, "id").unwrap_or_else(|| key.clone()),
@@ -485,11 +565,27 @@ fn resolve_relations(
                     destination,
                 });
             }
-            _ => skipped += 1,
+            (type_id, source, destination) => {
+                skipped += 1;
+                let kind = match type_id.as_deref() {
+                    Some(id) => labels.get(id).copied().unwrap_or(id),
+                    None => "a relation with no type",
+                };
+                skipped_notes.push(format!(
+                    "Relation {key}: {kind}, from {} to {}",
+                    end_text(source.as_deref(), titles),
+                    end_text(destination.as_deref(), titles)
+                ));
+            }
         }
     }
     relations.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(Resolved { relations, skipped })
+    skipped_notes.sort();
+    Ok(Resolved {
+        relations,
+        skipped,
+        skipped_notes,
+    })
 }
 
 /// Finds a note from the text of a link to it.
@@ -680,6 +776,7 @@ fn canvas_node(record: &Value, links: &CanvasLinks) -> Option<CanvasNode> {
         y: number_field(record, "y")?,
         w: number_field(props, "w").unwrap_or(DEFAULT_NODE_WIDTH),
         h: number_field(props, "h").unwrap_or(DEFAULT_NODE_HEIGHT),
+        size: string_field(props, "size").unwrap_or_else(|| String::from("s")),
         title,
         type_id: string_field(props, "nodeTypeId").unwrap_or_default(),
         path,
@@ -872,9 +969,91 @@ fn open_vault(dir: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn is_tag_char(letter: char) -> bool {
+    letter.is_alphanumeric() || matches!(letter, '_' | '-' | '/')
+}
+
+/// Whether a line carries `#tag` as a whole tag. Both are lower case. A
+/// tag does not start in the middle of a word or of a web address, or
+/// straight after a backtick, and it ends where the tag's letters end.
+fn has_tag(line: &str, tag: &str) -> bool {
+    let mut from = 0;
+    while let Some(found) = line[from..].find('#') {
+        let at = from + found;
+        let rest = &line[at + 1..];
+        if let Some(after) = rest.strip_prefix(tag) {
+            let opens = line[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|before| !(before.is_alphanumeric() || "_/#`".contains(before)));
+            let closes = after.chars().next().is_none_or(|next| !is_tag_char(next));
+            if opens && closes {
+                return true;
+            }
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// A candidate tag, in lower case, with the id of the node type it marks.
+struct TagRule<'a> {
+    tag: String,
+    type_id: &'a str,
+}
+
+/// Adds the lines of one note that carry a candidate tag, up to the limit.
+fn find_candidates(path: &str, text: &str, rules: &[TagRule], out: &mut Vec<Candidate>) {
+    if !text.contains('#') {
+        return;
+    }
+    for (index, line) in text.lines().enumerate() {
+        if !line.contains('#') {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        for rule in rules {
+            if !has_tag(&lower, &rule.tag) {
+                continue;
+            }
+            if out.len() >= MAX_CANDIDATES {
+                return;
+            }
+            out.push(Candidate {
+                path: path.to_string(),
+                line: index + 1,
+                text: line.trim().chars().take(MAX_CANDIDATE_CHARS).collect(),
+                type_id: rule.type_id.to_string(),
+            });
+        }
+    }
+}
+
+/// Reads the first `limit` bytes of a file.
+fn read_bytes(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn file_issue(text: &str) -> Issue {
+    Issue {
+        kind: "file",
+        text: text.to_string(),
+        path: None,
+    }
+}
+
+/// The note that first carried an instance id, and how many carry it.
+struct Holder {
+    count: usize,
+    first: usize,
+}
+
 fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
     let root = open_vault(dir)?;
     let mut warnings = Vec::new();
+    let mut issues = Vec::new();
     let mut incomplete = false;
 
     let settings_bytes =
@@ -893,6 +1072,7 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
         }
         None => None,
     };
+    issues.extend(warnings.iter().map(|warning| file_issue(warning)));
     // With no settings to go by, every typed note is taken as a node.
     let configured: Option<HashSet<&str>> = settings.as_ref().map(|settings| {
         settings
@@ -901,23 +1081,56 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
             .map(|node_type| node_type.id.as_str())
             .collect()
     });
+    let rules: Vec<TagRule> = settings
+        .iter()
+        .flat_map(|settings| &settings.node_types)
+        .filter_map(|node_type| {
+            Some(TagRule {
+                tag: node_type.tag.as_ref()?.to_lowercase(),
+                type_id: &node_type.id,
+            })
+        })
+        .collect();
 
     let found = walk(&root, note_limit);
     if found.truncated {
-        warnings.push(format!(
+        let text = format!(
             "this vault has more than {note_limit} notes, so only the first {note_limit} were read"
-        ));
+        );
+        issues.push(Issue {
+            kind: "limit",
+            text: text.clone(),
+            path: None,
+        });
+        warnings.push(text);
     }
     let index = NoteIndex::new(&root, &found.notes);
 
     let mut nodes: Vec<Node> = Vec::new();
     let mut canvases = Vec::new();
-    let mut holders: HashMap<String, usize> = HashMap::new();
+    let mut candidates = Vec::new();
+    let mut shared_issues = Vec::new();
+    let mut holders: HashMap<String, Holder> = HashMap::new();
+    let mut budget = CANDIDATE_BUDGET;
+    let mut unsearched = 0_usize;
     for note in &found.notes {
-        let Ok(head) = read_head(&note.path, FRONTMATTER_BYTES) else {
+        // The whole note is read only when it is to be searched for
+        // candidate tags. Otherwise the top is enough.
+        let search = !rules.is_empty()
+            && note.size <= CANDIDATE_BYTES.min(budget)
+            && candidates.len() < MAX_CANDIDATES;
+        let limit = if search {
+            CANDIDATE_BYTES
+        } else {
+            FRONTMATTER_BYTES
+        };
+        let Ok(bytes) = read_bytes(&note.path, limit) else {
             continue;
         };
-        let frontmatter = parse_frontmatter(&head);
+        let top = usize::try_from(FRONTMATTER_BYTES)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let frontmatter = parse_frontmatter(&String::from_utf8_lossy(&bytes[..top]));
         if frontmatter.canvas {
             if canvases.len() >= MAX_CANVASES {
                 continue;
@@ -925,11 +1138,24 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
             match read_canvas(note, &index) {
                 Ok(canvas) => canvases.push(canvas),
                 Err(error) => {
+                    issues.push(file_issue(&error));
                     warnings.push(error);
                     incomplete = true;
                 }
             }
             continue;
+        }
+        let path = text_of(&note.path);
+        if search {
+            budget = budget.saturating_sub(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+            find_candidates(
+                &path,
+                &String::from_utf8_lossy(&bytes),
+                &rules,
+                &mut candidates,
+            );
+        } else if !rules.is_empty() {
+            unsearched += 1;
         }
         let Some(type_id) = frontmatter.node_type_id else {
             continue;
@@ -940,15 +1166,24 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
         {
             continue;
         }
-        let path = text_of(&note.path);
+        let title = stem_of(&path);
         let id = match frontmatter.node_instance_id {
             Some(id) => {
-                let holder = holders.entry(id.clone()).or_insert(0);
-                *holder += 1;
-                if *holder == 1 {
+                let holder = holders.entry(id.clone()).or_insert(Holder {
+                    count: 0,
+                    first: nodes.len(),
+                });
+                holder.count += 1;
+                if holder.count == 1 {
                     id
                 } else {
-                    format!("{id}#{holder}")
+                    let first = nodes.get(holder.first).map_or("", |node| &node.title);
+                    shared_issues.push(Issue {
+                        kind: "sharedId",
+                        text: format!("\"{title}\" carries the same instance id as \"{first}\""),
+                        path: Some(path.clone()),
+                    });
+                    format!("{id}#{}", holder.count)
                 }
             }
             None => format!("{PATH_ID_PREFIX}{path}"),
@@ -956,26 +1191,46 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
         nodes.push(Node {
             id,
             type_id,
-            title: stem_of(&path),
+            title,
             path,
         });
     }
-    let repeated_ids: usize = holders.values().map(|count| count - 1).sum();
+    if unsearched > 0 {
+        issues.push(Issue {
+            kind: "limit",
+            text: format!(
+                "{unsearched} notes were not searched for candidates: each is over \
+                 {CANDIDATE_BYTES} bytes, or a search limit was reached before it"
+            ),
+            path: None,
+        });
+    }
+    let repeated_ids: usize = holders.values().map(|holder| holder.count - 1).sum();
     if repeated_ids > 0 {
         warnings.push(format!(
             "{repeated_ids} notes share an instance id with an earlier note, so relations \
              to those ids may be drawn to the wrong note"
         ));
     }
+    issues.append(&mut shared_issues);
 
-    let known: HashSet<&str> = holders.keys().map(String::as_str).collect();
+    let titles: HashMap<&str, &str> = holders
+        .iter()
+        .filter_map(|(id, holder)| Some((id.as_str(), nodes.get(holder.first)?.title.as_str())))
+        .collect();
     let shared: HashSet<&str> = holders
         .iter()
-        .filter(|(_, count)| **count > 1)
+        .filter(|(_, holder)| holder.count > 1)
         .map(|(id, _)| id.as_str())
+        .collect();
+    let labels: HashMap<&str, &str> = settings
+        .iter()
+        .flat_map(|settings| &settings.relation_types)
+        .map(|relation_type| (relation_type.id.as_str(), relation_type.label.as_str()))
         .collect();
     let relation_bytes =
         read_capped(&root.join(RELATIONS_FILE), MAX_JSON_BYTES).unwrap_or_else(|error| {
+            issues.push(file_issue(&error));
             warnings.push(error);
             incomplete = true;
             None
@@ -983,22 +1238,31 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
     let has_relations = relation_bytes.is_some();
     let resolved = match relation_bytes
         .as_deref()
-        .map(|bytes| resolve_relations(bytes, &known, &shared))
+        .map(|bytes| resolve_relations(bytes, &titles, &shared, &labels))
     {
         Some(Ok(resolved)) => resolved,
         Some(Err(error)) => {
+            issues.push(file_issue(&error));
             warnings.push(error);
             incomplete = true;
-            Resolved {
-                relations: Vec::new(),
-                skipped: 0,
-            }
+            Resolved::default()
         }
-        None => Resolved {
-            relations: Vec::new(),
-            skipped: 0,
-        },
+        None => Resolved::default(),
     };
+    issues.extend(resolved.skipped_notes.into_iter().map(|text| Issue {
+        kind: "skippedRelation",
+        text,
+        path: None,
+    }));
+    if issues.len() > MAX_ISSUES {
+        let more = issues.len() - MAX_ISSUES;
+        issues.truncate(MAX_ISSUES);
+        issues.push(Issue {
+            kind: "more",
+            text: format!("and {more} more"),
+            path: None,
+        });
+    }
 
     let empty = !has_settings && !has_relations && nodes.is_empty() && canvases.is_empty();
     let directory = text_of(&root);
@@ -1019,11 +1283,14 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
         incomplete,
         node_types: settings.node_types,
         relation_types: settings.relation_types,
+        allowed_relations: settings.allowed_relations,
         nodes,
         relations: resolved.relations,
         skipped_relations: resolved.skipped,
         repeated_ids,
         canvases,
+        candidates,
+        issues,
     })
 }
 
@@ -1236,12 +1503,14 @@ mod tests {
                     name: String::from("Question"),
                     format: String::from("QUE - {content}"),
                     color: Some(String::from("#F2C123")),
+                    tag: Some(String::from("que")),
                 },
                 NodeType {
                     id: String::from("node_c"),
                     name: String::from("Claim"),
                     format: String::from("CLM - {content}"),
                     color: Some(String::from("#2E9E82")),
+                    tag: None,
                 },
             ]
         );
@@ -1270,6 +1539,21 @@ mod tests {
             ]
         );
         assert_eq!(graph.skipped_relations, 2);
+        // Each relation left out is named, with what it points at.
+        let skipped: Vec<&str> = graph
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "skippedRelation")
+            .map(|issue| issue.text.as_str())
+            .collect();
+        assert_eq!(
+            skipped,
+            vec![
+                "Relation r3: supports, from \"CLM - because\" to unknown id id-gone",
+                "Relation r4: supports, from \"CLM - because\" to nothing",
+            ]
+        );
+        assert_eq!(graph.issues.len(), 2);
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1328,6 +1612,7 @@ mod tests {
                 "incomplete": false,
                 "nodeTypes": [],
                 "relationTypes": [],
+                "allowedRelations": [],
                 "nodes": [{
                     "id": "id-q",
                     "typeId": "node_q",
@@ -1338,6 +1623,8 @@ mod tests {
                 "skippedRelations": 0,
                 "repeatedIds": 0,
                 "canvases": [],
+                "candidates": [],
+                "issues": [],
             })
         );
         fs::remove_dir_all(root).unwrap();
@@ -1397,7 +1684,7 @@ mod tests {
             "early.md",
             &format!("{}{padding}{padding}", note("node_a", "early")),
         );
-        let head = read_head(&root.join("early.md"), FRONTMATTER_BYTES).unwrap();
+        let head = read_bytes(&root.join("early.md"), FRONTMATTER_BYTES).unwrap();
         assert_eq!(head.len(), usize::try_from(FRONTMATTER_BYTES).unwrap());
 
         let graph = read_graph(root.to_str().unwrap()).unwrap();
@@ -1440,6 +1727,27 @@ mod tests {
         assert_eq!(titles(&graph), vec!["a", "b", "c", "d"]);
         assert_eq!(graph.repeated_ids, 2);
         assert!(graph.warnings[0].starts_with("2 notes share an instance id"));
+        // One row per note that repeats an id, naming the note that had it first.
+        let rows: Vec<(&str, &str, Option<&str>)> = graph
+            .issues
+            .iter()
+            .map(|issue| (issue.kind, issue.text.as_str(), issue.path.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "sharedId",
+                    "\"b\" carries the same instance id as \"a\"",
+                    root.join("b.md").to_str()
+                ),
+                (
+                    "sharedId",
+                    "\"c\" carries the same instance id as \"a\"",
+                    root.join("c.md").to_str()
+                ),
+            ]
+        );
         let flags: Vec<(&str, bool)> = graph
             .relations
             .iter()
@@ -1520,7 +1828,7 @@ mod tests {
             {"typeName": "shape", "type": "discourse-node", "id": "shape:q", "parentId": "page:one",
              "x": 10.5, "y": -20, "props": {"w": 400, "h": 112, "src": "asset:obsidian.blockref.block-q",
              "title": "QUE - an old name", "nodeTypeId": "node_q", "imageSrc": IMAGE_PATH,
-             "size": "s", "fontFamily": "mono"}},
+             "size": "m", "fontFamily": "mono"}},
             {"typeName": "shape", "type": "discourse-node", "id": "shape:c", "parentId": "page:one",
              "x": 500, "y": 300, "props": {"src": "asset:obsidian.blockref.block-c",
              "title": "CLM - because", "nodeTypeId": "node_c"}},
@@ -1602,6 +1910,7 @@ mod tests {
                 y: -20.0,
                 w: 400.0,
                 h: 112.0,
+                size: String::from("m"),
                 title: String::from("QUE - why"),
                 type_id: String::from("node_q"),
                 path: Some(text_of(&root.join("QUE - why.md"))),
@@ -1615,6 +1924,7 @@ mod tests {
             Some(text_of(&root.join("claims/CLM - because.md")))
         );
         assert_eq!((because.w, because.h), (200.0, 100.0));
+        assert_eq!(because.size, "s");
         // No block for this box, so its saved title is tried.
         let far = by_id("shape:far");
         assert_eq!(far.title, "CLM - or not");
@@ -1771,6 +2081,161 @@ mod tests {
         assert_eq!(canvas_json(&text), Some("{\"a\": 1}\n"));
         assert_eq!(canvas_json("no markers"), None);
         assert_eq!(canvas_json(&format!("{CANVAS_START}\n{{}}\n")), None);
+    }
+
+    #[test]
+    fn a_tag_is_matched_whole_and_not_inside_a_word_or_an_address() {
+        assert!(has_tag("#clm-candidate: it scales", "clm-candidate"));
+        assert!(has_tag("which is ==#clm-candidate== more", "clm-candidate"));
+        assert!(has_tag("- a point (#clm-candidate)", "clm-candidate"));
+        assert!(has_tag("#other then #clm-candidate", "clm-candidate"));
+        assert!(!has_tag("#clm-candidates", "clm-candidate"));
+        assert!(!has_tag("#clm-candidate/sub", "clm-candidate"));
+        assert!(!has_tag(
+            "see https://example.org/#clm-candidate",
+            "clm-candidate"
+        ));
+        assert!(!has_tag("word#clm-candidate", "clm-candidate"));
+        assert!(!has_tag("tag a line `#clm-candidate`", "clm-candidate"));
+        assert!(!has_tag("clm-candidate with no hash", "clm-candidate"));
+    }
+
+    #[test]
+    fn finds_the_lines_that_carry_a_candidate_tag() {
+        let root = scratch("candidates");
+        write(
+            &root,
+            SETTINGS_PATH,
+            &json!({
+                "nodeTypes": [
+                    {"id": "node_c", "name": "Claim", "tag": "clm-candidate"},
+                    {"id": "node_q", "name": "Question", "tag": "#QUE-candidate"},
+                    {"id": "node_e", "name": "Evidence", "tag": ""},
+                    {"id": "node_x", "name": "Experiment", "tag": null}
+                ],
+                "discourseRelations": [
+                    {"sourceId": "node_e", "destinationId": "node_c", "relationshipTypeId": "rel_s"},
+                    {"sourceId": "node_e", "relationshipTypeId": "rel_s"}
+                ],
+                "spacePassword": SECRET
+            })
+            .to_string(),
+        );
+        let long = "y".repeat(400);
+        write(
+            &root,
+            "daily/monday.md",
+            &format!(
+                "# Monday\n\n  - Birds are light #clm-candidate  \nNothing here.\n\
+                 Why so light? #que-candidate and #CLM-Candidate\n#clm-candidate {long}\n"
+            ),
+        );
+        write(
+            &root,
+            "CLM - a node.md",
+            &format!("{}#clm-candidate in a node\n", note("node_c", "id-c")),
+        );
+        write(
+            &root,
+            "Templates/Claim.md",
+            "#clm-candidate in a template\n",
+        );
+        write(&root, ".trash/old.md", "#clm-candidate in the bin\n");
+        write(
+            &root,
+            "board.md",
+            "---\ntldr-dg: true\n---\n#clm-candidate in a canvas\n",
+        );
+        let big = "z".repeat(usize::try_from(CANDIDATE_BYTES).unwrap());
+        write(&root, "huge.md", &format!("#clm-candidate\n{big}\n"));
+
+        let graph = read_graph(root.to_str().unwrap()).unwrap();
+        let tags: Vec<Option<&str>> = graph
+            .node_types
+            .iter()
+            .map(|node_type| node_type.tag.as_deref())
+            .collect();
+        assert_eq!(
+            tags,
+            vec![Some("clm-candidate"), Some("QUE-candidate"), None, None]
+        );
+        assert_eq!(
+            graph.allowed_relations,
+            vec![AllowedRelation {
+                source_type_id: String::from("node_e"),
+                destination_type_id: String::from("node_c"),
+                relation_type_id: String::from("rel_s"),
+            }]
+        );
+
+        let monday = text_of(&root.join("daily/monday.md"));
+        let found: Vec<(&str, usize, &str, &str)> = graph
+            .candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.path.as_str(),
+                    candidate.line,
+                    candidate.type_id.as_str(),
+                    candidate.text.as_str(),
+                )
+            })
+            .collect();
+        let node_note = text_of(&root.join("CLM - a node.md"));
+        assert_eq!(found.len(), 5);
+        assert_eq!(
+            found[0],
+            (node_note.as_str(), 7, "node_c", "#clm-candidate in a node")
+        );
+        assert_eq!(
+            found[1],
+            (
+                monday.as_str(),
+                3,
+                "node_c",
+                "- Birds are light #clm-candidate"
+            )
+        );
+        // One line with two tags is a candidate for both types.
+        assert_eq!((found[2].1, found[2].2), (5, "node_c"));
+        assert_eq!((found[3].1, found[3].2), (5, "node_q"));
+        // A long line is cut.
+        assert_eq!(found[4].1, 6);
+        assert_eq!(found[4].3.chars().count(), MAX_CANDIDATE_CHARS);
+        // A note with a tagged line is still a node.
+        assert_eq!(titles(&graph), vec!["CLM - a node"]);
+        // The note over the size limit was not searched, and the reader says so.
+        let limits: Vec<&Issue> = graph
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "limit")
+            .collect();
+        assert_eq!(limits.len(), 1);
+        assert!(limits[0]
+            .text
+            .starts_with("1 notes were not searched for candidates"));
+        assert!(!serde_json::to_string(&graph).unwrap().contains(SECRET));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_vault_with_no_candidate_tags_reads_only_the_top_of_each_note() {
+        let root = scratch("no-tags");
+        write(&root, "note.md", "A line with #clm-candidate in it.\n");
+        let graph = read_graph(root.to_str().unwrap()).unwrap();
+        assert!(graph.candidates.is_empty());
+        assert!(graph.issues.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn searching_for_candidates_leaves_the_fingerprint_alone() {
+        let root = vault("print-candidates");
+        let dir = root.to_str().unwrap();
+        let before = fingerprint(dir).unwrap();
+        read_graph(dir).unwrap();
+        assert_eq!(fingerprint(dir).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn set_modified(path: &Path, seconds_after_epoch: u64) {
