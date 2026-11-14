@@ -4,7 +4,12 @@ import remarkGfm from 'remark-gfm';
 
 import type { PaneContent } from '../../workspace/model';
 
+import { EmbedImage } from './embed-image';
+import type { EmbedResolver } from './embeds';
+import { splitFrontmatter } from './frontmatter';
 import { classifyLink, resolveImageSrc } from './links';
+import { EMBED_SCHEME, parseEmbedHref, remarkObsidianMarks } from './obsidian-marks';
+import { PropertiesBlock } from './properties-block';
 import { useDebouncedValue } from './use-debounced-value';
 import { remarkWikilinks, WIKILINK_SCHEME } from './wikilinks';
 
@@ -14,16 +19,29 @@ export interface MarkdownPreviewProps {
   baseDir: string | null;
   /** Asked to open a pane beside this one. Keep it stable between renders. */
   onOpen: (content: PaneContent) => void;
+  /** Finds embedded images. Left out, an embed shows as its file name. */
+  resolveEmbed?: EmbedResolver | undefined;
 }
 
 // Long enough to skip the renders between keystrokes, short enough to feel live.
 const DEBOUNCE_MS = 150;
 
-const REMARK_PLUGINS = [remarkGfm, remarkWikilinks];
+// Embeds are found before wikilinks, or `![[a.png]]` would become a link.
+const REMARK_PLUGINS = [remarkGfm, remarkObsidianMarks, remarkWikilinks];
 
-/** Lets wikilink addresses through. Everything else gets the standard safety check. */
+/**
+ * Lets wikilink and embed addresses through. Everything else gets the
+ * standard safety check.
+ */
 function transformUrl(url: string): string {
-  return url.startsWith(WIKILINK_SCHEME) ? url : defaultUrlTransform(url);
+  if (url.startsWith(WIKILINK_SCHEME) || url.startsWith(EMBED_SCHEME)) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
+
+function sizeOf(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
 }
 
 // The preview lives inside the app window. A link that navigated would
@@ -34,10 +52,12 @@ function stopNavigation(event: MouseEvent) {
 
 /**
  * Renders Markdown for reading. The first text shows at once; later changes
- * show after a short pause. Links open panes; they never navigate.
+ * show after a short pause. Links open panes; they never navigate. A note's
+ * frontmatter shows as a closed list of properties, not as text.
  */
-export function MarkdownPreview({ text, baseDir, onOpen }: MarkdownPreviewProps) {
+export function MarkdownPreview({ text, baseDir, onOpen, resolveEmbed }: MarkdownPreviewProps) {
   const settledText = useDebouncedValue(text, DEBOUNCE_MS);
+  const note = useMemo(() => splitFrontmatter(settledText), [settledText]);
 
   const components = useMemo<Components>(
     () => ({
@@ -64,15 +84,28 @@ export function MarkdownPreview({ text, baseDir, onOpen }: MarkdownPreviewProps)
           </a>
         );
       },
-      img: ({ src, alt, title }) => (
-        <img
-          src={typeof src === 'string' ? resolveImageSrc(src, baseDir) : undefined}
-          alt={alt ?? ''}
-          title={title}
-        />
-      ),
+      img: ({ src, alt, title, width, height }) => {
+        const embedded = typeof src === 'string' ? parseEmbedHref(src) : null;
+        if (embedded !== null) {
+          return (
+            <EmbedImage
+              name={embedded}
+              width={sizeOf(width)}
+              height={sizeOf(height)}
+              resolve={resolveEmbed ?? null}
+            />
+          );
+        }
+        return (
+          <img
+            src={typeof src === 'string' ? resolveImageSrc(src, baseDir) : undefined}
+            alt={alt ?? ''}
+            title={title}
+          />
+        );
+      },
     }),
-    [baseDir, onOpen],
+    [baseDir, onOpen, resolveEmbed],
   );
 
   const rendered = useMemo(
@@ -82,11 +115,18 @@ export function MarkdownPreview({ text, baseDir, onOpen }: MarkdownPreviewProps)
         urlTransform={transformUrl}
         components={components}
       >
-        {settledText}
+        {note.body}
       </ReactMarkdown>
     ),
-    [settledText, components],
+    [note.body, components],
   );
 
-  return <div className="editor-preview-content">{rendered}</div>;
+  return (
+    <div className="editor-preview-content">
+      {note.properties !== null && note.properties.length > 0 && (
+        <PropertiesBlock properties={note.properties} />
+      )}
+      {rendered}
+    </div>
+  );
 }

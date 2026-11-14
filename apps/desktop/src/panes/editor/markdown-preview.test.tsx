@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { EmbedResolver } from './embeds';
 import { MarkdownPreview } from './markdown-preview';
 
 afterEach(cleanup);
@@ -112,5 +113,135 @@ describe('MarkdownPreview', () => {
     show('[bad](javascript:alert(1))');
 
     expect(screen.getByText('bad').getAttribute('href')).toBe('');
+  });
+
+  it('shows frontmatter as a closed list of properties, not as text', () => {
+    const { container } = render(
+      <MarkdownPreview
+        text={[
+          '---',
+          'kind: claim',
+          'tags:',
+          '  - alpha',
+          '  - beta',
+          '---',
+          '# The title',
+          '',
+          'Body text.',
+        ].join('\n')}
+        baseDir="/notes"
+        onOpen={vi.fn()}
+      />,
+    );
+
+    const block = container.querySelector('details');
+    expect(block).not.toBeNull();
+    expect(block?.open).toBe(false);
+    expect(within(screen.getByRole('group')).getByText('Properties')).toBeTruthy();
+    expect(screen.getByText('kind').tagName).toBe('DT');
+    expect(screen.getByText('claim').tagName).toBe('DD');
+    expect(screen.getByText('alpha').className).toBe('editor-chip');
+    expect(screen.getByText('beta').className).toBe('editor-chip');
+
+    expect(screen.getByRole('heading', { level: 1, name: 'The title' })).toBeTruthy();
+    expect(screen.getByText('Body text.').tagName).toBe('P');
+    expect(container.textContent).not.toContain('---');
+    expect(container.querySelector('hr')).toBeNull();
+  });
+
+  it('shows no properties block for a note without frontmatter', () => {
+    const { container } = render(
+      <MarkdownPreview text={'# Only a title'} baseDir="/notes" onOpen={vi.fn()} />,
+    );
+    expect(container.querySelector('details')).toBeNull();
+  });
+
+  it('draws a callout as a titled box', () => {
+    const { container } = render(
+      <MarkdownPreview
+        text={'> [!info] Read this\n> The body of the callout.\n\n> An ordinary quote.'}
+        baseDir="/notes"
+        onOpen={vi.fn()}
+      />,
+    );
+
+    const callout = container.querySelector('.editor-callout');
+    expect(callout?.getAttribute('data-callout')).toBe('info');
+    expect(callout?.querySelector('.editor-callout-title')?.textContent).toBe('Read this');
+    expect(callout?.textContent).toContain('The body of the callout.');
+    expect(callout?.textContent).not.toContain('[!info]');
+    expect(container.querySelectorAll('blockquote')).toHaveLength(1);
+  });
+
+  it('draws a highlight, and tags as chips', () => {
+    show('A ==key finding== about #matthew_effect and #clm-candidate.');
+
+    expect(screen.getByText('key finding').tagName).toBe('MARK');
+    expect(screen.getByText('#matthew_effect').className).toBe('editor-tag');
+    expect(screen.getByText('#clm-candidate').className).toBe('editor-tag');
+  });
+
+  it('keeps a heading a heading, and code as code', () => {
+    show(['# Heading', '', '`#not-a-tag ==no==`'].join('\n'));
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Heading' })).toBeTruthy();
+    expect(screen.getByText('#not-a-tag ==no==').tagName).toBe('CODE');
+  });
+
+  it('collapses a query block to one muted line', () => {
+    const { container } = render(
+      <MarkdownPreview
+        text={[
+          '```datacorejsx',
+          'return <Table rows={rows} />',
+          '```',
+          '',
+          '```js',
+          'let a;',
+          '```',
+        ].join('\n')}
+        baseDir="/notes"
+        onOpen={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('.editor-query-block')?.textContent).toBe(
+      'datacorejsx query block',
+    );
+    expect(container.textContent).not.toContain('Table rows');
+    expect(screen.getByText('let a;').tagName).toBe('CODE');
+  });
+
+  it('shows an embedded image once it is found, at the width asked for', async () => {
+    const resolveEmbed: EmbedResolver = vi.fn((name: string) =>
+      Promise.resolve(name === 'plot.png' ? 'localfile://localhost/vault/files/plot.png' : null),
+    );
+    render(
+      <MarkdownPreview
+        text={'![[plot.png|300]] and ![[gone.png]] and ![[Some note]]'}
+        baseDir="/vault/notes"
+        onOpen={vi.fn()}
+        resolveEmbed={resolveEmbed}
+      />,
+    );
+
+    const image = await screen.findByRole('img', { name: 'plot.png' });
+    expect(image.getAttribute('src')).toBe('localfile://localhost/vault/files/plot.png');
+    expect(image.getAttribute('width')).toBe('300');
+
+    await waitFor(() => {
+      expect(resolveEmbed).toHaveBeenCalledWith('gone.png');
+    });
+    expect(screen.getByText('gone.png').className).toContain('editor-embed-missing');
+    expect(screen.getByText('Some note').className).toContain('editor-embed-missing');
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+  });
+
+  it('shows an embed as its name when there is nowhere to look', () => {
+    show('![[plot.png]]', null);
+
+    expect(screen.getByText('plot.png').className).toContain('editor-embed-missing');
+    expect(screen.queryByRole('img')).toBeNull();
   });
 });
