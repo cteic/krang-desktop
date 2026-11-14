@@ -8,10 +8,11 @@
   background: var(--bg);
 }
 
+/* One row: the path gives way before anything wraps. */
 .files-header {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 2px;
   padding: 3px 6px;
@@ -41,7 +42,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  min-width: 80px;
+  min-width: 0;
   overflow-x: auto;
   white-space: nowrap;
   scrollbar-width: none;
@@ -83,6 +84,16 @@
   border-radius: 4px;
 }
 
+/* A narrow pane has two tidy rows: the path, then the filter at full width. */
+.files-pane[data-narrow='true'] .files-header {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+
+.files-pane[data-narrow='true'] .files-filter {
+  flex: 1 1 100%;
+}
+
 .files-filter::placeholder {
   color: var(--muted);
 }
@@ -93,8 +104,14 @@
   overflow-y: auto;
 }
 
+/*
+ * The name takes what the other columns leave. The date and then the size
+ * are dropped before it gets too little: see columns.ts. The least width
+ * is the marker, the name's minimum and the row buttons.
+ */
 .files-table {
   width: 100%;
+  min-width: 210px;
   table-layout: fixed;
   border-collapse: collapse;
   outline: none;
