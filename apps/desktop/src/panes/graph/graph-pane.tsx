@@ -1,36 +1,69 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 
 import type { GraphContent } from '../../workspace/model';
 import { useDebugSnapshot } from '../debug-snapshot';
 import type { PaneProps } from '../pane-props';
 
+import { groupCandidates } from './candidates';
+import { nodeColor, textColorOn } from './colors';
 import { debugText } from './debug-text';
-import { fitTransform, IDENTITY, revealRect } from './geometry';
+import { centerOn, fitTransform, IDENTITY, revealRect } from './geometry';
 import type { Size, Transform } from './geometry';
 import { GraphCanvas } from './graph-canvas';
 import './graph-pane.css';
+import { buildIssues, issueCount } from './issues';
 import { keyAction } from './keys';
 import type { KeyAction } from './keys';
+import { DEFAULT_LAYOUT, nextLayout } from './layout';
+import type { KeptLayout } from './layout';
+import { buildLens } from './lens';
+import type { SupportStatus } from './lens';
+import { readoutOf } from './readout';
 import { moveSelection, neighbourhood, stepSelection } from './selection';
+import { CandidatesPanel, ClaimsPanel, IssuesPanel } from './side-panels';
+import type { TypeLook } from './side-panels';
 import { countsText, statusText } from './status';
 import { errorText, fetchFingerprint, fetchGraph } from './vault-graph';
 import type { VaultGraph } from './vault-graph';
 import {
   ALL_VIEW,
   buildView,
+  layoutInput,
   legendOf,
   resolveViewKey,
+  splitTitle,
   viewBounds,
   viewOptions,
   withoutTypes,
+  withoutUnlinked,
 } from './view-model';
 import type { ViewNode } from './view-model';
 
 /** How often the pane asks whether the vault has changed. */
 const POLL_MS = 2500;
 const NOTICE_MS = 2500;
+/** How long a node that has just appeared stays picked out. */
+const FRESH_MS = 4000;
+/** The space left around the drawing when it is fitted to the pane. */
+const FIT_MARGIN = 14;
+/** A small graph is drawn a little over full size to fill the pane, and no more. */
+const FIT_MAX_SCALE = 1.25;
 const NO_TYPES: ReadonlySet<string> = new Set();
+const NO_IDS: ReadonlySet<string> = new Set();
+
+type Panel = 'claims' | 'candidates' | 'issues';
+
+/**
+ * The pane's shape in half-octave steps, so the layout is packed again
+ * only when the pane changes shape by a lot. Null for a pane with no size.
+ */
+function aspectOf(size: Size): number | null {
+  if (size.w <= 0 || size.h <= 0) {
+    return null;
+  }
+  return 2 ** (Math.round(Math.log2(size.w / size.h) * 2) / 2);
+}
 
 interface LoadOptions {
   /** True for a check in the background, which shows no "Loading". */
@@ -52,15 +85,38 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>(IDENTITY);
   const [size, setSize] = useState<Size>({ w: 0, h: 0 });
-  const [fitted, setFitted] = useState<string | null>(null);
+  // True while the drawing is kept fitted to the pane. Panning or zooming
+  // by hand turns it off, and Fit turns it on again.
+  const [auto, setAuto] = useState(true);
+  // The room for the drawing and the list beside it together. The layout
+  // is shaped for this, so opening a list does not move the nodes.
+  const [room, setRoom] = useState<Size>({ w: 0, h: 0 });
+  const [layoutRound, setLayoutRound] = useState(0);
+  const [showUnlinked, setShowUnlinked] = useState(false);
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [fresh, setFresh] = useState<ReadonlySet<string>>(NO_IDS);
   const [notice, setNotice] = useState<string | null>(null);
   const [draftPath, setDraftPath] = useState('');
 
   const rootRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  // The pane shape the layout was last made for.
+  const aspectRef = useRef<number | null>(null);
   const requestRef = useRef(0);
   const pollingRef = useRef(false);
   const noticeTimerRef = useRef<number | null>(null);
+  const freshTimerRef = useRef<number | null>(null);
+  // The layout on screen. A changed graph is laid out around it, so the
+  // nodes already placed stay where they are.
+  const layoutRef = useRef<KeptLayout | null>(null);
+  // The nodes of the view as last drawn, to tell which ones are new.
+  const drawnRef = useRef<{
+    token: string;
+    ids: ReadonlySet<string>;
+    unlinked: ReadonlySet<string>;
+  } | null>(null);
   // The fingerprint of the vault as last read. Null means "read it again".
   const fingerprintRef = useRef<string | null>(null);
   // True once a graph has been read with every file in order. From then on
@@ -133,7 +189,13 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     setHidden(NO_TYPES);
     setSelectedId(null);
     setPageId(null);
-    setFitted(null);
+    setAuto(true);
+    setShowUnlinked(false);
+    setHoverId(null);
+    setFresh(NO_IDS);
+    layoutRef.current = null;
+    aspectRef.current = null;
+    drawnRef.current = null;
     setLoading(directory !== null);
     if (directory !== null) {
       load(directory, { quiet: false, fingerprint: null });
@@ -184,22 +246,56 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
       if (noticeTimerRef.current !== null) {
         window.clearTimeout(noticeTimerRef.current);
       }
+      if (freshTimerRef.current !== null) {
+        window.clearTimeout(freshTimerRef.current);
+      }
     };
   }, []);
 
+  // The layout follows the pane's shape only while the drawing is kept
+  // fitted. Once the person has moved it, it stays as it is.
+  const measured = aspectOf(room);
+  if (auto && measured !== null) {
+    aspectRef.current = measured;
+  }
+  const aspect = aspectRef.current;
+
   const options = useMemo(() => (graph === null ? [] : viewOptions(graph)), [graph]);
   const viewKey = graph === null ? ALL_VIEW : resolveViewKey(graph, chosenView);
+  // Laid out here, once per graph and pane shape, and not on every drawing.
+  // A graph that reads the same as the last one gives the same layout back.
+  const placed = useMemo(() => {
+    if (graph === null || viewKey !== ALL_VIEW) {
+      return null;
+    }
+    const input = layoutInput(graph);
+    const layout = nextLayout(
+      layoutRef.current,
+      input.nodes,
+      input.edges,
+      aspect === null ? DEFAULT_LAYOUT : { ...DEFAULT_LAYOUT, aspect },
+    );
+    layoutRef.current = layout;
+    return layout.rects;
+    // `layoutRound` is here so Reload lays the graph out afresh.
+  }, [graph, viewKey, aspect, layoutRound]);
   const fullView = useMemo(
-    () => (graph === null ? null : buildView(graph, viewKey, pageId)),
-    [graph, viewKey, pageId],
+    () => (graph === null ? null : buildView(graph, viewKey, pageId, placed)),
+    [graph, viewKey, pageId, placed],
   );
+  const linkedView = useMemo(() => {
+    if (fullView === null) {
+      return null;
+    }
+    return showUnlinked ? fullView : withoutUnlinked(fullView);
+  }, [fullView, showUnlinked]);
   const legend = useMemo(
-    () => (graph === null || fullView === null ? [] : legendOf(graph, fullView)),
-    [graph, fullView],
+    () => (graph === null || linkedView === null ? [] : legendOf(graph, linkedView)),
+    [graph, linkedView],
   );
   const view = useMemo(
-    () => (fullView === null ? null : withoutTypes(fullView, hidden)),
-    [fullView, hidden],
+    () => (linkedView === null ? null : withoutTypes(linkedView, hidden)),
+    [linkedView, hidden],
   );
   const selected = view?.nodes.find((node) => node.id === selectedId) ?? null;
   const near = useMemo(
@@ -207,22 +303,100 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     [view, selected],
   );
 
-  // Fit once per vault, view and page: on the first drawing, not on a refresh.
-  const fitToken =
+  const lens = useMemo(() => (graph === null ? null : buildLens(graph)), [graph]);
+  const candidates = useMemo(() => (graph === null ? [] : groupCandidates(graph)), [graph]);
+  const candidateCount = graph?.candidates.length ?? 0;
+  const issues = useMemo(() => (graph === null ? [] : buildIssues(graph)), [graph]);
+  const issueTotal = issueCount(issues);
+  const looks = useMemo(() => {
+    const map = new Map<string, TypeLook>();
+    for (const type of graph?.nodeTypes ?? []) {
+      const fill = nodeColor(type.color);
+      map.set(type.id, {
+        fill,
+        ink: textColorOn(fill),
+        chip: splitTitle(type.format.replace('{content}', 'x'), type.format).chip ?? type.name,
+        strip: (title) => splitTitle(title, type.format).text,
+      });
+    }
+    return map;
+  }, [graph]);
+  // How well each claim on show is backed, by the id of its box. A canvas
+  // box has an id of its own, so there it is matched by its note.
+  const lensById = useMemo(() => {
+    if (panel !== 'claims' || lens === null || fullView === null) {
+      return null;
+    }
+    const byId = new Map<string, SupportStatus>(lens.rows.map((row) => [row.id, row.status]));
+    if (fullView.key === ALL_VIEW) {
+      return byId;
+    }
+    const byPath = new Map(lens.rows.map((row) => [row.path, row.status]));
+    const onCanvas = new Map<string, SupportStatus>();
+    for (const node of fullView.nodes) {
+      const status = node.path === null ? undefined : byPath.get(node.path);
+      if (status !== undefined) {
+        onCanvas.set(node.id, status);
+      }
+    }
+    return onCanvas;
+  }, [panel, lens, fullView]);
+
+  const viewToken =
     graph === null || fullView === null
       ? null
       : `${graph.directory}\n${fullView.key}\n${fullView.pageId ?? ''}`;
+  // Another vault, view or page starts fitted to the pane again.
   useEffect(() => {
-    if (fullView === null || fitToken === null || fitted === fitToken) {
-      return;
-    }
+    setAuto(true);
+  }, [viewToken]);
+
+  // While the drawing is kept fitted, it is fitted again whenever what is
+  // drawn or the pane's size changes.
+  const bounds = useMemo(() => (view === null ? null : viewBounds(view)), [view]);
+  useLayoutEffect(() => {
     // A pane in a tab that is not showing has no size yet. It fits when it does.
-    if (size.w <= 0 || size.h <= 0) {
+    if (!auto || bounds === null || size.w <= 0 || size.h <= 0) {
       return;
     }
-    setTransform(fitTransform(viewBounds(fullView), size));
-    setFitted(fitToken);
-  }, [fullView, fitToken, fitted, size]);
+    setTransform(fitTransform(bounds, size, FIT_MARGIN, FIT_MAX_SCALE));
+  }, [auto, bounds, size]);
+
+  // Picks out, for a few seconds, the nodes a refresh has added: the ones
+  // that are new, and the ones that have just gained their first relation.
+  useEffect(() => {
+    if (fullView === null || viewToken === null) {
+      drawnRef.current = null;
+      return;
+    }
+    const before = drawnRef.current;
+    drawnRef.current = {
+      token: viewToken,
+      ids: new Set(fullView.nodes.map((node) => node.id)),
+      unlinked: fullView.unlinked,
+    };
+    if (before === null || before.token !== viewToken) {
+      return;
+    }
+    const added = fullView.nodes
+      .filter(
+        (node) =>
+          !before.ids.has(node.id) ||
+          (before.unlinked.has(node.id) && !fullView.unlinked.has(node.id)),
+      )
+      .map((node) => node.id);
+    if (added.length === 0) {
+      return;
+    }
+    setFresh(new Set(added));
+    if (freshTimerRef.current !== null) {
+      window.clearTimeout(freshTimerRef.current);
+    }
+    freshTimerRef.current = window.setTimeout(() => {
+      freshTimerRef.current = null;
+      setFresh(NO_IDS);
+    }, FRESH_MS);
+  }, [fullView, viewToken]);
 
   const hasDrawing = view !== null && graph?.message === null;
   useEffect(() => {
@@ -236,8 +410,24 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     }
   }, [active, hasDrawing]);
 
+  const unlinkedCount = fullView?.unlinked.size ?? 0;
   useDebugSnapshot(name, debug, () =>
-    debugText(graph?.directory ?? directory ?? '', view, failure ?? graph?.message ?? null),
+    debugText(
+      graph?.directory ?? directory ?? '',
+      view,
+      failure ?? graph?.message ?? null,
+      lens === null
+        ? null
+        : {
+            unlinkedHidden: showUnlinked ? 0 : unlinkedCount,
+            claims: lens.rows.length,
+            unsupported: lens.unsupported,
+            contested: lens.contested,
+            supported: lens.supported,
+            candidates: candidateCount,
+            issues: issueTotal,
+          },
+    ),
   );
 
   function showNotice(text: string) {
@@ -258,12 +448,70 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     // Asked for by hand, so whatever can be read now is shown, even when a
     // file is still broken.
     hasGoodRef.current = false;
+    // And the graph is laid out afresh, not around the picture on screen.
+    layoutRef.current = null;
+    setLayoutRound((round) => round + 1);
     load(directory, { quiet: false, fingerprint: null });
   }
 
   function fit() {
     if (view !== null) {
-      setTransform(fitTransform(viewBounds(view), size));
+      setAuto(true);
+      setTransform(fitTransform(viewBounds(view), size, FIT_MARGIN, FIT_MAX_SCALE));
+    }
+  }
+
+  /** A pan or zoom made by hand, which ends the fitting to the pane. */
+  function moveByHand(change: (current: Transform) => Transform) {
+    setAuto(false);
+    setTransform(change);
+  }
+
+  function handleResize(next: Size) {
+    setSize(next);
+    const main = mainRef.current;
+    setRoom(main === null ? next : { w: main.clientWidth, h: main.clientHeight });
+  }
+
+  function togglePanel(next: Panel) {
+    setPanel((current) => (current === next ? null : next));
+  }
+
+  function openNote(path: string) {
+    actions.openPane({ type: 'editor', path });
+  }
+
+  /**
+   * Selects a node of the vault from one of the lists and brings it to the
+   * middle of the drawing. A node that is hidden is shown first.
+   */
+  function focusNode(id: string) {
+    const wanted = graph?.nodes.find((node) => node.id === id);
+    if (wanted === undefined || fullView === null) {
+      return;
+    }
+    const node =
+      fullView.key === ALL_VIEW
+        ? fullView.nodes.find((item) => item.id === id)
+        : fullView.nodes.find((item) => item.path === wanted.path);
+    if (node === undefined) {
+      showNotice(`"${wanted.title}" is not on this canvas. All nodes shows it.`);
+      return;
+    }
+    if (fullView.unlinked.has(node.id)) {
+      setShowUnlinked(true);
+    }
+    if (hidden.has(node.typeId)) {
+      setHidden((current) => {
+        const next = new Set(current);
+        next.delete(node.typeId);
+        return next;
+      });
+    }
+    setSelectedId(node.id);
+    if (size.w > 0 && size.h > 0) {
+      setAuto(false);
+      setTransform((current) => centerOn(current, node.rect, size));
     }
   }
 
@@ -391,7 +639,19 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
   }
 
   const shownPath = graph?.directory ?? directory;
-  const status = notice ?? statusText({ graph, view, loading, stale });
+  const status = notice ?? statusText({ graph, loading, stale });
+  const hasGraph = view !== null && graph?.message === null;
+  const pointed = view?.nodes.find((node) => node.id === hoverId) ?? selected;
+  const readout =
+    view === null || pointed === null || notice !== null || stale !== null
+      ? null
+      : readoutOf(
+          view,
+          pointed,
+          graph?.nodeTypes.find((type) => type.id === pointed.typeId)?.name ?? 'Unknown type',
+        );
+  const freshUnlinked =
+    !showUnlinked && fullView !== null && [...fresh].some((id) => fullView.unlinked.has(id));
 
   return (
     <div className="graph-pane" ref={rootRef} onKeyDown={handleKeyDown}>
@@ -428,6 +688,58 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
               </option>
             ))}
           </select>
+        ) : null}
+        {hasGraph ? (
+          <div className="graph-toggles" role="group" aria-label="Lists and filters">
+            <button
+              type="button"
+              aria-pressed={panel === 'claims'}
+              title="How well each claim is supported by evidence"
+              onClick={() => {
+                togglePanel('claims');
+              }}
+            >
+              Claims
+            </button>
+            <button
+              type="button"
+              aria-pressed={panel === 'candidates'}
+              title="Lines tagged to become nodes"
+              onClick={() => {
+                togglePanel('candidates');
+              }}
+            >
+              Candidates ({candidateCount})
+            </button>
+            {unlinkedCount === 0 ? null : (
+              <button
+                type="button"
+                aria-pressed={showUnlinked}
+                data-fresh={freshUnlinked ? 'true' : undefined}
+                title={
+                  showUnlinked
+                    ? 'Hide the nodes that have no relations'
+                    : 'Show the nodes that have no relations'
+                }
+                onClick={() => {
+                  setShowUnlinked((current) => !current);
+                }}
+              >
+                Unlinked ({unlinkedCount})
+              </button>
+            )}
+            <button
+              type="button"
+              aria-pressed={panel === 'issues'}
+              data-quiet={issueTotal === 0}
+              title="What was left out of the picture or may be drawn wrong"
+              onClick={() => {
+                togglePanel('issues');
+              }}
+            >
+              Issues ({issueTotal})
+            </button>
+          </div>
         ) : null}
         {view === null ? null : (
           <span className="graph-counts" title={view.skippedNote}>
@@ -466,37 +778,73 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
           ))}
         </div>
       )}
-      <div className="graph-body">
-        {view !== null && graph?.message === null ? (
-          <GraphCanvas
-            view={view}
-            transform={transform}
-            selectedId={selected?.id ?? null}
-            near={near}
-            label={`Graph of ${shownPath}, ${view.label}`}
-            surfaceRef={surfaceRef}
-            onSelect={setSelectedId}
-            onOpen={openNode}
-            onTransform={setTransform}
-            onResize={setSize}
+      <div className="graph-main" ref={mainRef}>
+        <div className="graph-body">
+          {view !== null && graph?.message === null ? (
+            <GraphCanvas
+              view={view}
+              transform={transform}
+              selectedId={selected?.id ?? null}
+              near={near}
+              lens={lensById}
+              fresh={fresh}
+              label={`Graph of ${shownPath}, ${view.label}`}
+              surfaceRef={surfaceRef}
+              onSelect={setSelectedId}
+              onOpen={openNode}
+              onHover={setHoverId}
+              onTransform={moveByHand}
+              onResize={handleResize}
+            />
+          ) : null}
+          {graph === null && failure === null ? <p className="graph-state">Loading...</p> : null}
+          {graph !== null && graph.message !== null ? (
+            <p className="graph-state">{graph.message}</p>
+          ) : null}
+          {failure === null ? null : (
+            <div className="graph-state" role="alert">
+              <p>This vault could not be read.</p>
+              <pre className="graph-error-text">{failure}</pre>
+              <button type="button" onClick={reload}>
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
+        {hasGraph && panel === 'claims' && lens !== null ? (
+          <ClaimsPanel
+            lens={lens}
+            looks={looks}
+            selectedId={
+              selected === null
+                ? null
+                : (lens.rows.find((row) => row.id === selected.id || row.path === selected.path)
+                    ?.id ?? null)
+            }
+            onSelect={focusNode}
+            onOpen={openNote}
           />
         ) : null}
-        {graph === null && failure === null ? <p className="graph-state">Loading...</p> : null}
-        {graph !== null && graph.message !== null ? (
-          <p className="graph-state">{graph.message}</p>
+        {hasGraph && panel === 'candidates' ? (
+          <CandidatesPanel groups={candidates} onOpen={openNote} />
         ) : null}
-        {failure === null ? null : (
-          <div className="graph-state" role="alert">
-            <p>This vault could not be read.</p>
-            <pre className="graph-error-text">{failure}</pre>
-            <button type="button" onClick={reload}>
-              Retry
-            </button>
+        {hasGraph && panel === 'issues' ? <IssuesPanel groups={issues} onOpen={openNote} /> : null}
+      </div>
+      <div className="graph-footer">
+        {readout === null ? null : (
+          <div className="graph-readout" aria-label="Node under the pointer">
+            <span className="graph-type-chip" style={{ background: readout.fill }}>
+              {readout.typeName}
+            </span>
+            <span className="graph-readout-title" title={readout.title}>
+              {readout.title}
+            </span>
+            <span className="graph-readout-relations">{readout.relations}</span>
           </div>
         )}
-      </div>
-      <div className="graph-footer" role="status">
-        {status}
+        <div className="graph-status" role="status" data-covered={readout !== null}>
+          {status}
+        </div>
       </div>
     </div>
   );

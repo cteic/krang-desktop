@@ -21,6 +21,7 @@ export const OVERVIEW: Canvas = {
       y: 0,
       w: 400,
       h: 112,
+      size: 'm',
       title: 'QUE - Does it scale',
       typeId: 'node_q',
       path: `${VAULT}/QUE - Does it scale.md`,
@@ -32,6 +33,7 @@ export const OVERVIEW: Canvas = {
       y: 300,
       w: 200,
       h: 100,
+      size: 's',
       title: 'CLM - It scales',
       typeId: 'node_c',
       path: `${VAULT}/claims/CLM - It scales.md`,
@@ -43,6 +45,7 @@ export const OVERVIEW: Canvas = {
       y: 0,
       w: 200,
       h: 100,
+      size: 's',
       title: 'CLM - Deleted since',
       typeId: 'node_c',
       path: null,
@@ -81,15 +84,33 @@ export const GRAPH: VaultGraph = {
   truncated: false,
   incomplete: false,
   nodeTypes: [
-    { id: 'node_q', name: 'Question', format: 'QUE - {content}', color: '#F2C123' },
-    { id: 'node_c', name: 'Claim', format: 'CLM - {content}', color: '#2E9E82' },
-    { id: 'node_e', name: 'Evidence', format: 'EVD - {content}', color: '#8B1A30' },
-    { id: 'node_unused', name: 'Source', format: '@{content}', color: null },
+    {
+      id: 'node_q',
+      name: 'Question',
+      format: 'QUE - {content}',
+      color: '#F2C123',
+      tag: 'que-candidate',
+    },
+    {
+      id: 'node_c',
+      name: 'Claim',
+      format: 'CLM - {content}',
+      color: '#2E9E82',
+      tag: 'clm-candidate',
+    },
+    { id: 'node_e', name: 'Evidence', format: 'EVD - {content}', color: '#8B1A30', tag: null },
+    { id: 'node_unused', name: 'Source', format: '@{content}', color: null, tag: null },
   ],
   relationTypes: [
     { id: 'rel_s', label: 'supports', complement: 'is supported by', color: 'green' },
     { id: 'relation_o', label: 'opposes', complement: 'is opposed by', color: 'red' },
     { id: 'rel_p', label: 'produces', complement: 'is produced by', color: 'black' },
+  ],
+  allowedRelations: [
+    { sourceTypeId: 'node_e', destinationTypeId: 'node_c', relationTypeId: 'rel_s' },
+    { sourceTypeId: 'node_e', destinationTypeId: 'node_c', relationTypeId: 'relation_o' },
+    { sourceTypeId: 'node_c', destinationTypeId: 'node_q', relationTypeId: 'rel_s' },
+    { sourceTypeId: 'node_c', destinationTypeId: 'node_q', relationTypeId: 'relation_o' },
   ],
   nodes: [
     {
@@ -152,4 +173,30 @@ export const GRAPH: VaultGraph = {
   skippedRelations: 2,
   repeatedIds: 0,
   canvases: [OVERVIEW],
+  candidates: [
+    {
+      path: `${VAULT}/daily/Monday.md`,
+      line: 3,
+      text: '- Caching helps #clm-candidate',
+      typeId: 'node_c',
+    },
+    {
+      path: `${VAULT}/daily/Monday.md`,
+      line: 9,
+      text: 'Why is the first run slow? #que-candidate',
+      typeId: 'node_q',
+    },
+  ],
+  issues: [
+    {
+      kind: 'skippedRelation',
+      text: 'Relation r8: supports, from "CLM - It scales" to unknown id id-gone',
+      path: null,
+    },
+    {
+      kind: 'skippedRelation',
+      text: 'Relation r9: supports, from "CLM - It scales" to nothing',
+      path: null,
+    },
+  ],
 };

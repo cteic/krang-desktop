@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { luminance, nodeColor, parseHex, relationColor, textColorOn } from './colors';
+import {
+  luminance,
+  nodeColor,
+  parseHex,
+  relationColor,
+  relationColors,
+  textColorOn,
+} from './colors';
 
 describe('parseHex', () => {
   it('reads long and short hex colours', () => {
@@ -80,6 +87,33 @@ describe('relationColor', () => {
       const rgb = parseHex(relationColor(name));
       const contrast = rgb === null ? 0 : (luminance(rgb) + 0.05) / (background + 0.05);
       expect(contrast, name).toBeGreaterThan(4.5);
+    }
+  });
+
+  it('colours supports green, opposes red and informs blue, and keeps the rest apart', () => {
+    const colors = relationColors([
+      { id: 's', color: 'black', kind: 'supports' },
+      { id: 'o', color: null, kind: 'opposes' },
+      { id: 'i', color: 'yellow', kind: 'informs' },
+      { id: 'own', color: 'violet', kind: 'other' },
+      { id: 'plain', color: 'black', kind: 'other' },
+      { id: 'none', color: null, kind: 'other' },
+      { id: 'same', color: 'violet', kind: 'other' },
+      { id: 'green', color: 'green', kind: 'other' },
+    ]);
+    expect([colors.get('s'), colors.get('o'), colors.get('i')]).toEqual([
+      '#40c057',
+      '#ff6b6b',
+      '#4f8ff7',
+    ]);
+    expect(colors.get('own')).toBe('#b583f5');
+    // Eight types, eight colours.
+    expect(new Set(colors.values()).size).toBe(8);
+    const background = luminance({ r: 11, g: 14, b: 20 });
+    for (const [id, color] of colors) {
+      const rgb = parseHex(color);
+      const contrast = rgb === null ? 0 : (luminance(rgb) + 0.05) / (background + 0.05);
+      expect(contrast, id).toBeGreaterThan(4.5);
     }
   });
 

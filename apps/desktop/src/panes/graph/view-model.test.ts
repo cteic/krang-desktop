@@ -8,10 +8,13 @@ import {
   defaultPageId,
   drawablePages,
   legendOf,
+  layoutInput,
   resolveViewKey,
+  splitTitle,
   viewBounds,
   viewOptions,
   withoutTypes,
+  withoutUnlinked,
 } from './view-model';
 import type { GraphView, ViewEdge, ViewNode } from './view-model';
 
@@ -90,6 +93,109 @@ describe('the all nodes view', () => {
     expect(node.lines.length).toBe(3);
     expect(node.lines[2]?.endsWith('…')).toBe(true);
     expect(node.lines.every((line) => line.length <= 23)).toBe(true);
+  });
+
+  it('shows the type as a chip, so the title starts at its first real word', () => {
+    const claim = nodeOf(view, 'id-c1');
+    expect(claim.title).toBe('CLM - It scales');
+    expect(claim.chip).toBe('CLM');
+    expect(claim.lines).toEqual(['It scales']);
+    expect(claim.chipWidth).toBeGreaterThan(0);
+    // Big enough to read: about a quarter of the box's height.
+    expect(claim.fontSize / claim.rect.h).toBeGreaterThan(0.22);
+  });
+
+  it('keeps the first line clear of the chip', () => {
+    const long: VaultGraph = {
+      ...GRAPH,
+      nodes: [
+        {
+          id: 'id-long',
+          typeId: 'node_c',
+          title: 'CLM - Status effects fade within a few years',
+          path: `${VAULT}/long.md`,
+        },
+      ],
+      relations: [],
+    };
+    const node = nodeOf(buildView(long, ALL_VIEW), 'id-long');
+    const charWidth = node.fontSize * 0.56;
+    const room = node.rect.w - node.padding * 2;
+    expect((node.lines[0]?.length ?? 0) * charWidth + node.chipWidth).toBeLessThanOrEqual(room);
+    expect(node.lines.length).toBeLessThanOrEqual(3);
+    expect(node.lines.join(' ')).toBe('Status effects fade within a few years');
+  });
+
+  it('marks what each relation says and which node it is about', () => {
+    expect(edgeOf(view, 'r1')).toMatchObject({ kind: 'supports', acted: 'id-q' });
+    expect(edgeOf(view, 'r2')).toMatchObject({ kind: 'opposes', acted: 'id-q' });
+    // Stored from the claim to the evidence, which the settings allow only the other way.
+    const turned: VaultGraph = {
+      ...GRAPH,
+      relations: [
+        {
+          id: 'r1',
+          typeId: 'rel_s',
+          source: 'id-c1',
+          destination: 'id-e',
+          ambiguous: false,
+          tentative: null,
+        },
+      ],
+    };
+    expect(edgeOf(buildView(turned, ALL_VIEW), 'r1')).toMatchObject({
+      kind: 'supports',
+      target: 'id-e',
+      acted: 'id-c1',
+    });
+  });
+
+  it('gives each label a background big enough for its text', () => {
+    const supports = edgeOf(view, 'r1');
+    expect(view.labelSize).toBe(10);
+    expect(supports.labelBox.w).toBeGreaterThan('supports'.length * 10 * 0.5);
+    expect(supports.labelBox.h).toBeGreaterThan(10);
+  });
+
+  it('knows when a label has no room between two boxes', () => {
+    const box = { w: 176, h: 60 };
+    function fits(claim: { x: number; y: number }): boolean {
+      const placed = new Map(GRAPH.nodes.map((node) => [node.id, { x: 0, y: 0, ...box }]));
+      placed.set('id-c1', { ...claim, ...box });
+      return edgeOf(buildView(GRAPH, ALL_VIEW, null, placed), 'r1').labelFits;
+    }
+    // Side by side with a narrow gap: the label would lie over both boxes.
+    expect(fits({ x: 200, y: 0 })).toBe(false);
+    // Far enough apart sideways, or stacked with a row's gap between them.
+    expect(fits({ x: 260, y: 0 })).toBe(true);
+    expect(fits({ x: 0, y: 84 })).toBe(true);
+    expect(fits({ x: 0, y: 70 })).toBe(false);
+  });
+
+  it('knows which nodes no relation touches, and can leave them out', () => {
+    expect([...view.unlinked]).toEqual([`path:${VAULT}/CLM - Alone.md`]);
+    const linked = withoutUnlinked(view);
+    expect(linked.nodes.map((node) => node.title)).not.toContain('CLM - Alone');
+    expect(linked.nodes.length).toBe(4);
+    expect(linked.edges).toBe(view.edges);
+    // With no relations at all there is nothing to hide the loose nodes behind.
+    const bare = buildView({ ...GRAPH, relations: [] }, ALL_VIEW);
+    expect(bare.unlinked.size).toBe(0);
+    expect(withoutUnlinked(bare)).toBe(bare);
+  });
+
+  it('draws the nodes where it is told to, when given a layout', () => {
+    const spot = { x: 900, y: -40, w: 176, h: 60 };
+    const placed = new Map(GRAPH.nodes.map((node) => [node.id, spot]));
+    expect(nodeOf(buildView(GRAPH, ALL_VIEW, null, placed), 'id-q').rect).toBe(spot);
+    expect(layoutInput(GRAPH).nodes.map((node) => node.group)).toEqual([
+      '000000',
+      '000001',
+      '000001',
+      '000002',
+      '000001',
+    ]);
+    expect(layoutInput(GRAPH).edges[0]).toEqual({ source: 'id-c1', target: 'id-q' });
   });
 
   it('draws the relations from the relations file, labelled and coloured by type', () => {
@@ -201,6 +307,49 @@ describe('a canvas view', () => {
     expect(nodeOf(view, 'shape:c').path).toBe(`${VAULT}/claims/CLM - It scales.md`);
   });
 
+  it('sizes the text of a box as the canvas saved it, so a big box has big text', () => {
+    const view = buildView(GRAPH, 'Overview');
+    const question = nodeOf(view, 'shape:q');
+    const claimBox = nodeOf(view, 'shape:c');
+    // The question was saved at the medium size, the claim at the small one.
+    expect(question.fontSize).toBe(25);
+    expect(claimBox.fontSize).toBe(16);
+    expect(question.chip).toBe('QUE');
+    expect(question.lines).toEqual(['Does it scale']);
+    expect(view.labelSize).toBe(18);
+  });
+
+  it('shrinks the text of a canvas box only as far as it must to fit whole', () => {
+    const crowded: VaultGraph = {
+      ...GRAPH,
+      canvases: [
+        {
+          ...OVERVIEW,
+          nodes: [
+            {
+              id: 'shape:long',
+              pageId: 'page:main',
+              x: 0,
+              y: 0,
+              w: 200,
+              h: 100,
+              size: 'xl',
+              title: 'CLM - Status amplification explains most early citations of famous authors',
+              typeId: 'node_c',
+              path: null,
+            },
+          ],
+          relations: [],
+        },
+      ],
+    };
+    const node = nodeOf(buildView(crowded, 'Overview'), 'shape:long');
+    expect(node.fontSize).toBeLessThan(48);
+    expect(node.fontSize).toBeGreaterThanOrEqual(9);
+    expect(node.lines.at(-1)?.endsWith('…')).toBe(false);
+    expect(node.lines.length * node.fontSize * 1.2).toBeLessThanOrEqual(100);
+  });
+
   it('draws the arrows as saved, with the label at the middle of the line', () => {
     const view = buildView(GRAPH, 'Overview');
     const arrow = edgeOf(view, 'shape:arrow');
@@ -308,5 +457,32 @@ describe('viewBounds', () => {
     expect(bounds?.h).toBeCloseTo(165, 5);
     expect(bounds?.w).toBeGreaterThan(200);
     expect(viewBounds(buildView(GRAPH, 'Overview'))).toEqual({ x: 0, y: 0, w: 800, h: 400 });
+  });
+});
+
+describe('splitTitle', () => {
+  it("takes the short name off the front of a title that follows its type's pattern", () => {
+    expect(splitTitle('CLM - It scales', 'CLM - {content}')).toEqual({
+      chip: 'CLM',
+      text: 'It scales',
+    });
+    expect(splitTitle('hyp- lower case', 'HYP- {content}')).toEqual({
+      chip: 'HYP',
+      text: 'lower case',
+    });
+    expect(splitTitle('[[EVD]] - Linked', '[[EVD]] - {content}')).toEqual({
+      chip: 'EVD',
+      text: 'Linked',
+    });
+  });
+
+  it('leaves the title whole when there is no short name to take', () => {
+    const whole = (title: string, format: string) => splitTitle(title, format).chip === null;
+    expect(splitTitle('@smith2020', '@{content}')).toEqual({ chip: null, text: '@smith2020' });
+    expect(whole('Something else', 'CLM - {content}')).toBe(true);
+    expect(whole('CLM - ', 'CLM - {content}')).toBe(true);
+    expect(whole('Anything', '{content}')).toBe(true);
+    expect(whole('Anything', '')).toBe(true);
+    expect(whole('Experiment - one', 'Experiment - {content}')).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   boundsOf,
+  centerOn,
   clipToRect,
   edgeShape,
   fitTransform,
@@ -97,6 +98,12 @@ describe('fitTransform', () => {
     expect(fit.y).toBe(190);
   });
 
+  it('zooms in as far as it is allowed, to fill the pane with a small drawing', () => {
+    const fit = fitTransform({ x: 0, y: 0, w: 400, h: 100 }, { w: 828, h: 600 }, 14, 1.25);
+    expect(fit.k).toBe(1.25);
+    expect(fitTransform({ x: 0, y: 0, w: 400, h: 100 }, { w: 628, h: 600 }, 14, 4).k).toBe(1.5);
+  });
+
   it('does nothing without a drawing or without room', () => {
     expect(fitTransform(null, { w: 800, h: 600 })).toEqual(IDENTITY);
     expect(fitTransform({ x: 0, y: 0, w: 10, h: 10 }, { w: 0, h: 0 })).toEqual(IDENTITY);
@@ -121,6 +128,19 @@ describe('zoomAt', () => {
   it('stays within the zoom limits', () => {
     expect(zoomAt(IDENTITY, { x: 0, y: 0 }, 1000).k).toBe(MAX_ZOOM);
     expect(zoomAt(IDENTITY, { x: 0, y: 0 }, 0.0001).k).toBe(MIN_ZOOM);
+  });
+});
+
+describe('centerOn', () => {
+  it('puts the middle of a box in the middle of the pane, at the same zoom', () => {
+    const moved = centerOn(
+      { x: 5, y: 5, k: 2 },
+      { x: 100, y: 40, w: 20, h: 20 },
+      { w: 800, h: 600 },
+    );
+    expect(moved).toEqual({ x: 180, y: 200, k: 2 });
+    const view = { x: 5, y: 5, k: 2 };
+    expect(centerOn(view, { x: 0, y: 0, w: 1, h: 1 }, { w: 0, h: 0 })).toBe(view);
   });
 });
 

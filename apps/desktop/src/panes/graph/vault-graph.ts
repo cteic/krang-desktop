@@ -12,6 +12,27 @@ const nodeTypeSchema = z.object({
   name: z.string(),
   format: z.string(),
   color: z.string().nullable(),
+  /** The tag, without its `#`, that marks a line as a candidate for this type. */
+  tag: z.string().nullable().default(null),
+});
+
+const allowedRelationSchema = z.object({
+  sourceTypeId: z.string(),
+  destinationTypeId: z.string(),
+  relationTypeId: z.string(),
+});
+
+const candidateSchema = z.object({
+  path: z.string().min(1),
+  line: z.number().int().positive(),
+  text: z.string(),
+  typeId: z.string(),
+});
+
+const issueSchema = z.object({
+  kind: z.string(),
+  text: z.string(),
+  path: z.string().nullable(),
 });
 
 const relationTypeSchema = z.object({
@@ -46,6 +67,8 @@ const canvasNodeSchema = z.object({
   y: z.number(),
   w: z.number().positive(),
   h: z.number().positive(),
+  /** The canvas size step of the box's text: `s`, `m`, `l` or `xl`. */
+  size: z.string().default('s'),
   title: z.string(),
   typeId: z.string(),
   path: z.string().nullable(),
@@ -90,17 +113,23 @@ const graphSchema = z.object({
   incomplete: z.boolean(),
   nodeTypes: z.array(nodeTypeSchema),
   relationTypes: z.array(relationTypeSchema),
+  allowedRelations: z.array(allowedRelationSchema).default([]),
   nodes: z.array(nodeSchema),
   relations: z.array(relationSchema),
   skippedRelations: z.number().int().nonnegative(),
   repeatedIds: z.number().int().nonnegative(),
   canvases: z.array(canvasSchema),
+  candidates: z.array(candidateSchema).default([]),
+  issues: z.array(issueSchema).default([]),
 });
 
 const fingerprintSchema = z.string().min(1);
 
 export type NodeType = z.infer<typeof nodeTypeSchema>;
 export type RelationType = z.infer<typeof relationTypeSchema>;
+export type AllowedRelation = z.infer<typeof allowedRelationSchema>;
+export type Candidate = z.infer<typeof candidateSchema>;
+export type VaultIssue = z.infer<typeof issueSchema>;
 export type GraphNode = z.infer<typeof nodeSchema>;
 export type GraphRelation = z.infer<typeof relationSchema>;
 export type CanvasPage = z.infer<typeof canvasPageSchema>;
