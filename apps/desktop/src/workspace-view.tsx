@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, PointerEvent as ReactPointerEvent } from 'react';
 
 import { accentFor } from './accent';
@@ -146,6 +146,26 @@ function TabView({ tab, shown, dispatch, debug }: TabViewProps) {
   const areaRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  // A click inside an embedded page never reaches this document, so the
+  // usual "pointer down focuses the pane" cannot see it. What can be seen is
+  // the window losing focus to a frame: that frame's pane is the one clicked.
+  useEffect(() => {
+    function onWindowBlur() {
+      const frame = document.activeElement;
+      if (!(frame instanceof HTMLIFrameElement) || areaRef.current?.contains(frame) !== true) {
+        return;
+      }
+      const paneId = frame.closest('[data-pane-id]')?.getAttribute('data-pane-id');
+      if (typeof paneId === 'string') {
+        dispatch({ type: 'focus', paneId });
+      }
+    }
+    window.addEventListener('blur', onWindowBlur);
+    return () => {
+      window.removeEventListener('blur', onWindowBlur);
+    };
+  }, [dispatch]);
 
   const geometry = useMemo(() => computeGeometry(tab.root), [tab.root]);
   const leaves = useMemo(() => leavesOf(tab.root).sort(creationOrder), [tab.root]);
@@ -360,7 +380,7 @@ function PaneFrame({ leaf, accent, active, magnified, dispatch, debug }: PaneFra
       <div className="pane-body">
         <PaneBody
           paneId={paneId}
-          name={title}
+          name={`${leaf.content.type}-${paneId}`}
           content={leaf.content}
           active={active}
           debug={debug}
