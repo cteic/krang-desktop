@@ -74,6 +74,7 @@ pub fn run() {
             fs::fs_write_text,
             agents::agent_run,
             agents::agent_cancel,
+            ipc::ipc_reply,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
