@@ -133,8 +133,8 @@ Graphs plugin. The pane itself never writes to the vault.
   the plugin lists as tentative, show in the expanded row and are not
   counted.
 
-Notes in a `Templates` folder are left out. A dashed line is a relation the
-vault marks as not tentative. A dotted line is a relation whose end names an
+Notes in a `Templates` folder are left out. A dashed line is an imported relation
+that the vault has not accepted yet. A dotted line is a relation whose end names an
 instance id that several notes share, so it may point at the wrong note.
 
 ## Try the discourse graph demo
