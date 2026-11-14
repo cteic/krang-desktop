@@ -13,6 +13,11 @@ use crate::startup::expand_home;
 /// a multi-gigabyte log would take the window down with it.
 const MAX_TEXT_BYTES: u64 = 5 * 1024 * 1024;
 
+/// Where the Discourse Graphs plugin for Obsidian keeps its settings, as
+/// the last parts of the path. The folder above `plugins` is left out, as
+/// a vault may give its settings folder another name.
+const PLUGIN_SETTINGS: [&str; 3] = ["plugins", "discourse-graphs", "data.json"];
+
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DirEntry {
@@ -81,7 +86,30 @@ pub fn list_dir(path: &str) -> Result<DirListing, String> {
     })
 }
 
+/// Whether a path, with its links followed, is the plugin's settings file.
+/// Letter case is not told apart, since many disks do not tell it apart.
+fn is_plugin_settings(path: &str) -> bool {
+    let real = fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let mut parts = real.components().rev();
+    PLUGIN_SETTINGS.iter().rev().all(|name| {
+        parts.next().is_some_and(|part| {
+            part.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(name)
+        })
+    })
+}
+
 pub fn read_text(path: &str) -> Result<TextFile, String> {
+    // That file holds a vault's node and relation types, and it can hold an
+    // account password too. Text the page reads can go on to an agent and
+    // its model provider, so the page is never given this file.
+    if is_plugin_settings(path) {
+        return Err(format!(
+            "{path} is the settings file of the Discourse Graphs plugin. It can hold an \
+             account password, so it is not opened here."
+        ));
+    }
     let metadata = fs::metadata(path).map_err(|error| format!("{path}: {error}"))?;
     if metadata.is_dir() {
         return Err(format!("{path} is a directory"));
@@ -259,6 +287,42 @@ mod tests {
             fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
             0o644
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_plugin_settings_file_is_not_opened_as_text() {
+        let dir = fs::canonicalize(scratch("settings")).unwrap();
+        let folder = dir.join(".obsidian/plugins/discourse-graphs");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("data.json"), r#"{"spacePassword":"hunter2"}"#).unwrap();
+        fs::write(folder.join("main.js"), "code").unwrap();
+        fs::create_dir_all(dir.join(".obsidian/plugins/other")).unwrap();
+        fs::write(dir.join(".obsidian/plugins/other/data.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(folder.join("data.json"), dir.join("innocent.md")).unwrap();
+
+        let mut refused = vec![
+            folder.join("data.json"),
+            folder.join("../discourse-graphs/data.json"),
+            dir.join("innocent.md"),
+        ];
+        // Where letter case does not tell file names apart, it does not here.
+        let shouted = dir.join(".OBSIDIAN/Plugins/Discourse-Graphs/DATA.JSON");
+        if shouted.exists() {
+            refused.push(shouted);
+        }
+        for path in refused {
+            let error = read_text(path.to_str().unwrap()).unwrap_err();
+            assert!(error.contains("can hold an account password"), "{error}");
+            assert!(!error.contains("hunter2"), "{error}");
+        }
+        for path in [
+            folder.join("main.js"),
+            dir.join(".obsidian/plugins/other/data.json"),
+        ] {
+            assert!(read_text(path.to_str().unwrap()).is_ok(), "{path:?}");
+        }
 
         fs::remove_dir_all(&dir).unwrap();
     }
