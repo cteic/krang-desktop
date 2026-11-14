@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MIN_TEXT_PX, readableFrom } from './graph-canvas';
+import { MIN_CANVAS_TEXT_PX, MIN_TEXT_PX, readableFrom } from './graph-canvas';
 
 describe('readableFrom', () => {
   it('is the smallest text size that still reads at a zoom', () => {
@@ -22,5 +22,12 @@ describe('readableFrom', () => {
 
   it('holds still while the zoom changes a little', () => {
     expect(readableFrom([16, 25], 0.5)).toBe(readableFrom([16, 25], 0.55));
+  });
+
+  it('keeps the text of a canvas far below where the all nodes view lets go of it', () => {
+    // 16 at a quarter of full size is 4 px: too small for all nodes, kept on a canvas.
+    expect(readableFrom([16], 0.25)).toBe(Infinity);
+    expect(readableFrom([16], 0.25, MIN_CANVAS_TEXT_PX)).toBe(16);
+    expect(readableFrom([16], 0.1, MIN_CANVAS_TEXT_PX)).toBe(Infinity);
   });
 });

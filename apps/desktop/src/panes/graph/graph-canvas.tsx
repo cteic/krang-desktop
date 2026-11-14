@@ -5,7 +5,7 @@ import { panBy, zoomAt } from './geometry';
 import type { Size, Transform } from './geometry';
 import type { SupportStatus } from './lens';
 import type { Neighbourhood } from './selection';
-import { CHIP_FONT, NODE_LINE_HEIGHT } from './view-model';
+import { ALL_VIEW, CHIP_FONT, NODE_LINE_HEIGHT, TEXT_LINE_HEIGHT } from './view-model';
 import type { GraphView, ViewEdge, ViewNode, ViewText } from './view-model';
 
 /** How far the pointer moves before a press becomes a drag. */
@@ -13,9 +13,16 @@ const DRAG_THRESHOLD = 4;
 const WHEEL_ZOOM = 0.0015;
 /** A pinch arrives as a wheel event with the control key down, in small steps. */
 const PINCH_ZOOM = 0.01;
-const LINE_HEIGHT = 1.25;
-/** Text that would be drawn smaller than this on screen is not drawn at all. */
-export const MIN_TEXT_PX = 7;
+/**
+ * In the all nodes view, a title that would be drawn smaller than this on
+ * screen cannot be read, and gives way to its type's short name.
+ */
+export const MIN_TEXT_PX = 6;
+/**
+ * A canvas is drawn as it was saved, so the title of a box stays on it
+ * however small. Below this size on screen it would only be a smudge.
+ */
+export const MIN_CANVAS_TEXT_PX = 2;
 const DASHES: Record<ViewEdge['dash'], string | undefined> = {
   solid: undefined,
   dashed: '7 5',
@@ -253,7 +260,11 @@ function LooseText({ text }: LooseTextProps) {
   return (
     <text className="graph-text" fontSize={text.fontSize}>
       {text.lines.map((line, index) => (
-        <tspan key={index} x={text.x} y={text.y + text.fontSize * (1 + index * LINE_HEIGHT)}>
+        <tspan
+          key={index}
+          x={text.x}
+          y={text.y + text.fontSize * ((index + 0.5) * TEXT_LINE_HEIGHT + 0.35)}
+        >
           {line}
         </tspan>
       ))}
@@ -291,9 +302,6 @@ const Scene = memo(function Scene({
 }: SceneProps) {
   return (
     <>
-      {view.texts.map((text) => (
-        <LooseText key={text.id} text={text} />
-      ))}
       {view.edges.map((edge) => (
         <EdgeLine key={edge.id} edge={edge} dimmed={near !== null && !near.edgeIds.has(edge.id)} />
       ))}
@@ -308,6 +316,9 @@ const Scene = memo(function Scene({
           detailed={node.fontSize >= minFont}
           coded={codes}
         />
+      ))}
+      {view.texts.map((text) => (
+        <LooseText key={text.id} text={text} />
       ))}
       {labels
         ? view.edges.map((edge) =>
@@ -330,8 +341,12 @@ const Scene = memo(function Scene({
  * moves in steps, one per text size in the view, so zooming a little
  * leaves it alone. Infinity when nothing is readable.
  */
-export function readableFrom(sizes: readonly number[], scale: number): number {
-  const needed = MIN_TEXT_PX / scale;
+export function readableFrom(
+  sizes: readonly number[],
+  scale: number,
+  minPx: number = MIN_TEXT_PX,
+): number {
+  const needed = minPx / scale;
   let smallest = Infinity;
   for (const size of sizes) {
     if (size >= needed && size < smallest) {
@@ -368,13 +383,15 @@ export function GraphCanvas({
   onResizeRef.current = onResize;
 
   const sizes = useMemo(() => [...new Set(view.nodes.map((node) => node.fontSize))], [view]);
-  const minFont = readableFrom(sizes, transform.k);
+  // Only the all nodes view swaps a title for its type's short name.
+  const canvas = view.key !== ALL_VIEW;
+  const minFont = readableFrom(sizes, transform.k, canvas ? MIN_CANVAS_TEXT_PX : MIN_TEXT_PX);
   // The smallest short name in the view decides for all, so the boxes change together.
   const smallestCode = useMemo(
     () => Math.min(...view.nodes.filter((node) => node.chip !== null).map(codeSize)),
     [view],
   );
-  const codes = smallestCode * transform.k >= MIN_TEXT_PX;
+  const codes = !canvas && smallestCode * transform.k >= MIN_TEXT_PX;
   let detail = 'boxes';
   if (minFont !== Infinity) {
     detail = 'text';

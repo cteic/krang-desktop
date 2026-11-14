@@ -200,6 +200,46 @@ describe('showing a vault', () => {
     expect(await screen.findByText('No Discourse Graphs data found in /vault.')).toBeTruthy();
     expect(screen.queryByRole('group', { name: /^Graph of / })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
+    // It is told apart from a vault that is only empty, and says how to make one.
+    expect(screen.getByText('This folder is not a vault')).toBeTruthy();
+    expect(screen.getByText('kd vault init <folder>')).toBeTruthy();
+    expect(screen.queryByText('No nodes yet')).toBeNull();
+  });
+
+  it('says how to add a node when the vault has none yet', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vault.graph = { ...GRAPH, nodes: [], relations: [], canvases: [], skippedRelations: 0 };
+    renderPane();
+
+    expect(await screen.findByText('No nodes yet')).toBeTruthy();
+    const ways = within(screen.getByRole('list', { name: 'Ways to add a node' }))
+      .getAllByRole('listitem')
+      .map((item) => item.textContent);
+    expect(ways).toEqual([
+      'Ask the agent in the chat pane to use the discourse-graph skill on a note.',
+      'Select text in the editor and choose Node.',
+      'Run kd node claim "..." in the shell.',
+    ]);
+    expect(screen.queryByText('This folder is not a vault')).toBeNull();
+    // There is no blank drawing behind it.
+    expect(screen.queryByRole('group', { name: /^Graph of / })).toBeNull();
+
+    expect(status()).toBe('');
+
+    // The first node takes its place.
+    vault.graph = { ...GRAPH, canvases: [] };
+    vault.fingerprint = 'changed';
+    await poll();
+    await findGraph();
+    expect(screen.queryByText('No nodes yet')).toBeNull();
+  });
+
+  it('still draws a canvas of a vault whose notes are gone', async () => {
+    vault.graph = { ...GRAPH, nodes: [], relations: [] };
+    renderPane({ view: 'Overview' });
+    await findGraph();
+    expect(screen.queryByText('No nodes yet')).toBeNull();
+    expect(nodeTitles()).toEqual(['QUE - Does it scale', 'CLM - It scales']);
   });
 
   it('shows the reason and a retry when the vault cannot be read', async () => {
@@ -688,8 +728,7 @@ describe('reading a node', () => {
     expect(readout()?.textContent).toContain(first);
   });
 
-  it('shows a label that has no room only while its node is selected', async () => {
-    // One claim and the question it supports end up side by side, a narrow gap apart.
+  it('gives two related nodes room for the label between them', async () => {
     vault.graph = {
       ...GRAPH,
       nodes: GRAPH.nodes.slice(0, 2),
@@ -698,12 +737,144 @@ describe('reading a node', () => {
     renderPane();
     await findGraph();
     expect(edgeIds()).toEqual(['r1']);
-    expect(within(surface()).queryByText('supports')).toBeNull();
+    // The label is on show with nothing selected, and lies on neither box.
+    expect(within(surface()).getByText('supports')).toBeTruthy();
+    const pill = surface().querySelector('[data-label-for="r1"] rect');
+    const edges = (rect: Element | null) => {
+      const x = Number(rect?.getAttribute('x'));
+      const y = Number(rect?.getAttribute('y'));
+      return {
+        left: x,
+        top: y,
+        right: x + Number(rect?.getAttribute('width')),
+        bottom: y + Number(rect?.getAttribute('height')),
+      };
+    };
+    const label = edges(pill);
+    for (const title of ['QUE - Does it scale', 'CLM - It scales']) {
+      const box = edges(node(title).querySelector('.graph-node-box'));
+      const apart =
+        label.right <= box.left ||
+        box.right <= label.left ||
+        label.bottom <= box.top ||
+        box.bottom <= label.top;
+      expect(apart, title).toBe(true);
+    }
+  });
+
+  it('shows a label that has no room only while its node is selected', async () => {
+    // A canvas is drawn as saved: here with two boxes a narrow gap apart.
+    const [canvas] = GRAPH.canvases;
+    if (canvas === undefined) {
+      throw new Error('the fixture has no canvas');
+    }
+    vault.graph = {
+      ...GRAPH,
+      canvases: [
+        {
+          ...canvas,
+          nodes: canvas.nodes.map((item) =>
+            item.id === 'shape:q' ? { ...item, x: 220, y: 300, w: 200, h: 100 } : item,
+          ),
+        },
+      ],
+    };
+    renderPane({ view: 'Overview' });
+    await findGraph();
+    expect(edgeIds()).toEqual(['shape:arrow']);
+    expect(within(surface()).queryByText('backs up')).toBeNull();
 
     fireEvent.click(node('CLM - It scales'));
-    expect(within(surface()).getByText('supports')).toBeTruthy();
+    expect(within(surface()).getByText('backs up')).toBeTruthy();
     fireEvent.keyDown(surface(), { key: 'Escape' });
-    expect(within(surface()).queryByText('supports')).toBeNull();
+    expect(within(surface()).queryByText('backs up')).toBeNull();
+  });
+
+  it('keeps the title on every box of a canvas, however far out it is zoomed', async () => {
+    renderPane({ view: 'Overview' });
+    await findGraph();
+    const texts = () =>
+      [...node('CLM - It scales').querySelectorAll('text')].map((text) => text.textContent);
+    expect(texts()).toEqual(['CLM', 'It scales']);
+
+    // At this zoom the all nodes view would show only "CLM", drawn large.
+    fireEvent.wheel(surface(), { deltaY: 800, clientX: 0, clientY: 0 });
+    expect(viewOf().k).toBeLessThan(0.4);
+    expect(surface().getAttribute('data-detail')).toBe('text');
+    expect(texts()).toEqual(['CLM', 'It scales']);
+
+    // Far enough out the text would be a smudge, so the boxes are bare. Never the code alone.
+    fireEvent.wheel(surface(), { deltaY: 1000, clientX: 0, clientY: 0 });
+    expect(viewOf().k).toBeLessThan(0.1);
+    expect(surface().getAttribute('data-detail')).toBe('boxes');
+    expect(texts()).toEqual([]);
+  });
+
+  it('shrinks a long canvas title to fit its box at the fitted zoom, and still shows it', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(200);
+    try {
+      const [canvas] = GRAPH.canvases;
+      if (canvas === undefined) {
+        throw new Error('the fixture has no canvas');
+      }
+      const title = 'CLM - Status amplification explains most early citations of famous authors';
+      vault.graph = {
+        ...GRAPH,
+        canvases: [
+          {
+            ...canvas,
+            nodes: canvas.nodes.map((item) =>
+              item.id === 'shape:c' ? { ...item, title, path: null, size: 'm', h: 60 } : item,
+            ),
+          },
+        ],
+      };
+      renderPane({ view: 'Overview' });
+      await findGraph();
+
+      // The canvas is 800 wide, so it is fitted at under half size.
+      const k = viewOf().k;
+      expect(k).toBeLessThan(0.5);
+      expect(surface().getAttribute('data-detail')).toBe('text');
+      const texts = [...node(title).querySelectorAll('text')];
+      expect(texts.map((text) => text.textContent.slice(0, 3))).toEqual(['CLM', 'Sta']);
+      // Smaller than the 25 it was saved at, but still 5 px or more on screen.
+      // What does not fit at that size is cut short.
+      const size = Number(texts[1]?.getAttribute('font-size'));
+      expect(size).toBeLessThan(25);
+      expect(size * k).toBeGreaterThanOrEqual(5);
+      expect(texts[1]?.textContent.endsWith('…')).toBe(true);
+    } finally {
+      width.mockRestore();
+      height.mockRestore();
+    }
+  });
+
+  it('draws the loose text of a canvas over its boxes', async () => {
+    renderPane({ view: 'Overview' });
+    await findGraph();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Page' }), {
+      target: { value: 'page:notes' },
+    });
+    expect(within(surface()).getByText('Untested')).toBeTruthy();
+
+    const [canvas] = GRAPH.canvases;
+    cleanup();
+    vault.graph = {
+      ...GRAPH,
+      canvases:
+        canvas === undefined
+          ? []
+          : [{ ...canvas, texts: canvas.texts.map((text) => ({ ...text, pageId: 'page:main' })) }],
+    };
+    renderPane({ view: 'Overview' });
+    await findGraph();
+    const drawn = [...surface().querySelectorAll('.graph-node, .graph-text')].map((item) =>
+      item.getAttribute('class'),
+    );
+    // The text comes after the boxes in the drawing, so it is on top of them.
+    expect(drawn).toEqual(['graph-node', 'graph-node', 'graph-text']);
   });
 
   it('colours each line by what the relation says', async () => {
@@ -752,7 +923,8 @@ describe('fitting the pane', () => {
     expect(edges.right).toBeLessThanOrEqual(width - 13.9);
     expect(edges.bottom).toBeLessThanOrEqual(pane.h - 13.9);
     const spare = Math.min(edges.left - 14, edges.top - 14);
-    expect(spare < 0.5 || viewOf().k === 1.25).toBe(true);
+    // A few nodes are drawn larger than full size, up to titles of 18 px.
+    expect(spare < 0.5 || Math.abs(viewOf().k - 18 / 14) < 1e-9).toBe(true);
     // And it sits in the middle.
     expect(edges.left).toBeCloseTo(width - edges.right, 3);
     expect(edges.top).toBeCloseTo(pane.h - edges.bottom, 3);

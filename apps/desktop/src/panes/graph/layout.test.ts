@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { segmentHitsRect } from './geometry';
 import type { Rect } from './geometry';
 import { DEFAULT_LAYOUT, layoutGraph, nextLayout } from './layout';
 import type { LayoutEdge, LayoutNode } from './layout';
@@ -360,5 +361,155 @@ describe('keeping the picture still while the vault changes', () => {
       { ...DEFAULT_LAYOUT, aspect: 0.5 },
     );
     expect(turned).toBe(grown);
+  });
+});
+
+describe('a small graph with labelled relations', () => {
+  /** As wide as a label of nine letters is drawn. */
+  const LABEL = 62;
+  // Eight nodes and eleven relations, tangled enough to put lines under boxes.
+  const small = ['que', 'clm1', 'clm2', 'hyp', 'res1', 'res2', 'res3', 'exp'].map((id) => node(id));
+  const pairs: [string, string][] = [
+    ['res1', 'clm1'],
+    ['clm1', 'que'],
+    ['clm2', 'que'],
+    ['que', 'hyp'],
+    ['exp', 'res2'],
+    ['exp', 'res1'],
+    ['exp', 'res3'],
+    ['hyp', 'exp'],
+    ['res2', 'hyp'],
+    ['res3', 'hyp'],
+    ['res1', 'hyp'],
+  ];
+  const labelled: LayoutEdge[] = pairs.map(([source, target]) => ({
+    source,
+    target,
+    labelWidth: LABEL,
+  }));
+
+  function middle(rect: Rect): { x: number; y: number } {
+    return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+  }
+
+  /** How many times a line runs under a box that is at neither of its ends. */
+  function linesUnderBoxes(placed: Map<string, Rect>, edges: readonly LayoutEdge[]): number {
+    let count = 0;
+    for (const edge of edges) {
+      const from = middle(must(placed, edge.source));
+      const to = middle(must(placed, edge.target));
+      for (const [id, rect] of placed) {
+        if (id !== edge.source && id !== edge.target && segmentHitsRect(from, to, rect)) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }
+
+  /** The clear space between two boxes, sideways and up and down. */
+  function gaps(a: Rect, b: Rect): { x: number; y: number } {
+    return {
+      x: Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w)),
+      y: Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h)),
+    };
+  }
+
+  it('leaves room for the label between every two related boxes', () => {
+    const placed = layoutGraph(small, labelled, { ...DEFAULT_LAYOUT, aspect: 2 });
+    for (const edge of labelled) {
+      const gap = gaps(must(placed, edge.source), must(placed, edge.target));
+      // Side by side with the label and some line between them, or one above the other.
+      expect(gap.x >= LABEL + 30 || gap.y >= 40, `${edge.source} to ${edge.target}`).toBe(true);
+    }
+    expect(countOverlaps([...placed.values()])).toBe(0);
+  });
+
+  it('runs no line under a box that is not its own', () => {
+    for (const aspect of [1, 1.41, 2, 2.83]) {
+      const placed = layoutGraph(small, labelled, { ...DEFAULT_LAYOUT, aspect });
+      expect(linesUnderBoxes(placed, labelled), `aspect ${String(aspect)}`).toBe(0);
+    }
+  });
+
+  it('keeps the lines of a tree of thirty nodes clear too', () => {
+    const tree = Array.from({ length: 30 }, (_, index) =>
+      node(`t${String(index).padStart(2, '0')}`),
+    );
+    const links: LayoutEdge[] = tree.slice(1).map((item, index) => ({
+      source: item.id,
+      target: `t${String(Math.floor(index / 2)).padStart(2, '0')}`,
+      labelWidth: LABEL,
+    }));
+    const placed = layoutGraph(tree, links, { ...DEFAULT_LAYOUT, aspect: 2 });
+    expect(linesUnderBoxes(placed, links)).toBe(0);
+    expect(countOverlaps([...placed.values()])).toBe(0);
+  });
+
+  it('spreads a few nodes out, so they fill more of a large pane', () => {
+    const bounds = boundsOf([
+      ...layoutGraph(small, labelled, { ...DEFAULT_LAYOUT, aspect: 2 }).values(),
+    ]);
+    const bare = boundsOf([
+      ...layoutGraph(
+        small,
+        pairs.map(([source, target]) => ({ source, target })),
+        { ...DEFAULT_LAYOUT, aspect: 2 },
+      ).values(),
+    ]);
+    expect(bounds.w * bounds.h).toBeGreaterThan(bare.w * bare.h * 1.3);
+    // Not so far that the boxes are lost in it.
+    const boxes = small.length * DEFAULT_LAYOUT.nodeWidth * DEFAULT_LAYOUT.nodeHeight;
+    expect(boxes / (bounds.w * bounds.h)).toBeGreaterThan(0.1);
+  });
+
+  it('is the same picture every time, whatever order the input comes in', () => {
+    const first = layoutGraph(small, labelled, { ...DEFAULT_LAYOUT, aspect: 2 });
+    expect(entries(layoutGraph(small, labelled, { ...DEFAULT_LAYOUT, aspect: 2 }))).toEqual(
+      entries(first),
+    );
+    expect(
+      entries(
+        layoutGraph([...small].reverse(), [...labelled].reverse(), {
+          ...DEFAULT_LAYOUT,
+          aspect: 2,
+        }),
+      ),
+    ).toEqual(entries(first));
+  });
+
+  it('adds a node without moving the rest, with room for the label beside it', () => {
+    const before = nextLayout(null, small, labelled);
+    const after = nextLayout(
+      before,
+      [...small, node('new')],
+      [...labelled, { source: 'new', target: 'clm2', labelWidth: LABEL }],
+    );
+    for (const item of small) {
+      expect(after.rects.get(item.id), item.id).toBe(before.rects.get(item.id));
+    }
+    const gap = gaps(must(after.rects, 'new'), must(after.rects, 'clm2'));
+    expect(gap.x >= LABEL + 30 || gap.y >= 24).toBe(true);
+    expect(countOverlaps([...after.rects.values()])).toBe(0);
+  });
+
+  it('keeps a big graph quick when its relations carry labels', () => {
+    const nodes = Array.from({ length: 2000 }, (_, index) =>
+      node(`n${String(index).padStart(4, '0')}`),
+    );
+    let seed = 7;
+    function next(): number {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return Math.floor((seed / 2147483648) * nodes.length);
+    }
+    const edges: LayoutEdge[] = Array.from({ length: 4000 }, () => ({
+      source: nodes[next()]?.id ?? '',
+      target: nodes[next()]?.id ?? '',
+      labelWidth: LABEL,
+    }));
+    const started = performance.now();
+    const placed = layoutGraph(nodes, edges);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(countOverlaps([...placed.values()])).toBe(0);
   });
 });
