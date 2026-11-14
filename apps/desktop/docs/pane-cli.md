@@ -15,6 +15,7 @@ version. It sends one request to the running app over a Unix socket and exits.
 | `kd web <url-or-path> [--down]`       | Opens a web pane                                    | `kd web http://localhost:3000`            |
 | `kd term [dir] [-- command...]`       | Opens a terminal, and types a first command into it | `kd term api -- pnpm dev`                 |
 | `kd chat [--agent claude\|codex] [dir]` | Opens a chat pane                                   | `kd chat --agent codex`                   |
+| `kd graph [dir]`                      | Opens a graph of a Discourse Graphs vault           | `kd graph ~/notes/lab`                    |
 | `kd title <text>`, `kd title --clear` | Sets or clears this pane's title                    | `kd title "api tests"`                    |
 | `kd badge <text> [--color <#rrggbb>]` | Sets this pane's badge                              | `kd badge "needs you" --color "#ff8800"`  |
 | `kd badge --clear`                    | Clears this pane's badge                            | `kd badge --clear`                        |
@@ -34,6 +35,9 @@ Details that matter:
   it can hold shell syntax. With several arguments, `kd` quotes each one.
 - `kd layout review` looks for `review.toml` in the app's layout directories.
   An argument containing `/` or ending in `.toml` is a path.
+- `kd graph` opens the vault in the given directory, or in the directory `kd`
+  runs in. The vault is an Obsidian vault that uses the Discourse Graphs
+  plugin.
 - Put `--` before text that starts with a dash: `kd title -- --draft`.
 
 Exit codes: `0` done, `1` failed (the reason is on stderr), `2` the command

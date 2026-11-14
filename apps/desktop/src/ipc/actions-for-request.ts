@@ -115,6 +115,8 @@ function outcomeFor(request: IpcRequest, command: IpcCommand, workspace: Workspa
         agent: command.agent,
         directory: command.directory,
       });
+    case 'graph':
+      return split(request, 'row', { type: 'graph', directory: command.directory, view: null });
     case 'title':
       return accept([{ type: 'set-title', paneId, title: command.title }]);
     case 'badge':

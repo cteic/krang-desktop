@@ -27,6 +27,11 @@ const contentSchema: z.ZodType<PaneContent> = z.discriminatedUnion('type', [
     agent: z.string().nullable(),
     directory: z.string().nullable(),
   }),
+  z.object({
+    type: z.literal('graph'),
+    directory: z.string().nullable(),
+    view: z.string().nullable(),
+  }),
 ]);
 
 const leafSchema = z.object({

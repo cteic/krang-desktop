@@ -8,6 +8,7 @@ Usage:
   kd web <url-or-path> [--down]                open a web page beside this pane
   kd term [dir] [-- command...]                open a terminal, optionally running a command
   kd chat [--agent claude|codex] [dir]         open a chat pane
+  kd graph [dir]                               open a graph of a Discourse Graphs vault
   kd title <text> | --clear                    set or clear this pane's title
   kd badge <text> [--color <#rrggbb>] | --clear  set or clear this pane's badge
   kd layout <name-or-path>                     open a layout as a new tab
@@ -46,6 +47,13 @@ Usage: kd chat [--agent claude|codex] [dir]
 Opens a chat pane beside this pane, in [dir] or the current directory.
 
   --agent <name>   which agent answers: claude or codex";
+
+const GRAPH_USAGE: &str = "\
+Usage: kd graph [dir]
+
+Opens a graph pane beside this pane, on the notes vault in [dir] or the
+current directory. The vault is one that uses the Discourse Graphs plugin
+for Obsidian.";
 
 const TITLE_USAGE: &str = "\
 Usage: kd title <text>
@@ -102,6 +110,9 @@ pub enum Command {
         agent: Option<String>,
         dir: Option<String>,
     },
+    Graph {
+        dir: Option<String>,
+    },
     /// `None` clears the title.
     Title(Option<String>),
     /// `None` clears the badge.
@@ -123,6 +134,7 @@ fn usage_for(name: &str) -> Option<&'static str> {
         "web" => Some(WEB_USAGE),
         "term" => Some(TERM_USAGE),
         "chat" => Some(CHAT_USAGE),
+        "graph" => Some(GRAPH_USAGE),
         "title" => Some(TITLE_USAGE),
         "badge" => Some(BADGE_USAGE),
         "layout" => Some(LAYOUT_USAGE),
@@ -321,6 +333,18 @@ fn parse_chat(args: &[String]) -> Result<Command, UsageError> {
     })
 }
 
+fn parse_graph(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: GRAPH_USAGE,
+        switches: &[],
+        valued: &[],
+    };
+    let scanned = spec.scan(args)?;
+    Ok(Command::Graph {
+        dir: spec.at_most_one(scanned.words())?,
+    })
+}
+
 fn parse_title(args: &[String]) -> Result<Command, UsageError> {
     let spec = Spec {
         usage: TITLE_USAGE,
@@ -422,6 +446,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         "web" => parse_web(rest),
         "term" => parse_term(rest),
         "chat" => parse_chat(rest),
+        "graph" => parse_graph(rest),
         "title" => parse_title(rest),
         "badge" => parse_badge(rest),
         "layout" => parse_layout(rest),
@@ -470,7 +495,7 @@ mod tests {
         assert_eq!(parse(&["help"]), Ok(Command::Help(USAGE)));
         assert_eq!(parse(&["help", "view"]), Ok(Command::Help(VIEW_USAGE)));
         for name in [
-            "view", "web", "term", "chat", "title", "badge", "layout", "panes",
+            "view", "web", "term", "chat", "graph", "title", "badge", "layout", "panes",
         ] {
             let usage = usage_for(name).unwrap();
             assert!(usage.starts_with(&format!("Usage: kd {name}")));
@@ -620,6 +645,20 @@ mod tests {
             "unknown agent hal (expected claude or codex)"
         );
         assert_eq!(message(&["chat", "a", "b"]), "unexpected argument b");
+    }
+
+    #[test]
+    fn graph_takes_an_optional_directory() {
+        assert_eq!(parse(&["graph"]), Ok(Command::Graph { dir: None }));
+        assert_eq!(
+            parse(&["graph", "vault"]),
+            Ok(Command::Graph {
+                dir: Some(String::from("vault")),
+            })
+        );
+        assert_eq!(message(&["graph", "a", "b"]), "unexpected argument b");
+        assert!(message(&["graph", "--down"]).starts_with("unknown option --down"));
+        assert_eq!(parse(&["graph", "a", "b"]).unwrap_err().usage, GRAPH_USAGE);
     }
 
     #[test]

@@ -1,0 +1,148 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  boundsOf,
+  clipToRect,
+  edgeShape,
+  fitTransform,
+  IDENTITY,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  panBy,
+  revealRect,
+  zoomAt,
+} from './geometry';
+import type { Rect } from './geometry';
+
+const LEFT: Rect = { x: 0, y: 0, w: 100, h: 40 };
+const RIGHT: Rect = { x: 300, y: 0, w: 100, h: 40 };
+
+function numbers(text: string): number[] {
+  return (text.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+}
+
+describe('boundsOf', () => {
+  it('is the box around every box', () => {
+    expect(boundsOf([LEFT, RIGHT, { x: -50, y: 100, w: 10, h: 10 }])).toEqual({
+      x: -50,
+      y: 0,
+      w: 450,
+      h: 110,
+    });
+  });
+
+  it('is null for nothing', () => {
+    expect(boundsOf([])).toBeNull();
+  });
+});
+
+describe('clipToRect', () => {
+  it('finds where a line from the middle leaves the box', () => {
+    expect(clipToRect(LEFT, { x: 500, y: 20 })).toEqual({ x: 100, y: 20 });
+    expect(clipToRect(LEFT, { x: 50, y: -300 })).toEqual({ x: 50, y: 0 });
+    // Towards a corner, the nearer side wins.
+    expect(clipToRect(LEFT, { x: 150, y: 120 })).toEqual({ x: 70, y: 40 });
+  });
+
+  it('stays in the middle when that is the target', () => {
+    expect(clipToRect(LEFT, { x: 50, y: 20 })).toEqual({ x: 50, y: 20 });
+  });
+});
+
+describe('edgeShape', () => {
+  it('draws a straight line from box edge to box edge, stopping at the arrowhead', () => {
+    const shape = edgeShape(LEFT, RIGHT);
+    expect(shape.path).toBe('M 100 20 L 289 20');
+    // The tip touches the target box. The other two corners sit behind it.
+    expect(shape.head).toBe('300,20 289,25 289,15');
+    expect(shape.label).toEqual({ x: 200, y: 20 });
+  });
+
+  it('points the arrowhead at the target whichever way the line runs', () => {
+    const shape = edgeShape(RIGHT, LEFT);
+    expect(shape.path).toBe('M 300 20 L 111 20');
+    expect(numbers(shape.head).slice(0, 2)).toEqual([100, 20]);
+  });
+
+  it('bows the line when asked, so two relations between one pair stay apart', () => {
+    const up = edgeShape(LEFT, RIGHT, 40);
+    const down = edgeShape(LEFT, RIGHT, -40);
+    expect(up.path.includes(' Q ')).toBe(true);
+    expect(up.label.y).toBeGreaterThan(20);
+    expect(down.label.y).toBeLessThan(20);
+    expect(up.label.x).toBeCloseTo(200, 0);
+  });
+
+  it('draws a relation from a box to itself as a loop above it', () => {
+    const shape = edgeShape(LEFT, LEFT);
+    expect(shape.path.startsWith('M 60 0 C ')).toBe(true);
+    expect(numbers(shape.head).slice(0, 2)).toEqual([90, 0]);
+    expect(shape.label.y).toBeLessThan(0);
+    expect(numbers(shape.path).every(Number.isFinite)).toBe(true);
+  });
+});
+
+describe('fitTransform', () => {
+  it('centres the drawing and scales it down to fit, with a margin', () => {
+    const fit = fitTransform({ x: 0, y: 0, w: 2000, h: 500 }, { w: 1064, h: 800 }, 32);
+    expect(fit.k).toBe(0.5);
+    expect(fit.x).toBe(32);
+    expect(fit.y).toBe(275);
+  });
+
+  it('never zooms in past full size', () => {
+    const fit = fitTransform({ x: 100, y: 100, w: 50, h: 20 }, { w: 800, h: 600 });
+    expect(fit.k).toBe(1);
+    expect(fit.x).toBe(275);
+    expect(fit.y).toBe(190);
+  });
+
+  it('does nothing without a drawing or without room', () => {
+    expect(fitTransform(null, { w: 800, h: 600 })).toEqual(IDENTITY);
+    expect(fitTransform({ x: 0, y: 0, w: 10, h: 10 }, { w: 0, h: 0 })).toEqual(IDENTITY);
+  });
+
+  it('stops at the smallest zoom for a huge drawing', () => {
+    expect(fitTransform({ x: 0, y: 0, w: 1e7, h: 1e7 }, { w: 800, h: 600 }).k).toBe(MIN_ZOOM);
+  });
+});
+
+describe('zoomAt', () => {
+  it('keeps the point under the pointer still', () => {
+    const start = { x: 10, y: 20, k: 1 };
+    const point = { x: 110, y: 220 };
+    const zoomed = zoomAt(start, point, 2);
+    expect(zoomed.k).toBe(2);
+    // The drawing point under the pointer is the same before and after.
+    expect((point.x - zoomed.x) / zoomed.k).toBe((point.x - start.x) / start.k);
+    expect((point.y - zoomed.y) / zoomed.k).toBe((point.y - start.y) / start.k);
+  });
+
+  it('stays within the zoom limits', () => {
+    expect(zoomAt(IDENTITY, { x: 0, y: 0 }, 1000).k).toBe(MAX_ZOOM);
+    expect(zoomAt(IDENTITY, { x: 0, y: 0 }, 0.0001).k).toBe(MIN_ZOOM);
+  });
+});
+
+describe('panBy and revealRect', () => {
+  it('moves the view', () => {
+    expect(panBy({ x: 1, y: 2, k: 3 }, 10, -5)).toEqual({ x: 11, y: -3, k: 3 });
+  });
+
+  it('leaves the view alone when the box is in sight', () => {
+    const view = { x: 0, y: 0, k: 1 };
+    expect(revealRect(view, { x: 100, y: 100, w: 50, h: 50 }, { w: 800, h: 600 })).toBe(view);
+  });
+
+  it('pans just far enough to show a box that is out of sight', () => {
+    const view = { x: 0, y: 0, k: 2 };
+    const moved = revealRect(view, { x: 500, y: -40, w: 100, h: 30 }, { w: 800, h: 600 }, 24);
+    // Right edge was at 1200, now 24 inside the 800 wide pane. Top was at -80, now at 24.
+    expect(moved).toEqual({ x: -424, y: 104, k: 2 });
+  });
+
+  it('does nothing in a pane with no size', () => {
+    const view = { x: 0, y: 0, k: 1 };
+    expect(revealRect(view, { x: 5000, y: 0, w: 1, h: 1 }, { w: 0, h: 0 })).toBe(view);
+  });
+});

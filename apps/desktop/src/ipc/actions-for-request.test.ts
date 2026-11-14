@@ -203,6 +203,17 @@ describe('actionsForRequest', () => {
     ]);
   });
 
+  it('opens a graph pane on a vault', () => {
+    expect(actionsOf({ name: 'graph', directory: '/vault' })).toEqual([
+      {
+        type: 'split',
+        paneId: SHELL,
+        direction: 'row',
+        content: { type: 'graph', directory: '/vault', view: null },
+      },
+    ]);
+  });
+
   it('sets and clears the title of the calling pane', () => {
     expect(actionsOf({ name: 'title', title: 'build' }, DOCS)).toEqual([
       { type: 'set-title', paneId: DOCS, title: 'build' },

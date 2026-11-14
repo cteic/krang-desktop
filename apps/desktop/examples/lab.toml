@@ -1,0 +1,67 @@
+# A tour for a scientist: a Discourse Graphs vault as files, notes and a graph.
+#
+# Change the vault path below to your own vault. It appears in five places.
+# Then copy this file to the app's layouts folder (see the README) and open it:
+#
+#   open "krang-desktop://layout/lab"
+#
+# Double-click a node in the graph to open its note beside it. Ask the chat
+# pane to add a note or a relation, and the graph redraws within a few seconds.
+name = "lab"
+title = "lab"
+color = "green"
+
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["reading", "thinking"]
+
+# The left half: the vault's files and a shell, beside one note.
+[[panes]]
+id = "reading"
+split = "vertical"
+children = ["left", "note"]
+
+[[panes]]
+id = "left"
+split = "horizontal"
+children = ["files", "shell"]
+
+# The right half: the graph, over a chat with an agent that can edit the vault.
+[[panes]]
+id = "thinking"
+split = "horizontal"
+children = ["graph", "chat"]
+
+[[panes]]
+id = "files"
+type = "files"
+title = "Vault files"
+directory = "~/src/obsidian-lab-example"
+
+[[panes]]
+id = "shell"
+type = "terminal"
+title = "Shell in the vault"
+directory = "~/src/obsidian-lab-example"
+
+[[panes]]
+id = "note"
+type = "editor"
+title = "Question: is citation count confounded?"
+path = "~/src/obsidian-lab-example/DiscourseGraph/QUE - Is citation count a hopelessly confounded metric.md"
+
+[[panes]]
+id = "graph"
+type = "graph"
+title = "Discourse graph"
+directory = "~/src/obsidian-lab-example"
+view = "all"          # or a canvas file name, such as "Canvas - QUE - Matthew Effect"
+is_focused = true
+
+[[panes]]
+id = "chat"
+type = "chat"
+title = "Ask about the vault"
+agent = "claude"
+directory = "~/src/obsidian-lab-example"

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { act, useReducer } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -77,5 +77,17 @@ describe('pane titles', () => {
       before.setTitle('changed');
     });
     expect(paneActions()).toBe(before);
+  });
+});
+
+describe('adding a pane', () => {
+  it('opens a graph pane beside the focused one', () => {
+    render(<Harness />);
+    expect(screen.queryByText('graph')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Graph' }));
+    // A graph pane with no vault yet is named after its type.
+    expect(screen.getByText('graph')).toBeTruthy();
+    expect(screen.getByText('from the layout')).toBeTruthy();
   });
 });

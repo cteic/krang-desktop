@@ -22,7 +22,7 @@ const paneSchema = z.object({
   id: z.string().min(1),
   split: z.enum(['vertical', 'horizontal']).optional(),
   children: z.array(z.string().min(1)).min(1).optional(),
-  type: z.enum(['terminal', 'files', 'editor', 'web', 'chat']).optional(),
+  type: z.enum(['terminal', 'files', 'editor', 'web', 'chat', 'graph']).optional(),
   title: z.string().min(1).optional(),
   directory: z.string().min(1).optional(),
   is_focused: z.boolean().optional(),
@@ -30,6 +30,7 @@ const paneSchema = z.object({
   path: z.string().min(1).optional(),
   url: z.string().min(1).optional(),
   agent: z.string().min(1).optional(),
+  view: z.string().min(1).optional(),
 });
 
 const fileSchema = z.object({
@@ -41,7 +42,7 @@ const fileSchema = z.object({
 
 type PaneEntry = z.infer<typeof paneSchema>;
 
-const LEAF_ONLY_FIELDS = ['type', 'directory', 'commands', 'path', 'url', 'agent'] as const;
+const LEAF_ONLY_FIELDS = ['type', 'directory', 'commands', 'path', 'url', 'agent', 'view'] as const;
 
 export function parseLayout(text: string): TabDraft {
   let raw: unknown;
@@ -120,6 +121,13 @@ function contentOf(entry: PaneEntry): PaneContent {
       return { type, url: entry.url };
     case 'chat':
       return { type, agent: entry.agent ?? null, directory: entry.directory ?? null };
+    case 'graph':
+      return {
+        type,
+        directory: entry.directory ?? null,
+        // "all" is the view a graph pane opens on, so it needs no name.
+        view: entry.view === undefined || entry.view === 'all' ? null : entry.view,
+      };
   }
 }
 

@@ -73,6 +73,9 @@ pub enum Command {
         agent: Option<String>,
         directory: String,
     },
+    Graph {
+        directory: String,
+    },
     Title {
         title: Option<String>,
     },
@@ -233,6 +236,12 @@ mod tests {
             json!({"name": "chat", "agent": null, "directory": "/work"})
         );
         assert_eq!(
+            wire(Command::Graph {
+                directory: String::from("/vault"),
+            }),
+            json!({"name": "graph", "directory": "/vault"})
+        );
+        assert_eq!(
             wire(Command::Title { title: None }),
             json!({"name": "title", "title": null})
         );
@@ -272,6 +281,9 @@ mod tests {
             },
             Command::Chat {
                 agent: Some(String::from("codex")),
+                directory: String::from("/a"),
+            },
+            Command::Graph {
                 directory: String::from("/a"),
             },
             Command::Title {

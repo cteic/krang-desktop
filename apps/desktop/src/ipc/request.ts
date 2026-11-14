@@ -34,6 +34,10 @@ const commandSchema = z.discriminatedUnion('name', [
     directory: z.string().min(1),
   }),
   z.object({
+    name: z.literal('graph'),
+    directory: z.string().min(1),
+  }),
+  z.object({
     name: z.literal('title'),
     title: z.string().nullable(),
   }),

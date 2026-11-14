@@ -103,6 +103,22 @@ describe('serializeWorkspace and parseWorkspace', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it('keeps a graph pane with its vault and view', () => {
+    const start = build();
+    const workspace = workspaceReducer(start, {
+      type: 'split',
+      paneId: activeTab(start)?.focusedId ?? '',
+      direction: 'row',
+      content: { type: 'graph', directory: '~/vault', view: 'Overview' },
+    });
+    const restored = parseWorkspace(serializeWorkspace(workspace));
+    const contents = restored?.tabs.flatMap((tab) =>
+      leavesOf(tab.root).map((leaf) => leaf.content),
+    );
+
+    expect(contents).toContainEqual({ type: 'graph', directory: '~/vault', view: 'Overview' });
+  });
+
   it('rejects text that is not a saved workspace', () => {
     expect(parseWorkspace('')).toBeNull();
     expect(parseWorkspace('{not json')).toBeNull();
