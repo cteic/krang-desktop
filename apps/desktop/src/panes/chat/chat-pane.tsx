@@ -7,6 +7,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useReducer,
   useRef,
@@ -154,6 +155,7 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
 
   const running = transcript.status === 'running';
   const directory = content.directory;
+  const trustTextId = useId();
 
   // Trust comes only from the list the Trust button writes. The pane's
   // content, which a layout file or a link can set, has no say in it.
@@ -414,10 +416,10 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
 
       {askingTrust ? (
         <div className="chat-trust" role="group" aria-label="Folder trust">
-          <p className="chat-trust-text">
+          <p className="chat-trust-text" id={trustTextId}>
             Trust this folder? Its own agent settings, skills and hooks will apply.
           </p>
-          <button type="button" className="chat-trust-yes" onClick={onTrust}>
+          <button type="button" className="chat-trust-yes" data-primary="true" onClick={onTrust}>
             Trust
           </button>
           <button type="button" className="chat-trust-no" onClick={onNotNow}>
@@ -439,12 +441,17 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
         </div>
       ) : null}
 
-      <div className="chat-composer">
+      <div className="chat-composer" data-waiting={askingTrust ? 'trust' : undefined}>
         <textarea
           ref={composerRef}
           className="chat-input"
           aria-label="Message"
-          placeholder={`Message ${ADAPTERS[agent].label}`}
+          aria-describedby={askingTrust ? trustTextId : undefined}
+          placeholder={
+            askingTrust
+              ? 'Answer the trust question above to send'
+              : `Message ${ADAPTERS[agent].label}`
+          }
           rows={1}
           value={draft}
           onChange={(event) => {
