@@ -527,4 +527,13 @@ describe('ChatPane', () => {
       text: 'agent=claude mode=read-only status=running session=s-1\nyou: hi\ntool: Read a.ts\nagent: Hello',
     });
   });
+
+  it('shows an image in a reply as a link, and never loads it', () => {
+    renderPane();
+    sendMessage('hi');
+    feed(lastRun(), delta('Look: ![chart](https://example.com/pixel.png?k=secret) done'));
+
+    expect(document.querySelector('.chat-assistant img')).toBeNull();
+    expect(screen.getByText('image: chart')).toBeTruthy();
+  });
 });

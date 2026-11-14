@@ -8,6 +8,15 @@ use tauri::http::{Request, Response, StatusCode};
 /// slashes, a page's relative links to its own styles and images resolve.
 pub const SCHEME: &str = "localfile";
 
+/// Every file on disk would otherwise share one origin, so a script in any
+/// local page could read any other file and send it away. This header gives
+/// each page an origin of its own. Its styles, images and scripts still load;
+/// reading another file's contents from script does not.
+const PAGE_POLICY: &str = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+
+/// Larger files are refused. The whole response is held in memory.
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 fn content_type(path: &Path) -> &'static str {
     let extension = path
         .extension()
@@ -57,6 +66,8 @@ fn respond(status: StatusCode, kind: &str, body: Vec<u8>) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header("Content-Type", kind)
+        .header("Content-Security-Policy", PAGE_POLICY)
+        .header("X-Content-Type-Options", "nosniff")
         .body(body)
         .unwrap_or_else(|_| Response::new(Vec::new()))
 }
@@ -73,6 +84,32 @@ pub fn serve(uri_path: &str) -> Response<Vec<u8>> {
     }
     if path.is_dir() {
         path = path.join("index.html");
+    }
+    // Only ordinary files. A device such as /dev/zero never ends, and a
+    // named pipe blocks until something writes to it.
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return respond(
+                StatusCode::NOT_FOUND,
+                "text/plain; charset=utf-8",
+                format!("{}: {error}", path.display()).into_bytes(),
+            )
+        }
+    };
+    if !metadata.is_file() {
+        return respond(
+            StatusCode::FORBIDDEN,
+            "text/plain; charset=utf-8",
+            format!("{} is not a regular file", path.display()).into_bytes(),
+        );
+    }
+    if metadata.len() > MAX_FILE_BYTES {
+        return respond(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "text/plain; charset=utf-8",
+            format!("{} is too large to show", path.display()).into_bytes(),
+        );
     }
     match fs::read(&path) {
         Ok(body) => respond(StatusCode::OK, content_type(&path), body),
@@ -120,7 +157,17 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(serve("relative/path").status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            page.headers()["Content-Security-Policy"],
+            "sandbox allow-scripts allow-forms allow-popups allow-downloads"
+        );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_devices_and_other_special_files() {
+        assert_eq!(serve("/dev/zero").status(), StatusCode::FORBIDDEN);
+        assert_eq!(serve("/dev/null").status(), StatusCode::FORBIDDEN);
     }
 }

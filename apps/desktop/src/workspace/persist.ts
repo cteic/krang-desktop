@@ -140,7 +140,9 @@ export function parseWorkspace(text: string): Workspace | null {
     return null;
   }
 
-  const tabs = saved.tabs.map(repairTab);
+  // Applied on load as well as on save: a saved file edited by hand must not
+  // be able to run commands when the app opens.
+  const tabs = saved.tabs.map((tab) => repairTab({ ...tab, root: withoutRuntimeState(tab.root) }));
   const activeTabId = tabs.find((tab) => tab.id === saved.activeTabId)?.id ?? tabs[0]?.id;
   if (activeTabId === undefined) {
     return null;

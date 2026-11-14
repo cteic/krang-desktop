@@ -92,6 +92,14 @@ const ChatItem = memo(function ChatItem({ item, onOpenLink }: ChatItemProps) {
                   {children}
                 </ChatLink>
               ),
+              // An agent's reply can be steered by what it reads. An image
+              // that loaded by itself would let such text send data out in
+              // the address, with no click. Show it as a link instead.
+              img: ({ src, alt }) => (
+                <ChatLink href={typeof src === 'string' ? src : undefined} onOpen={onOpenLink}>
+                  {alt === undefined || alt === '' ? 'image' : `image: ${alt}`}
+                </ChatLink>
+              ),
             }}
           >
             {item.text}

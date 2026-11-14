@@ -1,5 +1,8 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
@@ -97,10 +100,16 @@ pub fn read_text(path: &str) -> Result<TextFile, String> {
     })
 }
 
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Writes through a temporary file in the same directory and renames it into
 /// place, so a crash mid-write cannot leave a half-written file.
+///
+/// A path that is a symbolic link is followed first. Renaming onto the link
+/// itself would replace it with a plain file and leave the real one stale.
 pub fn write_text(path: &str, text: &str) -> Result<(), String> {
-    let target = Path::new(path);
+    let given = Path::new(path);
+    let target = fs::canonicalize(given).unwrap_or_else(|_| given.to_path_buf());
     let dir = target
         .parent()
         .ok_or_else(|| format!("{path} has no parent directory"))?;
@@ -108,12 +117,31 @@ pub fn write_text(path: &str, text: &str) -> Result<(), String> {
         .file_name()
         .ok_or_else(|| format!("{path} has no file name"))?
         .to_string_lossy();
-    let temporary = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-    fs::write(&temporary, text).map_err(|error| format!("{path}: {error}"))?;
-    if let Ok(existing) = fs::metadata(target) {
-        let _ = fs::set_permissions(&temporary, existing.permissions());
+    // Unique per write, so two panes saving at once never share a file.
+    let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = dir.join(format!(".{name}.{}.{serial}.tmp", std::process::id()));
+
+    // Private from the first byte. The target's own permissions are applied
+    // before the rename, so a private file is never briefly readable.
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .and_then(|mut file| {
+            file.write_all(text.as_bytes())
+                .and_then(|()| file.sync_all())
+        });
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("{path}: {error}"));
     }
-    fs::rename(&temporary, target).map_err(|error| {
+    let permissions = match fs::metadata(&target) {
+        Ok(existing) => existing.permissions(),
+        Err(_) => fs::Permissions::from_mode(0o644),
+    };
+    let _ = fs::set_permissions(&temporary, permissions);
+    fs::rename(&temporary, &target).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         format!("{path}: {error}")
     })
@@ -124,17 +152,17 @@ pub fn fs_home() -> Result<String, String> {
     std::env::var("HOME").map_err(|_| String::from("HOME is not set"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_list(path: String) -> Result<DirListing, String> {
     list_dir(&resolve(&path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_read_text(path: String) -> Result<TextFile, String> {
     read_text(&resolve(&path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn fs_write_text(path: String, text: String) -> Result<(), String> {
     write_text(&resolve(&path), &text)
 }
@@ -189,6 +217,48 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn writing_through_a_symlink_keeps_the_link_and_updates_the_real_file() {
+        let dir = scratch("symlink");
+        let real = dir.join("real.txt");
+        let link = dir.join("link.txt");
+        fs::write(&real, "old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_text(link.to_str().unwrap(), "new").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_private_file_stays_private_and_a_new_file_is_ordinary() {
+        let dir = scratch("modes");
+        let private = dir.join("secret");
+        fs::write(&private, "a").unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_text(private.to_str().unwrap(), "b").unwrap();
+        assert_eq!(
+            fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let fresh = dir.join("fresh.md");
+        write_text(fresh.to_str().unwrap(), "c").unwrap();
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }
