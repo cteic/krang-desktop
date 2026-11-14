@@ -10,6 +10,7 @@ mod pty;
 mod shell_env;
 mod startup;
 mod state;
+mod vault_guard;
 mod windows;
 
 use std::thread;
