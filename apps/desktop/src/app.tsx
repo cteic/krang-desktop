@@ -9,7 +9,7 @@ import { actionForMenu, isMenuAction } from './workspace/menu-actions';
 import { activeTab } from './workspace/model';
 import type { Workspace } from './workspace/model';
 import { serializeWorkspace } from './workspace/persist';
-import { createWorkspace, workspaceReducer } from './workspace/reducer';
+import { createWorkspaceWithTabs, workspaceReducer } from './workspace/reducer';
 import { WorkspaceView } from './workspace-view';
 
 const MENU_EVENT = 'menu-action';
@@ -50,7 +50,7 @@ function Window({ session }: WindowProps) {
   const [workspace, dispatch] = useReducer(
     workspaceReducer,
     session,
-    (initial) => initial.saved ?? createWorkspace(initial.layout),
+    (initial) => initial.saved ?? createWorkspaceWithTabs([initial.layout, ...initial.extraTabs]),
   );
   const workspaceRef = useRef<Workspace>(workspace);
   workspaceRef.current = workspace;

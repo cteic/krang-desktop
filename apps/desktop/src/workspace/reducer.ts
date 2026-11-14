@@ -103,6 +103,21 @@ export function createWorkspace(draft: TabDraft): Workspace {
   return { tabs: [tab], activeTabId: tab.id, nextId };
 }
 
+/**
+ * A workspace with one tab per draft, in order, and the first tab active.
+ * With no drafts it is the default workspace.
+ */
+export function createWorkspaceWithTabs(drafts: readonly TabDraft[]): Workspace {
+  const tabs: Tab[] = [];
+  let nextId = 1;
+  for (const draft of drafts.length === 0 ? [defaultDraft()] : drafts) {
+    const made = tabFromDraft(draft, nextId);
+    tabs.push(made.tab);
+    nextId = made.nextId;
+  }
+  return { tabs, activeTabId: tabs[0]?.id ?? '', nextId };
+}
+
 function mapTree(tree: PaneTree, change: (node: PaneTree) => PaneTree): PaneTree {
   const next =
     tree.kind === 'split'

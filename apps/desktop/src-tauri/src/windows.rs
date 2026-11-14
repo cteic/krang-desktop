@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use crate::links::{layout_name_from_url, resolve_layout};
-use crate::startup::{debug_dir, expand_home, layout_path_from};
+use crate::links::{layout_name_from_url, layout_names_from_url, resolve_layout, MAX_LINK_LAYOUTS};
+use crate::startup::{debug_dir, expand_home, layout_paths_from};
 
 const LAYOUT_ENV: &str = "DESKTOP_LAYOUT";
 const LAYOUT_SUBDIR: &str = "layouts";
@@ -23,6 +23,9 @@ pub enum Source {
     File(String),
     /// A layout was asked for and could not be found. The text says why.
     Missing(String),
+    /// Several layouts in one window, one tab each, in this order. Every
+    /// entry is a `File` or a `Missing`.
+    Tabs(Vec<Source>),
 }
 
 /// The restore key of the window that reopens as the person left it.
@@ -84,12 +87,9 @@ fn layout_dirs(app: &AppHandle) -> Vec<PathBuf> {
     dirs
 }
 
-pub fn source_from_url(app: &AppHandle, url: &str) -> Source {
-    let Some(name) = layout_name_from_url(url) else {
-        return Source::Missing(format!("{url} is not a layout link"));
-    };
-    let dirs = layout_dirs(app);
-    match resolve_layout(&name, &dirs) {
+/// The source for one layout name, looked up in `dirs`.
+fn source_for_name(name: &str, dirs: &[PathBuf]) -> Source {
+    match resolve_layout(name, dirs) {
         Some(path) => Source::File(path.to_string_lossy().into_owned()),
         None => {
             let searched: Vec<String> = dirs
@@ -104,9 +104,41 @@ pub fn source_from_url(app: &AppHandle, url: &str) -> Source {
     }
 }
 
-/// The layout named on a command line, or in the environment when
+/// What a layout link opens, given where layouts are kept. A link that names
+/// one layout opens it. A link that names several opens one window with a tab
+/// for each, and a name that is unsafe or not found fails alone.
+pub fn source_from_link(url: &str, dirs: &[PathBuf]) -> Source {
+    if let Some(name) = layout_name_from_url(url) {
+        return source_for_name(&name, dirs);
+    }
+    let names = match layout_names_from_url(url) {
+        Some(names) if names.len() > 1 => names,
+        Some(_) => return Source::Missing(format!("{url} is not a layout link")),
+        None => {
+            return Source::Missing(format!(
+                "{url} is not a layout link. A link names one to {MAX_LINK_LAYOUTS} layouts"
+            ))
+        }
+    };
+    Source::Tabs(
+        names
+            .iter()
+            .map(|name| match name {
+                Ok(name) => source_for_name(name, dirs),
+                Err(name) => Source::Missing(format!("\"{name}\" is not a layout name")),
+            })
+            .collect(),
+    )
+}
+
+pub fn source_from_url(app: &AppHandle, url: &str) -> Source {
+    source_from_link(url, &layout_dirs(app))
+}
+
+/// The layouts named on a command line, or in the environment when
 /// `use_env` is set. Only the first launch reads the environment: a second
-/// launch hands over its arguments, not its environment.
+/// launch hands over its arguments, not its environment. One `--layout` is
+/// one layout; several open as tabs of one window.
 pub fn source_from_args<I>(args: I, use_env: bool) -> Option<Source>
 where
     I: IntoIterator<Item = String>,
@@ -117,7 +149,15 @@ where
         None
     };
     let home = std::env::var("HOME").ok();
-    layout_path_from(args, env_value).map(|path| Source::File(expand_home(&path, home.as_deref())))
+    let mut files: Vec<Source> = layout_paths_from(args, env_value)
+        .into_iter()
+        .map(|path| Source::File(expand_home(&path, home.as_deref())))
+        .collect();
+    match files.len() {
+        0 => None,
+        1 => files.pop(),
+        _ => Some(Source::Tabs(files)),
+    }
 }
 
 pub fn open_window(app: &AppHandle, source: Source) -> tauri::Result<()> {
@@ -193,5 +233,80 @@ mod tests {
             Some(Source::File(String::from("/tmp/a.toml")))
         );
         assert_eq!(source_from_args(Vec::new(), false), None);
+    }
+
+    #[test]
+    fn several_layout_flags_become_tabs_in_order() {
+        let args = vec![
+            String::from("--layout"),
+            String::from("/tmp/a.toml"),
+            String::from("--layout=/tmp/b.toml"),
+        ];
+        assert_eq!(
+            source_from_args(args, false),
+            Some(Source::Tabs(vec![
+                Source::File(String::from("/tmp/a.toml")),
+                Source::File(String::from("/tmp/b.toml")),
+            ]))
+        );
+    }
+
+    fn layout_dir(name: &str, files: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("link-source-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_link_with_one_name_opens_that_layout() {
+        let dir = layout_dir("one", &["lab.toml"]);
+        let dirs = vec![dir.clone()];
+        assert_eq!(
+            source_from_link("app://layout/lab", &dirs),
+            Source::File(dir.join("lab.toml").to_string_lossy().into_owned())
+        );
+        assert!(matches!(
+            source_from_link("app://layout/.hidden", &dirs),
+            Source::Missing(reason) if reason.contains("is not a layout link")
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_with_several_names_opens_a_tab_for_each() {
+        let dir = layout_dir("several", &["lab.toml", "board.toml"]);
+        let dirs = vec![dir.clone()];
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+
+        assert_eq!(
+            source_from_link("app://layout/lab+board", &dirs),
+            Source::Tabs(vec![
+                Source::File(path("lab.toml")),
+                Source::File(path("board.toml")),
+            ])
+        );
+
+        let Source::Tabs(tabs) = source_from_link("app://layout/lab+gone+..+board", &dirs) else {
+            panic!("expected tabs");
+        };
+        assert_eq!(tabs.len(), 4);
+        assert_eq!(tabs[0], Source::File(path("lab.toml")));
+        assert!(
+            matches!(&tabs[1], Source::Missing(reason) if reason.contains("no layout named \"gone\""))
+        );
+        assert!(
+            matches!(&tabs[2], Source::Missing(reason) if reason.contains("is not a layout name"))
+        );
+        assert_eq!(tabs[3], Source::File(path("board.toml")));
+
+        assert!(matches!(
+            source_from_link("app://layout/a+b+c+d+e+f+g", &dirs),
+            Source::Missing(reason) if reason.contains("one to 6 layouts")
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

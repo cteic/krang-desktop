@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { activeTab, leavesOf } from './model';
 import type { LeafNode, PaneContent, PaneTree, Workspace } from './model';
-import { createWorkspace, defaultDraft, hasPane, workspaceReducer } from './reducer';
+import {
+  createWorkspace,
+  createWorkspaceWithTabs,
+  defaultDraft,
+  hasPane,
+  workspaceReducer,
+} from './reducer';
 import type { TabDraft, WorkspaceAction } from './reducer';
 
 const TERMINAL: PaneContent = { type: 'terminal', directory: null, commands: [] };
@@ -316,5 +322,22 @@ describe('tabs', () => {
     const start = createWorkspace(COCKPIT);
     expect(run(start, { type: 'activate-tab', tabId: 'nope' })).toBe(start);
     expect(run(start, { type: 'close-tab', tabId: 'nope' })).toBe(start);
+  });
+});
+
+describe('createWorkspaceWithTabs', () => {
+  it('makes one tab per draft with unique ids and the first tab active', () => {
+    const workspace = createWorkspaceWithTabs([COCKPIT, defaultDraft(), COCKPIT]);
+
+    expect(workspace.tabs.map((tab) => tab.title)).toEqual(['krang', 'shell', 'krang']);
+    expect(workspace.activeTabId).toBe(workspace.tabs[0]?.id);
+    const ids = workspace.tabs.flatMap((tab) => [tab.id, ...leavesOf(tab.root).map((l) => l.id)]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.every((id) => Number(id.slice(1)) < workspace.nextId)).toBe(true);
+    expect(createWorkspaceWithTabs([COCKPIT])).toEqual(createWorkspace(COCKPIT));
+  });
+
+  it('is the default workspace when given no drafts', () => {
+    expect(createWorkspaceWithTabs([])).toEqual(createWorkspace(defaultDraft()));
   });
 });

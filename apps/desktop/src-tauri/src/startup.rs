@@ -9,11 +9,19 @@ use crate::windows::{Source, WindowLayouts};
 const DEBUG_DIR_ENV: &str = "DESKTOP_DEBUG_DIR";
 const LAYOUT_FLAG: &str = "--layout";
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutFile {
     path: String,
     text: String,
+}
+
+/// One layout a window was asked to show: its file, or why there is none.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutEntry {
+    layout: Option<LayoutFile>,
+    layout_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -21,6 +29,9 @@ pub struct LayoutFile {
 pub struct Startup {
     layout: Option<LayoutFile>,
     layout_error: Option<String>,
+    /// Every layout asked for, in tab order. Empty for a plain window. The
+    /// two fields above repeat the first entry.
+    layouts: Vec<LayoutEntry>,
     /// The workspace this window saved last time, if it is one that restores.
     saved: Option<String>,
     /// Whether this window should save its workspace as it changes.
@@ -28,24 +39,52 @@ pub struct Startup {
     debug: bool,
 }
 
-/// Finds the layout path in `--layout <path>`, `--layout=<path>` or the
-/// environment, in that order.
-pub fn layout_path_from<I>(args: I, env_value: Option<String>) -> Option<String>
+/// Finds every layout path given as `--layout <path>` or `--layout=<path>`,
+/// in order. The environment is used only when no flag names one.
+pub fn layout_paths_from<I>(args: I, env_value: Option<String>) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
+    let mut paths = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if arg == LAYOUT_FLAG {
-            return args.next().filter(|path| !path.is_empty());
-        }
-        if let Some(path) = arg.strip_prefix("--layout=") {
+            if let Some(path) = args.next().filter(|path| !path.is_empty()) {
+                paths.push(path);
+            }
+        } else if let Some(path) = arg.strip_prefix("--layout=") {
             if !path.is_empty() {
-                return Some(path.to_string());
+                paths.push(path.to_string());
             }
         }
     }
-    env_value.filter(|path| !path.is_empty())
+    if paths.is_empty() {
+        paths.extend(env_value.filter(|path| !path.is_empty()));
+    }
+    paths
+}
+
+/// Reads what one source names. A file that cannot be read is an entry with
+/// an error, so the layouts beside it still open.
+fn entries_for(source: Source) -> Vec<LayoutEntry> {
+    match source {
+        Source::Default => Vec::new(),
+        Source::Missing(reason) => vec![LayoutEntry {
+            layout: None,
+            layout_error: Some(reason),
+        }],
+        Source::File(path) => vec![match fs::read_to_string(&path) {
+            Ok(text) => LayoutEntry {
+                layout: Some(LayoutFile { path, text }),
+                layout_error: None,
+            },
+            Err(error) => LayoutEntry {
+                layout: None,
+                layout_error: Some(format!("could not read {path}: {error}")),
+            },
+        }],
+        Source::Tabs(sources) => sources.into_iter().flat_map(entries_for).collect(),
+    }
 }
 
 /// Expands a leading `~` to the home directory. Layout files are written by
@@ -79,13 +118,10 @@ pub fn startup(
     // was reloaded, the old page never got to end its shells, so end them.
     ptys.kill_window(window.label());
     agents.kill_window(window.label());
-    let (layout, layout_error) = match layouts.source_of(window.label()) {
-        Source::Default => (None, None),
-        Source::Missing(reason) => (None, Some(reason)),
-        Source::File(path) => match fs::read_to_string(&path) {
-            Ok(text) => (Some(LayoutFile { path, text }), None),
-            Err(error) => (None, Some(format!("could not read {path}: {error}"))),
-        },
+    let entries = entries_for(layouts.source_of(window.label()));
+    let (layout, layout_error) = match entries.first() {
+        Some(first) => (first.layout.clone(), first.layout_error.clone()),
+        None => (None, None),
     };
     let restore_key = layouts.restore_key(window.label());
     let saved = restore_key
@@ -94,6 +130,7 @@ pub fn startup(
     Startup {
         layout,
         layout_error,
+        layouts: entries,
         saved,
         persist: restore_key.is_some(),
         debug: debug_dir().is_some(),
@@ -127,36 +164,95 @@ mod tests {
 
     #[test]
     fn layout_flag_with_separate_value() {
-        let found = layout_path_from(args(&["--layout", "/tmp/a.toml"]), None);
-        assert_eq!(found.as_deref(), Some("/tmp/a.toml"));
+        let found = layout_paths_from(args(&["--layout", "/tmp/a.toml"]), None);
+        assert_eq!(found, args(&["/tmp/a.toml"]));
     }
 
     #[test]
     fn layout_flag_with_equals() {
-        let found = layout_path_from(args(&["--layout=/tmp/b.toml"]), None);
-        assert_eq!(found.as_deref(), Some("/tmp/b.toml"));
+        let found = layout_paths_from(args(&["--layout=/tmp/b.toml"]), None);
+        assert_eq!(found, args(&["/tmp/b.toml"]));
     }
 
     #[test]
     fn flag_wins_over_environment() {
-        let found = layout_path_from(
+        let found = layout_paths_from(
             args(&["--layout", "/tmp/a.toml"]),
             Some(String::from("/tmp/env.toml")),
         );
-        assert_eq!(found.as_deref(), Some("/tmp/a.toml"));
+        assert_eq!(found, args(&["/tmp/a.toml"]));
     }
 
     #[test]
     fn environment_is_the_fallback() {
-        let found = layout_path_from(args(&["--other"]), Some(String::from("/tmp/env.toml")));
-        assert_eq!(found.as_deref(), Some("/tmp/env.toml"));
+        let found = layout_paths_from(args(&["--other"]), Some(String::from("/tmp/env.toml")));
+        assert_eq!(found, args(&["/tmp/env.toml"]));
     }
 
     #[test]
     fn nothing_given_means_no_layout() {
-        assert_eq!(layout_path_from(args(&[]), None), None);
-        assert_eq!(layout_path_from(args(&["--layout"]), None), None);
-        assert_eq!(layout_path_from(args(&[]), Some(String::new())), None);
+        assert!(layout_paths_from(args(&[]), None).is_empty());
+        assert!(layout_paths_from(args(&["--layout"]), None).is_empty());
+        assert!(layout_paths_from(args(&[]), Some(String::new())).is_empty());
+    }
+
+    #[test]
+    fn every_layout_flag_is_kept_in_order() {
+        let found = layout_paths_from(
+            args(&["--layout", "/tmp/a.toml", "--x", "--layout=/tmp/b.toml"]),
+            Some(String::from("/tmp/env.toml")),
+        );
+        assert_eq!(found, args(&["/tmp/a.toml", "/tmp/b.toml"]));
+    }
+
+    #[test]
+    fn a_plain_window_has_no_layout_entries() {
+        assert!(entries_for(Source::Default).is_empty());
+    }
+
+    #[test]
+    fn several_layouts_are_read_in_order_and_one_failure_stays_alone() {
+        let dir = std::env::temp_dir().join(format!("startup-tabs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.toml").to_string_lossy().into_owned();
+        let gone = dir.join("gone.toml").to_string_lossy().into_owned();
+        let last = dir.join("last.toml").to_string_lossy().into_owned();
+        fs::write(&first, "name = \"first\"").unwrap();
+        fs::write(&last, "name = \"last\"").unwrap();
+
+        let entries = entries_for(Source::Tabs(vec![
+            Source::File(first.clone()),
+            Source::File(gone.clone()),
+            Source::Missing(String::from("no layout named \"x\"")),
+            Source::File(last.clone()),
+        ]));
+
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            entries[0],
+            LayoutEntry {
+                layout: Some(LayoutFile {
+                    path: first,
+                    text: String::from("name = \"first\""),
+                }),
+                layout_error: None,
+            }
+        );
+        assert_eq!(entries[1].layout, None);
+        assert!(entries[1]
+            .layout_error
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with(&format!("could not read {gone}"))));
+        assert_eq!(
+            entries[2].layout_error.as_deref(),
+            Some("no layout named \"x\"")
+        );
+        assert_eq!(
+            entries[3].layout.as_ref().map(|file| file.path.as_str()),
+            Some(last.as_str())
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
