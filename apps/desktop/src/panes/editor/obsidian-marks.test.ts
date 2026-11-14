@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   embedHref,
+  MAX_MARK_RUN,
   type MarkNode,
   parseEmbed,
   parseEmbedHref,
@@ -81,6 +82,71 @@ describe('splitMarks', () => {
   });
 });
 
+// The pattern the splitter used before it was made linear. It finds the
+// same highlights, slowly.
+const OLD_HIGHLIGHT = /==(?=\S)([^\n]*?\S)==/g;
+
+function highlightsOf(nodes: MarkNode[]): string[] {
+  return nodes.filter((node) => node.type === 'highlight').map(textOf);
+}
+
+describe('splitMarks on hostile text', () => {
+  it('splits an 80 KB line of highlight openings with no end in linear time', () => {
+    const line = '==a '.repeat(20_000);
+    expect(line.length).toBe(80_000);
+    const started = performance.now();
+    const nodes = splitMarks(line);
+    const took = performance.now() - started;
+    expect(nodes).toEqual([{ type: 'text', value: line }]);
+    // The old pattern took most of a second here. One pass takes a few milliseconds.
+    expect(took).toBeLessThan(150);
+  });
+
+  it('stays fast on other long lines built to make a pattern look back', () => {
+    const lines = [
+      '=='.repeat(40_000),
+      '==a'.repeat(26_000),
+      'a== '.repeat(20_000),
+      '![[a '.repeat(16_000),
+      '[[a '.repeat(20_000),
+      `#${'1'.repeat(80_000)}`,
+      '#1 '.repeat(26_000),
+      `==${'a '.repeat(40_000)}`,
+    ];
+    for (const line of lines) {
+      const started = performance.now();
+      splitMarks(line);
+      expect(performance.now() - started).toBeLessThan(150);
+    }
+  });
+
+  it('finds the same highlights as the old pattern', () => {
+    const alphabet = ['=', '=', '=', 'a', ' ', '\n', 'b'];
+    let seed = 7;
+    function next(): number {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed;
+    }
+    for (let round = 0; round < 3000; round += 1) {
+      let text = '';
+      const length = next() % 24;
+      for (let at = 0; at < length; at += 1) {
+        text += alphabet[next() % alphabet.length] ?? '';
+      }
+      const expected = [...text.matchAll(OLD_HIGHLIGHT)].map((match) => match[1] ?? '');
+      expect(highlightsOf(splitMarks(text)), JSON.stringify(text)).toEqual(expected);
+      expect(splitMarks(text).map(textOf).join('').length, JSON.stringify(text)).toBe(
+        text.length - expected.length * 4,
+      );
+    }
+  });
+
+  it('keeps a highlight on its own line', () => {
+    expect(splitMarks('==a\nb==')).toEqual([{ type: 'text', value: '==a\nb==' }]);
+    expect(highlightsOf(splitMarks('==a\n==b== c=='))).toEqual(['b']);
+  });
+});
+
 function paragraph(text: string): MarkNode {
   return { type: 'paragraph', children: [{ type: 'text', value: text }] };
 }
@@ -150,5 +216,25 @@ describe('transformObsidianMarks', () => {
     const root: MarkNode = { type: 'root', children: [{ type: 'paragraph', children: [link] }] };
     transformObsidianMarks(root);
     expect(link.children).toEqual([{ type: 'text', value: '#tag ==x==' }]);
+  });
+
+  it('leaves a run longer than the cap as plain text, and splits one at the cap', () => {
+    const long = `==x== ${'a'.repeat(MAX_MARK_RUN)}`;
+    const node = paragraph(long);
+    const started = performance.now();
+    transformObsidianMarks(node);
+    expect(performance.now() - started).toBeLessThan(50);
+    expect(node.children).toEqual([{ type: 'text', value: long }]);
+
+    const atCap = paragraph(`==x== ${'a'.repeat(MAX_MARK_RUN - 6)}`);
+    transformObsidianMarks(atCap);
+    expect(kinds(atCap.children ?? [])).toEqual(['highlight', 'text']);
+  });
+
+  it('handles an 80 KB hostile line inside a document within a time bound', () => {
+    const node: MarkNode = { type: 'root', children: [paragraph('==a '.repeat(20_000))] };
+    const started = performance.now();
+    transformObsidianMarks(node);
+    expect(performance.now() - started).toBeLessThan(150);
   });
 });

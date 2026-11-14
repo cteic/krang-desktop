@@ -36,10 +36,19 @@ const QUERY_LANGUAGES = new Set(['datacorejsx', 'datacore', 'dataview', 'datavie
 // Text inside a link is already a link.
 const SKIPPED_PARENTS = new Set(['link', 'linkReference']);
 
-// In order: an embed, a wikilink (left for the wikilink pass), a highlight,
-// a tag. A tag starts a word and holds at least one letter, so `#1` is not one.
+// In order: an embed, a wikilink (left for the wikilink pass), the opening
+// of a highlight, a tag. A tag starts a word and holds at least one letter,
+// so `#1` is not one. The pattern finds only where a highlight opens. Its
+// end is looked up in a list made once, so a line of openings with no end
+// costs one pass and not one pass per opening.
 const INLINE =
-  /!\[\[([^[\]\n]+)\]\]|(\[\[[^[\]\n]+\]\])|==(?=\S)([^\n]*?\S)==|(?<!\S)#([\p{L}\p{N}_/-]*[\p{L}_][\p{L}\p{N}_/-]*)/gu;
+  /!\[\[([^[\]\n]+)\]\]|(\[\[[^[\]\n]+\]\])|(==)(?=\S)|(?<!\S)#([\p{L}\p{N}_/-]*[\p{L}_][\p{L}\p{N}_/-]*)/gu;
+
+/**
+ * The longest run of text that is searched for marks. A longer run is
+ * shown as plain text. No line a person writes comes near it.
+ */
+export const MAX_MARK_RUN = 32_768;
 
 const CALLOUT = /^\[!([\w-]+)\][+-]?[ \t]*([^\n]*)(?:\n|$)/;
 
@@ -95,9 +104,26 @@ function embedNode(inner: string): MarkNode {
   };
 }
 
+/**
+ * Every place a highlight can end: a `==` that follows a character other
+ * than a space. In rising order.
+ */
+function highlightEnds(text: string): number[] {
+  const ends: number[] = [];
+  for (let at = text.indexOf('==', 1); at !== -1; at = text.indexOf('==', at + 1)) {
+    if (!/\s/.test(text.charAt(at - 1))) {
+      ends.push(at);
+    }
+  }
+  return ends;
+}
+
 /** Splits one run of text into text, embeds, highlights and tags. */
 export function splitMarks(text: string): MarkNode[] {
   const nodes: MarkNode[] = [];
+  const ends = highlightEnds(text);
+  let nextEnd = 0;
+  let lineEnd = -1;
   let last = 0;
   function pushText(value: string) {
     const previous = nodes[nodes.length - 1];
@@ -107,18 +133,40 @@ export function splitMarks(text: string): MarkNode[] {
       nodes.push(textNode(value));
     }
   }
-  for (const match of text.matchAll(INLINE)) {
-    pushText(text.slice(last, match.index));
-    last = match.index + match[0].length;
-    const [whole, embed, wikilink, highlight, tag] = match;
-    if (embed !== undefined && embed.trim() !== '') {
-      nodes.push(embedNode(embed));
-    } else if (highlight !== undefined) {
+  const pattern = new RegExp(INLINE);
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+    const [whole, embed, wikilink, opening, tag] = match;
+    if (opening !== undefined) {
+      // The highlight ends at the first end on the same line that leaves
+      // at least one character inside.
+      const inside = match.index + 2;
+      if (lineEnd < match.index) {
+        const found = text.indexOf('\n', match.index);
+        lineEnd = found === -1 ? text.length : found;
+      }
+      while ((ends[nextEnd] ?? Infinity) <= inside) {
+        nextEnd += 1;
+      }
+      const end = ends[nextEnd];
+      if (end === undefined || end > lineEnd) {
+        // No end: these two characters are text. Look again from the next one.
+        pattern.lastIndex = match.index + 1;
+        continue;
+      }
+      pushText(text.slice(last, match.index));
       nodes.push({
         type: 'highlight',
         data: { hName: 'mark' },
-        children: splitMarks(highlight),
+        children: splitMarks(text.slice(inside, end)),
       });
+      last = end + 2;
+      pattern.lastIndex = last;
+      continue;
+    }
+    pushText(text.slice(last, match.index));
+    last = match.index + whole.length;
+    if (embed !== undefined && embed.trim() !== '') {
+      nodes.push(embedNode(embed));
     } else if (tag !== undefined) {
       nodes.push({
         type: 'tag',
@@ -199,7 +247,7 @@ export function transformObsidianMarks(node: MarkNode): void {
   }
   node.children = children.flatMap((child) => {
     if (child.type === 'text' && child.value !== undefined && /[=#[]/.test(child.value)) {
-      return splitMarks(child.value);
+      return child.value.length > MAX_MARK_RUN ? [child] : splitMarks(child.value);
     }
     transformObsidianMarks(child);
     return [child];
