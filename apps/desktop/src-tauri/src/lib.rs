@@ -108,8 +108,25 @@ pub fn run() {
                 None => {
                     thread::spawn(move || {
                         thread::sleep(LAUNCH_LINK_GRACE);
-                        if handle.webview_windows().is_empty() {
+                        if !handle.webview_windows().is_empty() {
+                            return;
+                        }
+                        // The link that started the app is not always
+                        // delivered as an event. Ask for it before settling
+                        // on the default window.
+                        let launch_links = handle
+                            .deep_link()
+                            .get_current()
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default();
+                        if launch_links.is_empty() {
                             open_or_log(&handle, Source::Default);
+                            return;
+                        }
+                        for url in launch_links {
+                            let source = source_from_url(&handle, url.as_str());
+                            open_or_log(&handle, source);
                         }
                     });
                 }
