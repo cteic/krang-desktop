@@ -21,6 +21,7 @@ Discourse graph files. These work in any terminal, without the app running:
   kd types [--json]                            list node types, relation types and allowed relations
   kd nodes [--type <type>] [--json]            list the nodes that exist
   kd skill install | path                      put the discourse-graph skill in a vault
+  kd vault init <dir> [--example] [--force]    make a new, small vault for a discourse graph
 
 The app binary accepts the same commands after `ctl`.";
 
@@ -144,6 +145,19 @@ Usage: kd skill install [--vault <dir>] [--force]
                   current one that holds `.obsidian`
   --force         replace a skill file that differs from the shipped one";
 
+const VAULT_USAGE: &str = "\
+Usage: kd vault init <dir> [--example] [--force]
+
+Makes a new, small vault for a discourse graph in <dir>, which is created
+when missing. It writes the settings file the Discourse Graphs plugin reads,
+with seven node types and six relation types, a `Start here` note, and the
+discourse-graph skill for Claude Code.
+
+  --example   also add a short lab notebook note to try the skill on
+  --force     use a directory that is not empty. Files already in it are kept
+
+A settings file that already exists is never replaced, with or without --force.";
+
 const AGENTS: [&str; 2] = ["claude", "codex"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,6 +232,12 @@ pub enum VaultAction {
         force: bool,
     },
     SkillPath,
+    /// Make a new vault. The only action that takes no existing vault.
+    Init {
+        dir: String,
+        example: bool,
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +270,7 @@ fn usage_for(name: &str) -> Option<&'static str> {
         "types" => Some(TYPES_USAGE),
         "nodes" => Some(NODES_USAGE),
         "skill" => Some(SKILL_USAGE),
+        "vault" => Some(VAULT_USAGE),
         _ => None,
     }
 }
@@ -641,6 +662,31 @@ fn parse_skill(args: &[String]) -> Result<Command, UsageError> {
     Ok(vault_command(&scanned, action))
 }
 
+fn parse_vault(args: &[String]) -> Result<Command, UsageError> {
+    let spec = Spec {
+        usage: VAULT_USAGE,
+        switches: &["--example", "--force"],
+        valued: &[],
+    };
+    let scanned = spec.scan(args)?;
+    let words = scanned.words();
+    let Some((action, rest)) = words.split_first() else {
+        return Err(spec.error("missing init"));
+    };
+    if action != "init" {
+        return Err(spec.error(format!("unknown vault command {action}")));
+    }
+    let dir = spec.exactly_one(rest.to_vec(), "directory")?;
+    Ok(vault_command(
+        &scanned,
+        VaultAction::Init {
+            dir,
+            example: scanned.has("--example"),
+            force: scanned.has("--force"),
+        },
+    ))
+}
+
 /// Reads the arguments that follow the tool's own name.
 pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
     let general = |message: String| UsageError {
@@ -687,6 +733,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         "types" => parse_types(rest),
         "nodes" => parse_nodes(rest),
         "skill" => parse_skill(rest),
+        "vault" => parse_vault(rest),
         _ => Err(general(format!("unknown command {name}"))),
     }
 }
@@ -1075,6 +1122,48 @@ mod tests {
             message(&["skill", "path", "--force"]),
             "--force goes with install"
         );
+    }
+
+    #[test]
+    fn vault_init_takes_one_directory_and_two_switches() {
+        assert_eq!(
+            vault(&["vault", "init", "~/demo"]),
+            VaultCommand {
+                vault: None,
+                action: VaultAction::Init {
+                    dir: String::from("~/demo"),
+                    example: false,
+                    force: false,
+                },
+            }
+        );
+        assert_eq!(
+            vault(&["vault", "init", "--force", "demo", "--example"]).action,
+            VaultAction::Init {
+                dir: String::from("demo"),
+                example: true,
+                force: true,
+            }
+        );
+        assert_eq!(message(&["vault"]), "missing init");
+        assert_eq!(message(&["vault", "init"]), "missing directory");
+        assert_eq!(
+            message(&["vault", "init", "a", "b"]),
+            "unexpected argument b"
+        );
+        assert_eq!(
+            message(&["vault", "open", "a"]),
+            "unknown vault command open"
+        );
+        assert!(
+            message(&["vault", "init", "a", "--vault", "b"]).starts_with("unknown option --vault")
+        );
+        let Ok(Command::Help(text)) = parse(&["vault", "--help"]) else {
+            panic!("vault --help");
+        };
+        assert!(text.starts_with("Usage: kd vault init <dir>"), "{text}");
+        assert_eq!(parse(&["help", "vault"]), Ok(Command::Help(text)));
+        assert!(USAGE.contains("  kd vault init <dir> "));
     }
 
     #[test]

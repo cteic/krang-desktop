@@ -13,6 +13,7 @@ mod pending;
 mod protocol;
 mod socket;
 mod vault;
+mod vault_init;
 
 use std::ffi::OsStr;
 use std::fs;

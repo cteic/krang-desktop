@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use super::args::{Body, VaultAction, VaultCommand};
+use super::vault_init;
 use crate::graph_write::{self, NodeEntry, SkillInstall, VaultTypes};
 
 const NOTE_SUFFIX: &str = ".md";
@@ -138,7 +139,7 @@ pub fn run(
     stdin: &mut dyn Read,
 ) -> Result<String, String> {
     let cwd = cwd.ok_or_else(|| String::from("could not read the current directory"))?;
-    let vault = vault_for(command.vault.as_deref(), cwd)?;
+    let vault = || vault_for(command.vault.as_deref(), cwd);
     match &command.action {
         VaultAction::Node {
             type_name,
@@ -149,7 +150,8 @@ pub fn run(
                 .as_ref()
                 .map(|body| body_text(body, cwd, stdin))
                 .transpose()?;
-            graph_write::create_node(&vault, type_name, text, body.as_deref()).map(|node| node.path)
+            graph_write::create_node(&vault()?, type_name, text, body.as_deref())
+                .map(|node| node.path)
         }
         VaultAction::Relate {
             source,
@@ -157,7 +159,7 @@ pub fn run(
             destination,
             force,
         } => graph_write::add_relation(
-            &vault,
+            &vault()?,
             &note_argument(cwd, source),
             relation,
             &note_argument(cwd, destination),
@@ -165,7 +167,7 @@ pub fn run(
         )
         .map(|added| format!("{}\nrelation {}", added.sentence, added.id)),
         VaultAction::Types { json } => {
-            let types = graph_write::vault_types(&vault)?;
+            let types = graph_write::vault_types(&vault()?)?;
             if *json {
                 to_json(&types)
             } else {
@@ -173,7 +175,7 @@ pub fn run(
             }
         }
         VaultAction::Nodes { type_name, json } => {
-            let nodes = graph_write::list_nodes(&vault, type_name.as_deref())?;
+            let nodes = graph_write::list_nodes(&vault()?, type_name.as_deref())?;
             if *json {
                 to_json(&nodes)
             } else {
@@ -181,13 +183,20 @@ pub fn run(
             }
         }
         VaultAction::SkillInstall { force } => {
-            let (path, outcome) = graph_write::install_skill(&vault, *force)?;
+            let (path, outcome) = graph_write::install_skill(&vault()?, *force)?;
             Ok(match outcome {
                 SkillInstall::Written => format!("installed {}", path.display()),
                 SkillInstall::Unchanged => format!("already up to date: {}", path.display()),
             })
         }
-        VaultAction::SkillPath => Ok(graph_write::skill_destination(&vault).display().to_string()),
+        VaultAction::SkillPath => Ok(graph_write::skill_destination(&vault()?)
+            .display()
+            .to_string()),
+        VaultAction::Init {
+            dir,
+            example,
+            force,
+        } => vault_init::init(&absolute(cwd, dir), *example, *force),
     }
 }
 
@@ -361,5 +370,112 @@ mod tests {
             .contains("--force"));
         assert!(kd(&root, &["skill", "install", "--force"], "").is_ok());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_vault_takes_nodes_and_a_relation_and_the_reader_draws_them() {
+        let outside = fs::canonicalize(temp_dir("vault-init")).unwrap();
+        let root = outside.join("demo");
+
+        let made = kd(&outside, &["vault", "init", "demo", "--example"], "").unwrap();
+        assert!(
+            made.ends_with(&format!("Next: cd {} && kd types", root.display())),
+            "{made}"
+        );
+        assert_eq!(made.matches("created ").count(), 4, "{made}");
+        assert!(!root.join("relations.json").exists());
+        let again = kd(&outside, &["vault", "init", "demo", "--force"], "").unwrap_err();
+        assert!(again.contains("never replaces"), "{again}");
+
+        let types = kd(&root, &["types"], "").unwrap();
+        assert!(
+            types.contains("  Claim       CLM  #clm-candidate"),
+            "{types}"
+        );
+        assert!(types.contains("  addresses (is addressed by)"), "{types}");
+        assert!(types.contains("  Evidence opposes Claim"), "{types}");
+        assert_eq!(kd(&root, &["nodes"], "").unwrap(), "");
+
+        let claim = kd(
+            &root,
+            &["node", "claim", "A warmer proof makes a more sour loaf"],
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            claim,
+            root.join("Discourse Graph/CLM - A warmer proof makes a more sour loaf.md")
+                .display()
+                .to_string()
+        );
+        kd(
+            &root,
+            &[
+                "node",
+                "evidence",
+                "Loaves proofed at 30 C had a mean pH of 3.8",
+            ],
+            "",
+        )
+        .unwrap();
+        kd(
+            &root,
+            &["node", "question", "Does proof temperature change sourness"],
+            "",
+        )
+        .unwrap();
+        let related = kd(
+            &root,
+            &[
+                "relate",
+                "EVD - Loaves proofed at 30 C had a mean pH of 3.8",
+                "supports",
+                "CLM - A warmer proof makes a more sour loaf",
+            ],
+            "",
+        )
+        .unwrap();
+        let (_, id) = related.split_once("\nrelation ").unwrap();
+        kd(
+            &root,
+            &[
+                "relate",
+                "CLM - A warmer proof makes a more sour loaf",
+                "addresses",
+                "QUE - Does proof temperature change sourness",
+            ],
+            "",
+        )
+        .unwrap();
+        let refused = kd(
+            &root,
+            &[
+                "relate",
+                "QUE - Does proof temperature change sourness",
+                "supports",
+                "CLM - A warmer proof makes a more sour loaf",
+            ],
+            "",
+        )
+        .unwrap_err();
+        assert!(refused.contains("Claim addresses Question"), "{refused}");
+
+        // The first relation made the relations file, in the plugin's shape.
+        let relations: Value =
+            serde_json::from_str(&fs::read_to_string(root.join("relations.json")).unwrap())
+                .unwrap();
+        assert_eq!(relations["version"], json!(1));
+        assert!(relations["lastModified"].as_u64().unwrap() > 0);
+        assert_eq!(relations["relations"].as_object().unwrap().len(), 2);
+        assert_eq!(relations["relations"][id]["id"], json!(id));
+
+        let graph = crate::graph::read_graph(&root.display().to_string()).unwrap();
+        let graph = serde_json::to_value(graph).unwrap();
+        assert_eq!(graph["message"], Value::Null);
+        assert_eq!(graph["warnings"], json!([]));
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(graph["relations"].as_array().unwrap().len(), 2);
+        assert_eq!(graph["skippedRelations"], json!(0));
+        fs::remove_dir_all(outside).unwrap();
     }
 }
