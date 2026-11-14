@@ -74,13 +74,16 @@ variables below.
 | `kd types [--json]`                                 | Lists node types, relation types and the allowed relations   |
 | `kd nodes [--type <type>] [--json]`                 | Lists the titles of the nodes that exist                     |
 | `kd node <type> <text...> [--body <text>]`          | Creates a node note and prints its path                      |
-| `kd node <type> <text...> --body-file <path>`       | The same, with the note's text read from a file, or `-` for stdin |
+| `kd node <type> <text...> --body-file <path>`       | The same, with the note's text read from a file in the vault, or `-` for stdin |
 | `kd relate <source> <relation> <destination>`       | Adds a relation between two nodes                            |
 | `kd skill install [--force]`, `kd skill path`       | Copies the discourse-graph skill into the vault, or prints where it goes |
 | `kd vault init <dir> [--example] [--force]`         | Makes a new, small vault. See below                          |
 
 Every command but `kd vault init` takes `--vault <dir>`. Without it, the vault
 is the nearest directory at or above the current one that holds `.obsidian`.
+When the current directory is inside a vault, `--vault` must name that same
+vault. A command run in one vault never works on another. From a directory
+that is in no vault, `--vault` names any vault.
 
 ```sh
 $ kd node claim "Sleep loss reduces working memory"
@@ -116,11 +119,31 @@ Details that matter:
 - `kd relate` refuses a relation the vault's settings do not allow, and says
   what is allowed between the two node types. `--force` adds it anyway.
 - `kd relate` refuses a relation that already exists between the two notes
-  with the same type, in either direction, as the plugin does.
+  with the same type, in either direction.
 - A node note with no `nodeInstanceId` gets one added to its frontmatter the
   first time it is related. No other byte of the note changes.
+- `kd relate` reads a `nodeInstanceId` only when it is one plain value on the
+  key's own line, with or without quotes: `nodeInstanceId: 019a8f3e-...`. It
+  refuses a note whose id is a block (`|` or `>`), a list, a value with a
+  comment after it, or a key in other letter case such as `NodeInstanceId`.
+  The message names the note, and nothing is written.
 - `relations.json` is read again just before it is written, and replaced in
-  one step. Entries and fields the tool does not know are kept.
+  one step. Entries and fields the tool does not know are kept, and each
+  keeps its text as it stands in the file, so a long number keeps every
+  digit.
+- `--body-file` takes a regular file inside the vault, of at most 8 MiB. A
+  file outside the vault, a link, a folder or a device is refused. `-` reads
+  stdin, with the same 8 MiB limit.
+- Nothing is read or written through a symbolic link, or outside the vault.
+  A vault may be a folder someone else made, so a link in it is not trusted.
+  - A `relations.json`, node note, skill file or body file that is a link is
+    refused.
+  - A template that is a link, or whose name has a folder in it, is not used.
+  - A linked folder is followed only when it leads inside the vault. The
+    folder a note is written to is never a link.
+  - `kd nodes` leaves a linked note out.
+  - `kd vault init --force` follows the same rules in a folder that already
+    has files.
 
 ### The discourse-graph skill
 
