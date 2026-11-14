@@ -1,17 +1,22 @@
-import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { EditorContent, PaneContent } from '../../workspace/model';
 import { useDebugSnapshot } from '../debug-snapshot';
 import type { PaneProps } from '../pane-props';
 
-import { CodeEditor } from './code-editor';
+import { candidateText, nodeText } from './capture';
+import { CapturePopover } from './capture-popover';
+import { CodeEditor, type EditorApi } from './code-editor';
 import { debugText } from './debug-text';
 import './editor-pane.css';
-import { EditorToolbar } from './editor-toolbar';
+import type { EditorSelection } from './editor-setup';
+import { type CaptureState, type CreatedNotice, EditorToolbar } from './editor-toolbar';
+import { createEmbedResolver } from './embeds';
 import { effectiveView, isMarkdownPath, type ViewMode } from './file-kind';
 import {
   errorText,
   isMissingFileError,
+  listDirectory,
   loadFile,
   readTextFile,
   resolvePath,
@@ -19,6 +24,7 @@ import {
 } from './fs-api';
 import { MarkdownPreview } from './markdown-preview';
 import { basename, dirname, isAbsolutePath, isHomePath } from './paths';
+import { createNode, type NodeType, readNodeTypes, vaultRootOf } from './vault-api';
 
 interface LoadingBuffer {
   status: 'loading';
@@ -37,6 +43,18 @@ interface ReadyBuffer {
 }
 
 type Buffer = LoadingBuffer | FailedBuffer | ReadyBuffer;
+
+/** The selection a node is being made from, while its type is chosen. */
+interface Capture {
+  range: EditorSelection;
+  /** Null until the vault's node types have been read. */
+  types: NodeType[] | null;
+  error: string | null;
+  busy: boolean;
+}
+
+// Long enough to read the notice and reach for "Open".
+const CREATED_NOTICE_MS = 12_000;
 
 /** True when something is already at `path`, readable as text or not. */
 async function pathIsTaken(path: string): Promise<boolean> {
@@ -62,11 +80,18 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
   const [confirmingReload, setConfirmingReload] = useState(false);
   const [viewChoice, setViewChoice] = useState<ViewMode | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
+  // The vault the file is in. Null outside one, where nodes cannot be made.
+  const [vault, setVault] = useState<string | null>(null);
+  const [selected, setSelected] = useState(false);
+  const [capture, setCapture] = useState<Capture | null>(null);
+  const [created, setCreated] = useState<CreatedNotice | null>(null);
 
   const docKeyRef = useRef(0);
   const adoptedPathRef = useRef<string | null>(null);
   const titledRef = useRef(false);
   const saveAsRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<EditorApi | null>(null);
+  const captureRunRef = useRef(0);
 
   useEffect(() => {
     // A first save tells the workspace the new path, and the workspace hands
@@ -91,6 +116,9 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
     setPath(content.path);
     setSaveError(null);
     setConfirmingReload(false);
+    captureRunRef.current += 1;
+    setCapture(null);
+    setCreated(null);
 
     if (content.path === null) {
       show('', null, false);
@@ -119,7 +147,7 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
   const ready = buffer.status === 'ready';
   const dirty = ready && text !== savedText;
   const markdown = isMarkdownPath(path);
-  const view = effectiveView(markdown, viewChoice);
+  const view = effectiveView(markdown, viewChoice ?? content.mode ?? null);
   const fileName = path === null ? 'untitled' : basename(path);
 
   // The title is only cleared if this pane set it, so a title given by a
@@ -135,6 +163,41 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
   }, [actions, dirty, fileName]);
 
   useDebugSnapshot(name, debug, () => debugText({ path, dirty, view, text }));
+
+  useEffect(() => {
+    let cancelled = false;
+    setVault(null);
+    if (resolvedPath === null) {
+      return;
+    }
+    void vaultRootOf(resolvedPath).then((root) => {
+      if (!cancelled) {
+        setVault(root);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedPath]);
+
+  useEffect(() => {
+    if (created === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setCreated(null);
+    }, CREATED_NOTICE_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [created]);
+
+  const baseDir = resolvedPath === null ? null : dirname(resolvedPath);
+  // A reload builds a new lookup, so an image added since is found.
+  const resolveEmbed = useMemo(
+    () => createEmbedResolver(vault, baseDir, listDirectory),
+    [vault, baseDir, reloadCount],
+  );
 
   const openBeside = useCallback(
     (next: PaneContent) => {
@@ -191,7 +254,102 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
     adoptedPathRef.current = target;
     setPath(target);
     setResolvedPath(resolved);
-    actions.replaceContent({ type: 'editor', path: target });
+    actions.replaceContent(
+      content.mode === undefined
+        ? { type: 'editor', path: target }
+        : { type: 'editor', path: target, mode: content.mode },
+    );
+  }
+
+  function chooseView(mode: ViewMode) {
+    setViewChoice(mode);
+    // Recorded with the workspace, so the pane reopens the way it was left.
+    actions.replaceContent({ type: 'editor', path: content.path, mode });
+  }
+
+  let captureState: CaptureState = 'hidden';
+  if (vault !== null) {
+    captureState = selected && view !== 'preview' && capture === null ? 'ready' : 'disabled';
+  }
+
+  function openCapture() {
+    const range = editorRef.current?.selection();
+    if (vault === null || captureState !== 'ready' || range === undefined) {
+      return;
+    }
+    if (nodeText(range.text) === '') {
+      return;
+    }
+    captureRunRef.current += 1;
+    const run = captureRunRef.current;
+    setCapture({ range, types: null, error: null, busy: false });
+    readNodeTypes(vault)
+      .then((types) => {
+        if (captureRunRef.current === run) {
+          setCapture((current) => (current === null ? null : { ...current, types }));
+        }
+      })
+      .catch((error: unknown) => {
+        if (captureRunRef.current === run) {
+          setCapture((current) =>
+            current === null ? null : { ...current, types: [], error: errorText(error) },
+          );
+        }
+      });
+  }
+
+  function closeCapture() {
+    captureRunRef.current += 1;
+    setCapture(null);
+    editorRef.current?.focus();
+  }
+
+  async function createFromCapture(type: NodeType) {
+    if (capture === null || vault === null || capture.busy) {
+      return;
+    }
+    const run = captureRunRef.current;
+    const range = capture.range;
+    setCapture({ ...capture, error: null, busy: true });
+    try {
+      const node = await createNode({
+        vault,
+        typeId: type.id,
+        text: nodeText(range.text),
+        body: '',
+      });
+      if (captureRunRef.current !== run) {
+        return;
+      }
+      const linked = editorRef.current?.replaceRange(range, `[[${node.title}]]`) ?? false;
+      setCreated({
+        title: node.title,
+        path: node.path,
+        warning: linked ? null : 'The text changed, so no link was added',
+      });
+      closeCapture();
+    } catch (error) {
+      if (captureRunRef.current === run) {
+        setCapture((current) =>
+          current === null ? null : { ...current, error: errorText(error), busy: false },
+        );
+      }
+    }
+  }
+
+  function markCandidate(type: NodeType) {
+    if (capture === null || capture.busy) {
+      return;
+    }
+    const marked = editorRef.current?.replaceRange(
+      capture.range,
+      candidateText(capture.range.text, type),
+    );
+    if (marked === true) {
+      closeCapture();
+    } else {
+      setCapture({ ...capture, error: 'The text changed. Select it again.' });
+    }
   }
 
   function reload() {
@@ -211,6 +369,11 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
     if (event.key === 's' && event.metaKey && !event.altKey && !event.ctrlKey) {
       event.preventDefault();
       save();
+    }
+    const plainCommand = event.metaKey && !event.altKey && !event.ctrlKey;
+    if (event.key.toLowerCase() === 'n' && plainCommand && event.shiftKey && vault !== null) {
+      event.preventDefault();
+      openCapture();
     }
   }
 
@@ -248,11 +411,23 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
         confirmingReload={confirmingReload}
         error={saveError}
         saveAsRef={saveAsRef}
+        capture={captureState}
+        created={created}
+        onCapture={openCapture}
+        onOpenCreated={() => {
+          if (created !== null) {
+            openBeside({ type: 'editor', path: created.path });
+            setCreated(null);
+          }
+        }}
+        onDismissCreated={() => {
+          setCreated(null);
+        }}
         onSave={save}
         onSaveAs={(typed) => {
           void saveAs(typed);
         }}
-        onView={setViewChoice}
+        onView={chooseView}
         onReload={requestReload}
         onConfirmReload={reload}
         onCancelReload={() => {
@@ -268,16 +443,32 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
             path={path}
             focused={active && view !== 'preview'}
             onChange={setText}
+            onSelection={setSelected}
+            apiRef={editorRef}
           />
         </div>
         {view !== 'edit' && (
           <div className="editor-preview">
             <MarkdownPreview
               text={text}
-              baseDir={resolvedPath === null ? null : dirname(resolvedPath)}
+              baseDir={baseDir}
               onOpen={openBeside}
+              resolveEmbed={resolveEmbed}
             />
           </div>
+        )}
+        {capture !== null && (
+          <CapturePopover
+            text={capture.range.text}
+            types={capture.types}
+            error={capture.error}
+            busy={capture.busy}
+            onCreate={(type) => {
+              void createFromCapture(type);
+            }}
+            onCandidate={markCandidate}
+            onCancel={closeCapture}
+          />
         )}
       </div>
     </div>

@@ -16,6 +16,18 @@ export async function writeTextFile(path: string, text: string): Promise<void> {
   await invoke('fs_write_text', { path, text });
 }
 
+const directorySchema = z.object({
+  path: z.string(),
+  entries: z.array(z.object({ name: z.string(), path: z.string(), isDir: z.boolean() })),
+});
+
+export type Directory = z.infer<typeof directorySchema>;
+
+export async function listDirectory(path: string): Promise<Directory> {
+  const reply: unknown = await invoke('fs_list', { path });
+  return directorySchema.parse(reply);
+}
+
 export async function homeDirectory(): Promise<string> {
   const reply: unknown = await invoke('fs_home');
   return z.string().parse(reply);

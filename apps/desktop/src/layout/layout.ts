@@ -3,7 +3,8 @@ import { z } from 'zod';
 
 import type { PaneContent, PaneTree } from '../workspace/model';
 import type { TabDraft } from '../workspace/reducer';
-import { equalShares } from '../workspace/split-sizes';
+import { EDITOR_MODES } from '../workspace/model';
+import { equalShares, sharesFromSizes } from '../workspace/split-sizes';
 
 /**
  * A layout file describes one tab: a tree of splits whose leaves are panes.
@@ -12,6 +13,10 @@ import { equalShares } from '../workspace/split-sizes';
  *
  * `split = "vertical"` puts children side by side, divided by a vertical
  * line. `split = "horizontal"` stacks them.
+ *
+ * Two keys go beyond that format, and a reader that does not know them
+ * ignores them: `sizes` on a split gives its children relative sizes, and
+ * `mode` on an editor pane says how it opens.
  */
 
 export class LayoutError extends Error {
@@ -31,6 +36,8 @@ const paneSchema = z.object({
   url: z.string().min(1).optional(),
   agent: z.string().min(1).optional(),
   view: z.string().min(1).optional(),
+  mode: z.enum(EDITOR_MODES).optional(),
+  sizes: z.array(z.number()).optional(),
 });
 
 const fileSchema = z.object({
@@ -42,7 +49,16 @@ const fileSchema = z.object({
 
 type PaneEntry = z.infer<typeof paneSchema>;
 
-const LEAF_ONLY_FIELDS = ['type', 'directory', 'commands', 'path', 'url', 'agent', 'view'] as const;
+const LEAF_ONLY_FIELDS = [
+  'type',
+  'directory',
+  'commands',
+  'path',
+  'url',
+  'agent',
+  'view',
+  'mode',
+] as const;
 
 export function parseLayout(text: string): TabDraft {
   let raw: unknown;
@@ -113,7 +129,9 @@ function contentOf(entry: PaneEntry): PaneContent {
     case 'files':
       return { type, directory: entry.directory ?? null };
     case 'editor':
-      return { type, path: entry.path ?? null };
+      return entry.mode === undefined
+        ? { type, path: entry.path ?? null }
+        : { type, path: entry.path ?? null, mode: entry.mode };
     case 'web':
       if (entry.url === undefined) {
         throw new LayoutError(`pane "${entry.id}" is a web pane, so it needs a "url"`);
@@ -138,6 +156,9 @@ function buildNode(entry: PaneEntry, byId: Map<string, PaneEntry>, path: Set<str
 
   const isSplit = entry.split !== undefined || entry.children !== undefined;
   if (!isSplit) {
+    if (entry.sizes !== undefined) {
+      throw new LayoutError(`pane "${entry.id}" has "sizes", which only a split takes`);
+    }
     return {
       kind: 'leaf',
       id: entry.id,
@@ -170,6 +191,23 @@ function buildNode(entry: PaneEntry, byId: Map<string, PaneEntry>, path: Set<str
     id: entry.id,
     direction: entry.split === 'vertical' ? 'row' : 'column',
     children,
-    shares: equalShares(children.length),
+    shares: sharesOf(entry, children.length),
   };
+}
+
+/** A split's shares: its `sizes` when it gives them, equal otherwise. */
+function sharesOf(entry: PaneEntry, count: number): number[] {
+  if (entry.sizes === undefined) {
+    return equalShares(count);
+  }
+  if (entry.sizes.length !== count) {
+    throw new LayoutError(
+      `pane "${entry.id}" has ${String(entry.sizes.length)} sizes for ${String(count)} children. Give one size per child`,
+    );
+  }
+  const shares = sharesFromSizes(entry.sizes);
+  if (shares === null) {
+    throw new LayoutError(`pane "${entry.id}" has a size that is not a positive number`);
+  }
+  return shares;
 }

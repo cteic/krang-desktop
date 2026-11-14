@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { leavesOf } from './model';
+import { EDITOR_MODES, leavesOf } from './model';
 import type { PaneContent, PaneTree, Tab, Workspace } from './model';
 
 /**
@@ -20,7 +20,11 @@ const contentSchema: z.ZodType<PaneContent> = z.discriminatedUnion('type', [
     commands: z.array(z.string()),
   }),
   z.object({ type: z.literal('files'), directory: z.string().nullable() }),
-  z.object({ type: z.literal('editor'), path: z.string().nullable() }),
+  z.object({
+    type: z.literal('editor'),
+    path: z.string().nullable(),
+    mode: z.enum(EDITOR_MODES).optional(),
+  }),
   z.object({ type: z.literal('web'), url: z.string() }),
   z.object({
     type: z.literal('chat'),

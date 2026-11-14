@@ -187,7 +187,7 @@ type = "graph"
     const graph = leaves.find((leaf) => leaf.content.type === 'graph');
     expect(graph?.content).toMatchObject({ type: 'graph', view: null });
     // The graph's column is as wide as the other two together.
-    expect(layout.root.kind === 'split' ? layout.root.shares : []).toEqual([0.5, 0.5]);
+    expect(layout.root.kind === 'split' ? layout.root.shares : []).toEqual([0.2, 0.3, 0.5]);
   });
 
   it('rejects a split that also names a graph view', () => {
@@ -291,5 +291,93 @@ children = ["a"]
       'name = "x"\n[[panes]]\nid = "root"\nchildren = ["a"]\n[[panes]]\nid = "a"\n',
       'needs both "split" and "children"',
     );
+  });
+
+  const COLUMNS = `
+name = "cols"
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["a", "b", "c"]
+SIZES
+[[panes]]
+id = "a"
+[[panes]]
+id = "b"
+type = "editor"
+path = "/tmp/a.md"
+MODE
+[[panes]]
+id = "c"
+`;
+
+  function columns(sizes: string, mode = ''): string {
+    return COLUMNS.replace('SIZES', sizes).replace('MODE', mode);
+  }
+
+  it('gives the children of a split the relative sizes it lists', () => {
+    const root = parseLayout(columns('sizes = [2, 3, 5]')).root;
+    expect(root.kind === 'split' ? root.shares : null).toEqual([0.2, 0.3, 0.5]);
+  });
+
+  it('accepts sizes that are not whole numbers', () => {
+    const root = parseLayout(columns('sizes = [0.5, 0.5, 1.0]')).root;
+    expect(root.kind === 'split' ? root.shares : null).toEqual([0.25, 0.25, 0.5]);
+  });
+
+  it('refuses sizes that do not match the children or are not positive', () => {
+    expectLayoutError(columns('sizes = [1, 2]'), '2 sizes for 3 children');
+    expectLayoutError(columns('sizes = [1, 0, 2]'), 'not a positive number');
+    expectLayoutError(columns('sizes = [1, -1, 2]'), 'not a positive number');
+    expectLayoutError(columns('sizes = [1, "2", 3]'), 'expected shape');
+    expectLayoutError(columns('', 'sizes = [1]'), 'only a split takes');
+  });
+
+  it('reads the mode an editor pane opens in', () => {
+    const leaves = leavesOf(parseLayout(columns('', 'mode = "preview"')).root);
+    expect(leaves[1]?.content).toEqual({ type: 'editor', path: '/tmp/a.md', mode: 'preview' });
+    expect(leavesOf(parseLayout(columns('')).root)[1]?.content).toEqual({
+      type: 'editor',
+      path: '/tmp/a.md',
+    });
+  });
+
+  it('refuses a mode that is not edit, split or preview, and a mode on a split', () => {
+    expectLayoutError(columns('', 'mode = "reading"'), 'expected shape');
+    expectLayoutError(columns('mode = "edit"'), 'cannot also hold content');
+  });
+
+  it('parses the example layouts', () => {
+    for (const name of ['lab', 'board', 'demo']) {
+      const text = readFileSync(new URL(`../../examples/${name}.toml`, import.meta.url), 'utf8');
+      expect(() => parseLayout(text)).not.toThrow();
+    }
+  });
+
+  it('lays out the research example as a narrow column, a note and a wide column', () => {
+    const text = readFileSync(new URL('../../examples/lab.toml', import.meta.url), 'utf8');
+    const layout = parseLayout(text);
+    expect(layout.title).toBe('Research');
+    expect(layout.root.kind === 'split' ? layout.root.shares : null).toEqual([0.2, 0.3, 0.5]);
+    expect(leavesOf(layout.root).map((leaf) => leaf.content.type)).toEqual([
+      'files',
+      'terminal',
+      'editor',
+      'graph',
+      'chat',
+    ]);
+  });
+
+  it('lays out the board example around a saved canvas', () => {
+    const text = readFileSync(new URL('../../examples/board.toml', import.meta.url), 'utf8');
+    const layout = parseLayout(text);
+    expect(layout.title).toBe('Lab board');
+    const leaves = leavesOf(layout.root);
+    expect(leaves[0]?.content).toMatchObject({
+      type: 'graph',
+      view: 'Canvas - QUE - Matthew Effect',
+    });
+    expect(leaves[1]?.content).toMatchObject({ type: 'editor', mode: 'preview' });
+    expect(leaves[2]?.content.type).toBe('files');
   });
 });

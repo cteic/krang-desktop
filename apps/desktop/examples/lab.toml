@@ -1,55 +1,57 @@
-# A tour for a scientist: a Discourse Graphs vault as files, notes and a graph.
+# Research: one question from a Discourse Graphs vault, read beside its graph.
 #
 # Change the vault path below to your own vault. It appears in five places.
-# Then copy this file to the app's layouts folder (see the README) and open it:
+# Then copy this file and board.toml to the app's layouts folder (see the
+# README) and open both as tabs of one window:
 #
-#   open "krang-desktop://layout/lab"
+#   open "krang-desktop://layout/lab+board"
 #
-# Double-click a node in the graph to open its note beside it. Ask the chat
-# pane to add a note or a relation, and the graph redraws within a few seconds.
+# Double-click a node in the graph to open its note beside it. Select text in
+# a note and press Node to make a node of it. Ask the chat pane to add a note
+# or a relation, and the graph redraws within a few seconds.
 name = "lab"
-title = "lab"
+title = "Research"
 color = "green"
 
+# A narrow column, the note, and a wide column. `sizes` are relative.
 [[panes]]
 id = "root"
 split = "vertical"
-children = ["reading", "thinking"]
+children = ["left", "note", "thinking"]
+sizes = [2, 3, 5]
 
-# The left half: the vault's files and a shell, beside one note.
-[[panes]]
-id = "reading"
-split = "vertical"
-children = ["left", "note"]
-
+# The narrow column: the vault's files over a shell.
 [[panes]]
 id = "left"
 split = "horizontal"
 children = ["files", "shell"]
+sizes = [3, 2]
 
-# The right half: the graph, over a chat with an agent that can edit the vault.
+# The wide column: the graph, over a chat with an agent that can edit the vault.
 [[panes]]
 id = "thinking"
 split = "horizontal"
 children = ["graph", "chat"]
+sizes = [2, 1]
 
 [[panes]]
 id = "files"
 type = "files"
-title = "Vault files"
+title = "Vault"
 directory = "~/src/obsidian-lab-example"
 
 [[panes]]
 id = "shell"
 type = "terminal"
-title = "Shell in the vault"
+title = "Shell"
 directory = "~/src/obsidian-lab-example"
 
 [[panes]]
 id = "note"
 type = "editor"
-title = "Question: is citation count confounded?"
+title = "Is citation count a confounded metric?"
 path = "~/src/obsidian-lab-example/DiscourseGraph/QUE - Is citation count a hopelessly confounded metric.md"
+mode = "preview"      # or "edit" or "split"
 
 [[panes]]
 id = "graph"

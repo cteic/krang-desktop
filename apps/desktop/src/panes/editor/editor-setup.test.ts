@@ -53,6 +53,45 @@ describe('createEditor', () => {
     expect(parent.querySelector('.cm-line')?.textContent).toBe('# Title');
   });
 
+  it('reads the selection and tells when it starts and stops holding text', () => {
+    const parent = document.createElement('div');
+    document.body.append(parent);
+    const onSelection = vi.fn();
+    handle = createEditor({
+      parent,
+      text: 'one two three',
+      path: null,
+      onChange: vi.fn(),
+      onSelection,
+    });
+    expect(handle.selection()).toEqual({ from: 0, to: 0, text: '' });
+
+    const content = parent.querySelector<HTMLElement>('.cm-content');
+    const line = parent.querySelector('.cm-line')?.firstChild ?? null;
+    if (content === null || line === null) {
+      throw new Error('editor did not build');
+    }
+    content.focus();
+    document.getSelection()?.setBaseAndExtent(line, 4, line, 7);
+    document.dispatchEvent(new Event('selectionchange'));
+
+    expect(handle.selection()).toEqual({ from: 4, to: 7, text: 'two' });
+    expect(onSelection).toHaveBeenLastCalledWith(true);
+  });
+
+  it('replaces a range only while it still holds the text that was read', () => {
+    const { parent, onChange } = open('one two three', '/a/notes.md');
+
+    expect(handle?.replaceRange({ from: 4, to: 7, text: 'two' }, '[[Two]]')).toBe(true);
+    expect(parent.querySelector('.cm-line')?.textContent).toBe('one [[Two]] three');
+    expect(onChange).toHaveBeenLastCalledWith('one [[Two]] three');
+    expect(handle?.selection()).toEqual({ from: 11, to: 11, text: '' });
+
+    expect(handle?.replaceRange({ from: 4, to: 7, text: 'two' }, 'again')).toBe(false);
+    expect(handle?.replaceRange({ from: 4, to: 99, text: 'two' }, 'again')).toBe(false);
+    expect(parent.querySelector('.cm-line')?.textContent).toBe('one [[Two]] three');
+  });
+
   it('removes itself and ignores later calls once destroyed', () => {
     const { parent } = open('text', '/a/notes.md');
 

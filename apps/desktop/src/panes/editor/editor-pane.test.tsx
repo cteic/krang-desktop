@@ -14,16 +14,57 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 // CodeMirror needs layout that jsdom does not have. A text area stands in:
 // like the real editor it starts from `initialText`, is rebuilt when `docKey`
 // changes, and reports every edit.
+// Its selection is the text area's own, read and replaced the way the real
+// editor does it.
 vi.mock('./code-editor', () => ({
-  CodeEditor: ({ docKey, initialText, path, focused, onChange }: CodeEditorProps) => (
+  CodeEditor: ({
+    docKey,
+    initialText,
+    path,
+    focused,
+    onChange,
+    onSelection,
+    apiRef,
+  }: CodeEditorProps) => (
     <textarea
       key={docKey}
+      ref={(area) => {
+        if (apiRef === undefined) {
+          return;
+        }
+        apiRef.current =
+          area === null
+            ? null
+            : {
+                selection: () => ({
+                  from: area.selectionStart,
+                  to: area.selectionEnd,
+                  text: area.value.slice(area.selectionStart, area.selectionEnd),
+                }),
+                replaceRange: (range, insert) => {
+                  if (area.value.slice(range.from, range.to) !== range.text) {
+                    return false;
+                  }
+                  area.value =
+                    area.value.slice(0, range.from) + insert + area.value.slice(range.to);
+                  onChange(area.value);
+                  return true;
+                },
+                focus: () => {
+                  area.focus();
+                },
+              };
+      }}
       aria-label="Editor"
       data-path={path ?? ''}
       data-focused={String(focused)}
       defaultValue={initialText}
       onChange={(event) => {
         onChange(event.target.value);
+      }}
+      onSelect={(event) => {
+        const area = event.currentTarget;
+        onSelection?.(area.selectionStart !== area.selectionEnd);
       }}
     />
   ),
@@ -38,6 +79,11 @@ interface Disk {
   files: Map<string, string>;
   readErrors: Map<string, string>;
   writeError: string | null;
+  /** Folders that are vaults: a file under one belongs to it. */
+  vaults: string[];
+  /** What `graph_read` reports as the vault's node types. */
+  nodeTypes: unknown[];
+  createError: string | null;
 }
 
 let disk: Disk;
@@ -71,7 +117,7 @@ interface Shown {
   rerender: (content: EditorContent) => void;
 }
 
-function show(path: string | null, debug = false): Shown {
+function show(path: string | null, debug = false, mode?: EditorContent['mode']): Shown {
   const actions = makeActions();
   function element(content: EditorContent) {
     return (
@@ -85,7 +131,7 @@ function show(path: string | null, debug = false): Shown {
       />
     );
   }
-  const view = render(element({ type: 'editor', path }));
+  const view = render(element({ type: 'editor', path, mode }));
   return {
     actions,
     rerender: (content) => {
@@ -103,7 +149,14 @@ async function type(text: string) {
 }
 
 beforeEach(() => {
-  disk = { files: new Map(), readErrors: new Map(), writeError: null };
+  disk = {
+    files: new Map(),
+    readErrors: new Map(),
+    writeError: null,
+    vaults: [],
+    nodeTypes: [],
+    createError: null,
+  };
   invokeMock.mockReset();
   invokeMock.mockImplementation((command, args) => {
     if (command === 'fs_home') {
@@ -127,6 +180,24 @@ beforeEach(() => {
       }
       disk.files.set(stringArg(args, 'path'), stringArg(args, 'text'));
       return Promise.resolve(null);
+    }
+    if (command === 'graph_vault_root') {
+      const path = stringArg(args, 'path');
+      return Promise.resolve(disk.vaults.find((vault) => path.startsWith(`${vault}/`)) ?? null);
+    }
+    if (command === 'graph_read') {
+      return Promise.resolve({ nodeTypes: disk.nodeTypes, nodes: [], relations: [] });
+    }
+    if (command === 'graph_create_node') {
+      if (disk.createError !== null) {
+        return Promise.reject(disk.createError);
+      }
+      const title = `CLM - ${stringArg(args, 'text')}`;
+      return Promise.resolve({
+        id: 'new-1',
+        title,
+        path: `${stringArg(args, 'vault')}/Nodes/${title}.md`,
+      });
     }
     return Promise.resolve(null);
   });
@@ -492,6 +563,252 @@ describe('focus and debug', () => {
         });
       },
       { timeout: 2500 },
+    );
+  });
+});
+
+describe('view mode', () => {
+  it('opens in the mode the layout gave', async () => {
+    disk.files.set('/notes/a.md', '# Title');
+    show('/notes/a.md', false, 'preview');
+
+    expect(await screen.findByRole('heading', { name: 'Title' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Preview' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('records a change of mode with the workspace', async () => {
+    disk.files.set('/notes/a.md', '# Title');
+    const { actions } = show('/notes/a.md', false, 'preview');
+    await editor();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    expect(actions.replaceContent).toHaveBeenCalledExactlyOnceWith({
+      type: 'editor',
+      path: '/notes/a.md',
+      mode: 'edit',
+    });
+    expect(screen.getByRole('button', { name: 'Edit' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('shows frontmatter as properties in the preview and as text in the source', async () => {
+    disk.files.set('/notes/a.md', '---\nkind: claim\n---\n# Title');
+    show('/notes/a.md');
+
+    expect((await editor()).value).toContain('kind: claim');
+    expect(await screen.findByText('Properties')).toBeTruthy();
+    expect(screen.getByText('kind').tagName).toBe('DT');
+  });
+});
+
+describe('making a node from the selection', () => {
+  const NOTE = '/vault/Notes/reading.md';
+  const TEXT = 'Intro. Citations reward\n  the already famous. Outro.';
+  const FROM = TEXT.indexOf('Citations');
+  const TO = TEXT.indexOf(' Outro');
+
+  beforeEach(() => {
+    disk.vaults = ['/vault'];
+    disk.nodeTypes = [
+      { id: 'n-que', name: 'Question', format: 'QUE - {content}', color: '#99890E' },
+      {
+        id: 'n-clm',
+        name: 'Claim',
+        format: 'CLM - {content}',
+        color: '#7DA13E',
+        tag: 'clm-candidate',
+      },
+      { id: 'n-evd', name: 'Evidence', format: 'EVD - {content}', color: null, tag: null },
+    ];
+    disk.files.set(NOTE, TEXT);
+  });
+
+  async function select(from = FROM, to = TO) {
+    const area = await editor();
+    await screen.findByRole('button', { name: 'Node' });
+    area.setSelectionRange(from, to);
+    fireEvent.select(area);
+    return area;
+  }
+
+  async function openPopover() {
+    const area = await select();
+    fireEvent.click(screen.getByRole('button', { name: 'Node' }));
+    await screen.findByRole('option', { name: /Question/ });
+    return area;
+  }
+
+  function typeBox() {
+    return screen.getByRole('combobox', { name: 'Node type' });
+  }
+
+  function chosen() {
+    return screen
+      .getAllByRole('option')
+      .filter((option) => option.getAttribute('aria-selected') === 'true')
+      .map((option) => option.textContent);
+  }
+
+  it('has no Node button for a file outside a vault', async () => {
+    disk.files.set('/notes/a.md', 'plain note');
+    show('/notes/a.md');
+    await editor();
+
+    await waitFor(() => {
+      expect(callsTo('graph_vault_root')).toHaveLength(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Node' })).toBeNull();
+  });
+
+  it('enables the Node button only while text is selected', async () => {
+    show(NOTE);
+    const button = await screen.findByRole<HTMLButtonElement>('button', { name: 'Node' });
+    expect(button.disabled).toBe(true);
+
+    const area = await select();
+    expect(button.disabled).toBe(false);
+
+    area.setSelectionRange(3, 3);
+    fireEvent.select(area);
+    expect(button.disabled).toBe(true);
+  });
+
+  it('lists the node types of the vault with their colours', async () => {
+    show(NOTE);
+    await openPopover();
+
+    expect(callsTo('graph_read')[0]?.[1]).toEqual({ path: '/vault' });
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'QuestionQUE - {content}',
+      'ClaimCLM - {content}',
+      'EvidenceEVD - {content}',
+    ]);
+    expect(document.activeElement).toBe(typeBox());
+    const dot = screen
+      .getByRole('option', { name: /Claim/ })
+      .querySelector<HTMLElement>('.editor-capture-dot');
+    expect(dot?.style.background).toBe('rgb(125, 161, 62)');
+  });
+
+  it('opens on Cmd+Shift+N', async () => {
+    show(NOTE);
+    const area = await select();
+
+    fireEvent.keyDown(area, { key: 'N', metaKey: true, shiftKey: true });
+
+    expect(await screen.findByRole('dialog', { name: 'Make a node' })).toBeTruthy();
+  });
+
+  it('chooses by typing and by arrow keys', async () => {
+    show(NOTE);
+    await openPopover();
+    expect(chosen()).toEqual(['QuestionQUE - {content}']);
+
+    fireEvent.keyDown(typeBox(), { key: 'ArrowDown' });
+    expect(chosen()).toEqual(['ClaimCLM - {content}']);
+    fireEvent.keyDown(typeBox(), { key: 'ArrowUp' });
+    fireEvent.keyDown(typeBox(), { key: 'ArrowUp' });
+    expect(chosen()).toEqual(['EvidenceEVD - {content}']);
+
+    fireEvent.change(typeBox(), { target: { value: 'cl' } });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(chosen()).toEqual(['ClaimCLM - {content}']);
+  });
+
+  it('creates the node on Enter, links it, and offers to open it', async () => {
+    const { actions } = show(NOTE);
+    const area = await openPopover();
+    fireEvent.change(typeBox(), { target: { value: 'claim' } });
+
+    fireEvent.keyDown(typeBox(), { key: 'Enter' });
+
+    const notice = await screen.findByRole('status');
+    expect(notice.textContent).toContain('Created CLM - Citations reward the already famous.');
+    expect(callsTo('graph_create_node')[0]?.[1]).toEqual({
+      vault: '/vault',
+      typeId: 'n-clm',
+      text: 'Citations reward the already famous.',
+      body: '',
+    });
+    expect(area.value).toBe('Intro. [[CLM - Citations reward the already famous.]] Outro.');
+    expect(screen.getByLabelText('Unsaved changes')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(disk.files.get(NOTE)).toBe(TEXT);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+
+    expect(actions.openPane).toHaveBeenCalledExactlyOnceWith({
+      type: 'editor',
+      path: '/vault/Nodes/CLM - Citations reward the already famous..md',
+    });
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('shows the error from the core and leaves the text unchanged', async () => {
+    disk.createError = 'a note named "CLM - Citations" already exists';
+    show(NOTE);
+    const area = await openPopover();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create node' }));
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'a note named "CLM - Citations" already exists',
+    );
+    expect(area.value).toBe(TEXT);
+    expect(screen.queryByLabelText('Unsaved changes')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Make a node' })).toBeTruthy();
+  });
+
+  it('closes on Escape without changing anything', async () => {
+    show(NOTE);
+    const area = await openPopover();
+
+    fireEvent.keyDown(typeBox(), { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(area.value).toBe(TEXT);
+    expect(callsTo('graph_create_node')).toHaveLength(0);
+    expect(document.activeElement).toBe(area);
+  });
+
+  it('marks the selection as a candidate with the tag of the type, creating no file', async () => {
+    show(NOTE);
+    const area = await openPopover();
+    fireEvent.keyDown(typeBox(), { key: 'ArrowDown' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as candidate' }));
+
+    expect(area.value).toBe(
+      'Intro. ==Citations reward the already famous.== #clm-candidate Outro.',
+    );
+    expect(callsTo('graph_create_node')).toHaveLength(0);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByLabelText('Unsaved changes')).toBeTruthy();
+  });
+
+  it('marks a candidate with no tag when the type has none', async () => {
+    show(NOTE);
+    const area = await openPopover();
+
+    fireEvent.keyDown(typeBox(), { key: 'Enter', shiftKey: true });
+
+    expect(area.value).toBe('Intro. ==Citations reward the already famous.== Outro.');
+  });
+
+  it('says so when the node types cannot be read', async () => {
+    disk.nodeTypes = [{ id: 7 }];
+    show(NOTE);
+    await select();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Node' }));
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create node' }).disabled).toBe(
+      true,
     );
   });
 });

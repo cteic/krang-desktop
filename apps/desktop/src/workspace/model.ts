@@ -14,9 +14,15 @@ export interface FilesContent {
   directory: string | null;
 }
 
+export const EDITOR_MODES = ['edit', 'split', 'preview'] as const;
+
+export type EditorMode = (typeof EDITOR_MODES)[number];
+
 export interface EditorContent {
   type: 'editor';
   path: string | null;
+  /** How a Markdown file is shown. Left out, the pane picks its default. */
+  mode?: EditorMode | undefined;
 }
 
 export interface WebContent {

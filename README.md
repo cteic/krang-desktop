@@ -66,15 +66,16 @@ path = "~/src/project/README.md"
 | ---------- | --------------------------------------------------------------- |
 | `terminal` | `directory`, `commands` (typed into the shell once it is ready) |
 | `files`    | `directory`                                                     |
-| `editor`   | `path`                                                          |
+| `editor`   | `path`, `mode` (`edit`, `split` or `preview`, for Markdown)     |
 | `web`      | `url` (a URL, `localhost:3000`, or a path to an HTML file)      |
 | `chat`     | `agent` (`claude` or `codex`), `directory`                      |
 | `graph`    | `directory` (the vault), `view` (`all` or a canvas file name)   |
 
-Every pane also takes `title` and `is_focused`.
+Every pane also takes `title` and `is_focused`. A split takes `sizes`, one
+relative size per child: `sizes = [1, 2]` gives the second child two thirds.
 
 A full example is in `apps/desktop/examples/demo.toml`. A tour of the graph
-pane is in `apps/desktop/examples/lab.toml`.
+pane is in `apps/desktop/examples/lab.toml` and `board.toml`.
 
 ### Opening a layout
 
@@ -89,6 +90,9 @@ A link names a layout by its file name without `.toml`. The app looks in
 `~/.warp/tab_configs/`, whose files use the same format.
 
 A link opens a new window. If the app is already running, it opens there.
+
+A link can name up to six layouts joined by `+`, and each opens as a tab of one window.
+The demo is `open "krang-desktop://layout/lab+board"`; on the command line, repeat `--layout`.
 
 ## The graph pane
 

@@ -72,9 +72,25 @@ export interface EditorOptions {
   text: string;
   path: string | null;
   onChange: (text: string) => void;
+  /** Told when the selection starts or stops holding text. */
+  onSelection?: ((selected: boolean) => void) | undefined;
+}
+
+/** A stretch of the buffer and the text it held when it was read. */
+export interface EditorSelection {
+  from: number;
+  to: number;
+  text: string;
 }
 
 export interface EditorHandle {
+  /** The main selection. Empty text when nothing is selected. */
+  selection(): EditorSelection;
+  /**
+   * Puts `insert` where `range` was read. False, and nothing changes, when
+   * the buffer no longer holds that text there.
+   */
+  replaceRange(range: EditorSelection, insert: string): boolean;
   /** Applies the language and layout for a file name, without losing the buffer. */
   setPath(path: string | null): void;
   focus(): void;
@@ -82,8 +98,15 @@ export interface EditorHandle {
 }
 
 /** Builds one editor in `parent`. The caller destroys it when the file closes. */
-export function createEditor({ parent, text, path, onChange }: EditorOptions): EditorHandle {
+export function createEditor({
+  parent,
+  text,
+  path,
+  onChange,
+  onSelection,
+}: EditorOptions): EditorHandle {
   let destroyed = false;
+  let selected = false;
   let languageRequest = 0;
 
   // A file with Windows line endings keeps them when it is saved.
@@ -104,6 +127,11 @@ export function createEditor({ parent, text, path, onChange }: EditorOptions): E
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             onChange(update.state.sliceDoc());
+          }
+          const nowSelected = !update.state.selection.main.empty;
+          if (nowSelected !== selected) {
+            selected = nowSelected;
+            onSelection?.(selected);
           }
         }),
       ],
@@ -147,6 +175,22 @@ export function createEditor({ parent, text, path, onChange }: EditorOptions): E
   }
 
   return {
+    selection() {
+      const { from, to } = view.state.selection.main;
+      return { from, to, text: view.state.sliceDoc(from, to) };
+    },
+    replaceRange(range, insert) {
+      const length = view.state.doc.length;
+      const inside = range.from >= 0 && range.from <= range.to && range.to <= length;
+      if (destroyed || !inside || view.state.sliceDoc(range.from, range.to) !== range.text) {
+        return false;
+      }
+      view.dispatch({
+        changes: { from: range.from, to: range.to, insert },
+        selection: { anchor: range.from + insert.length },
+      });
+      return true;
+    },
     setPath(nextPath) {
       if (destroyed) {
         return;

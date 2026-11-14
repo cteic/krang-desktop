@@ -11,6 +11,15 @@ const VIEW_LABELS: Record<ViewMode, string> = {
   preview: 'Preview',
 };
 
+export type CaptureState = 'hidden' | 'disabled' | 'ready';
+
+export interface CreatedNotice {
+  title: string;
+  path: string;
+  /** Set when the note was made but the link could not be put in the text. */
+  warning: string | null;
+}
+
 export interface EditorToolbarProps {
   /** Null for a buffer that has never been saved. */
   path: string | null;
@@ -24,6 +33,13 @@ export interface EditorToolbarProps {
   confirmingReload: boolean;
   error: string | null;
   saveAsRef: RefObject<HTMLInputElement | null>;
+  /** The "Node" button: hidden outside a vault, ready only with text selected. */
+  capture: CaptureState;
+  /** A note just made from the selection, offered for opening. */
+  created: CreatedNotice | null;
+  onCapture: () => void;
+  onOpenCreated: () => void;
+  onDismissCreated: () => void;
   onSave: () => void;
   onSaveAs: (path: string) => void;
   onView: (view: ViewMode) => void;
@@ -43,6 +59,11 @@ export function EditorToolbar({
   confirmingReload,
   error,
   saveAsRef,
+  capture,
+  created,
+  onCapture,
+  onOpenCreated,
+  onDismissCreated,
   onSave,
   onSaveAs,
   onView,
@@ -113,6 +134,17 @@ export function EditorToolbar({
             ))}
           </div>
         )}
+        {capture !== 'hidden' && (
+          <button
+            className="editor-button"
+            type="button"
+            title="Make a node from the selected text (Cmd+Shift+N)"
+            disabled={capture !== 'ready'}
+            onClick={onCapture}
+          >
+            Node
+          </button>
+        )}
         {path !== null && (
           <button className="editor-button" type="button" disabled={!canSave} onClick={onSave}>
             Save
@@ -135,6 +167,25 @@ export function EditorToolbar({
           </button>
           <button className="editor-button" type="button" onClick={onCancelReload}>
             Keep editing
+          </button>
+        </div>
+      )}
+      {created !== null && (
+        <div className="editor-toolbar-row editor-created" role="status">
+          <span className="editor-created-text">
+            Created {created.title}
+            {created.warning === null ? '' : `. ${created.warning}`}
+          </span>
+          <button className="editor-button" type="button" onClick={onOpenCreated}>
+            Open
+          </button>
+          <button
+            className="editor-button"
+            type="button"
+            aria-label="Dismiss"
+            onClick={onDismissCreated}
+          >
+            ×
           </button>
         </div>
       )}
