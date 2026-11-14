@@ -80,6 +80,17 @@ the app also allows four shell commands: `kd node`, `kd relate`, `kd types`
 and `kd nodes`. Any other shell command falls under Claude Code's own rules
 and your settings, and one that needs approval is refused.
 
+Before the first Claude Code message in a folder, the chat pane asks "Trust
+this folder?". Until you answer Trust, the folder's own `.claude` settings,
+hooks, skills, `CLAUDE.md` and MCP servers do not load, so a skill installed
+in that folder does not run. The app remembers a trusted folder by its full
+path, and no layout file or link can mark one trusted.
+
+In both modes Claude Code is refused its Read tool, and shell commands that
+name a file, anywhere under a vault's `.obsidian` folder, which holds plugin
+settings. A recursive search such as `grep -r` can still print lines from
+those files.
+
 A full example is in `apps/desktop/examples/demo.toml`. A tour of the graph
 pane is in `apps/desktop/examples/lab.toml` and `board.toml`.
 
@@ -115,6 +126,12 @@ Graphs plugin. The pane itself never writes to the vault.
 - Drag to pan, scroll or pinch to zoom, and press F to fit the graph again.
 - The pane checks the vault every few seconds and redraws when a note or a
   relation changes on disk.
+- **Claims** lists every claim, hypothesis and conclusion by its evidence.
+  Only Evidence and Result notes count, once each for or against: a claim
+  is unsupported with none, opposed with only opposing evidence, contested
+  with both. A claim that supports or opposes another claim, and a relation
+  the plugin lists as tentative, show in the expanded row and are not
+  counted.
 
 Notes in a `Templates` folder are left out. A dashed line is a relation the
 vault marks as not tentative. A dotted line is a relation whose end names an
@@ -137,6 +154,9 @@ Then type this to the agent in the Research tab's chat pane:
 ```text
 Use the discourse-graph skill on the lab notebook note
 ```
+
+Answer Trust when the chat pane asks: the skill is installed in the vault's
+own folder, so it loads only once that folder is trusted.
 
 The agent creates nodes and relations with `kd`, and the graph pane above it
 draws each one within a few seconds. There are three ways to add a node:
