@@ -6,6 +6,8 @@ page, or set its own pane's title and badge.
 
 `kd` is the app binary under another name, so it always matches the app's
 version. It sends one request to the running app over a Unix socket and exits.
+The vault commands further down are the exception: they work on files and
+send nothing to the app.
 
 ## Commands
 
@@ -60,6 +62,74 @@ line was wrong.
 
 `focused` is true for the one pane that holds the keyboard in the window.
 
+## Vault commands: nodes and relations
+
+These commands create files in an Obsidian vault that uses the Discourse
+Graphs plugin. They are plain file operations. They work in any terminal,
+with or without the app running, and they need none of the environment
+variables below.
+
+| Command                                             | What it does                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------ |
+| `kd types [--json]`                                 | Lists node types, relation types and the allowed relations   |
+| `kd nodes [--type <type>] [--json]`                 | Lists the titles of the nodes that exist                     |
+| `kd node <type> <text...> [--body <text>]`          | Creates a node note and prints its path                      |
+| `kd node <type> <text...> --body-file <path>`       | The same, with the note's text read from a file, or `-` for stdin |
+| `kd relate <source> <relation> <destination>`       | Adds a relation between two nodes                            |
+| `kd skill install [--force]`, `kd skill path`       | Copies the discourse-graph skill into the vault, or prints where it goes |
+
+Every command takes `--vault <dir>`. Without it, the vault is the nearest
+directory at or above the current one that holds `.obsidian`.
+
+```sh
+$ kd node claim "Sleep loss reduces working memory"
+/notes/lab/DiscourseGraph/CLM - Sleep loss reduces working memory.md
+$ kd relate "EVD - Reaction times rose 12 percent" supports "CLM - Sleep loss reduces working memory"
+EVD - Reaction times rose 12 percent supports CLM - Sleep loss reduces working memory
+relation 019a8f3e-7c1a-7d52-9b0e-3f6a1c2d4e5f
+```
+
+Details that matter:
+
+- The app reads and writes vault files in the plugin's format. The plugin
+  itself is not modified, and nothing inside `.obsidian` is written.
+- `<type>` is a node type's name, its prefix, its tag or its id: `claim`,
+  `CLM` or `clm-candidate`. Case does not matter.
+- The text becomes the note's title in the type's naming pattern, so
+  `kd node claim "Birds fly"` makes `CLM - Birds fly.md`. The characters
+  `# ^ [ ] |` are dropped because they break links. Each `/`, `\` and `:`
+  becomes a dash. A long title is cut at 200 bytes.
+- A new note goes in the node type's folder, or else the vault's nodes
+  folder, or else the vault root. If the node type has a template and the
+  vault's Templates feature is on, the note gets the template's frontmatter
+  and body. `--body` replaces the template's body.
+- `kd node` never replaces a note. If any note in the vault has the title, it
+  fails and names that note.
+- `<source>` and `<destination>` each name a note: a path, or the note's
+  title with or without `.md`. A title that several notes share is an error
+  that lists their paths.
+- `<relation>` is a relation type's label or id, such as `supports`. The
+  direction matters: `kd types` prints each allowed relation as a sentence,
+  such as `Evidence supports Claim`.
+- `kd relate` refuses a relation the vault's settings do not allow, and says
+  what is allowed between the two node types. `--force` adds it anyway.
+- `kd relate` refuses a relation that already exists between the two notes
+  with the same type, in either direction, as the plugin does.
+- A node note with no `nodeInstanceId` gets one added to its frontmatter the
+  first time it is related. No other byte of the note changes.
+- `relations.json` is read again just before it is written, and replaced in
+  one step. Entries and fields the tool does not know are kept.
+
+### The discourse-graph skill
+
+`apps/desktop/skills/discourse-graph/SKILL.md` teaches Claude Code to build a
+graph with these commands: read the source, propose questions, claims and
+evidence with the sentences they come from, create and link them, and link
+each new node from its source note. `kd skill install` copies it to
+`<vault>/.claude/skills/discourse-graph/SKILL.md`, where Claude Code finds it
+when it runs in the vault. It keeps a copy you have edited unless you pass
+`--force`.
+
 ## Environment variables
 
 The app sets these in every pane's shell.
@@ -72,7 +142,8 @@ The app sets these in every pane's shell.
 | `DESKTOP_PANE_ID` | Id of the pane, such as `p3`                  |
 
 `kd` reads the socket, window and pane variables to know where to send a
-request and which pane is calling. Outside the app it exits 1 with
+request and which pane is calling. Outside the app, a command that drives a
+pane exits 1 with
 `kd only works inside a pane of the app (DESKTOP_SOCKET is not set)`.
 
 ## If `kd` is not found: use `DESKTOP_CLI`

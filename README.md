@@ -93,7 +93,7 @@ A link opens a new window. If the app is already running, it opens there.
 ## The graph pane
 
 The graph pane reads an Obsidian vault that uses the open-source Discourse
-Graphs plugin. It never writes to the vault.
+Graphs plugin. The pane itself never writes to the vault.
 
 - **All nodes** shows every note that has a configured `nodeTypeId` in its
   frontmatter, joined by the relations in the vault's `relations.json`.
@@ -109,6 +109,27 @@ Graphs plugin. It never writes to the vault.
 Notes in a `Templates` folder are left out. A dashed line is a relation the
 vault marks as not tentative. A dotted line is a relation whose end names an
 instance id that several notes share, so it may point at the wrong note.
+
+## Writing to a vault
+
+`kd` creates graph nodes and relations from any terminal, with or without the
+app running. A coding agent can use it to turn notes into a graph, and an open
+graph pane shows each new node within a few seconds.
+
+```sh
+kd types                                   # node types and allowed relations
+kd node claim "Sleep loss reduces working memory"
+kd node evidence "Reaction times rose 12 percent after one night awake"
+kd relate "EVD - Reaction times rose 12 percent after one night awake" \
+  supports "CLM - Sleep loss reduces working memory"
+kd skill install                           # teach Claude Code the procedure
+```
+
+The app reads and writes vault files in the plugin's format: a node is a
+Markdown note with `nodeTypeId` and `nodeInstanceId` in its frontmatter, and a
+relation is an entry in the vault's `relations.json`. The plugin itself is not
+modified, and nothing inside `.obsidian` is written. The commands are
+described in `apps/desktop/docs/pane-cli.md`.
 
 ## Shortcuts
 
