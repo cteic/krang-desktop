@@ -667,7 +667,7 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     );
   }
 
-  const shownPath = graph?.directory ?? directory;
+  const shownPath = directory ?? graph?.directory ?? null;
   const status = notice ?? statusText({ graph, loading, stale });
   const hasGraph = view !== null && graph?.message === null;
   const pointed = view?.nodes.find((node) => node.id === hoverId) ?? selected;

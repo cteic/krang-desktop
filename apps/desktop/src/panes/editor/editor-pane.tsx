@@ -55,6 +55,7 @@ interface Capture {
 
 // Long enough to read the notice and reach for "Open".
 const CREATED_NOTICE_MS = 12_000;
+const FOLLOW_MS = 2000;
 
 /** True when something is already at `path`, readable as text or not. */
 async function pathIsTaken(path: string): Promise<boolean> {
@@ -146,6 +147,42 @@ export function EditorPane({ name, content, active, debug, actions }: PaneProps<
 
   const ready = buffer.status === 'ready';
   const dirty = ready && text !== savedText;
+
+  // A clean buffer follows the file: when another program rewrites it, the
+  // pane shows the new text. Unsaved edits are never replaced this way.
+  const followRef = useRef({ dirty, savedText });
+  followRef.current = { dirty, savedText };
+  useEffect(() => {
+    if (!ready || isNew || resolvedPath === null) {
+      return;
+    }
+    const followed = resolvedPath;
+    let busy = false;
+    const timer = window.setInterval(() => {
+      if (busy || followRef.current.dirty) {
+        return;
+      }
+      busy = true;
+      readTextFile(followed)
+        .then(
+          (file) => {
+            const now = followRef.current;
+            if (!now.dirty && file.text !== now.savedText) {
+              setReloadCount((count) => count + 1);
+            }
+          },
+          () => {
+            // A file that cannot be read right now keeps what is shown.
+          },
+        )
+        .finally(() => {
+          busy = false;
+        });
+    }, FOLLOW_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [ready, isNew, resolvedPath]);
   const markdown = isMarkdownPath(path);
   const view = effectiveView(markdown, viewChoice ?? content.mode ?? null);
   const fileName = path === null ? 'untitled' : basename(path);

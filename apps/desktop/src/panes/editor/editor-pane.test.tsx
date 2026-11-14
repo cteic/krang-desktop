@@ -273,6 +273,38 @@ describe('loading', () => {
   });
 });
 
+describe('following the file', () => {
+  it('shows new text when another program rewrites a clean file', async () => {
+    disk.files.set('/notes/a.txt', 'first');
+    show('/notes/a.txt');
+    expect((await editor()).value).toBe('first');
+
+    disk.files.set('/notes/a.txt', 'second, written elsewhere');
+
+    await waitFor(
+      async () => {
+        expect((await editor()).value).toBe('second, written elsewhere');
+      },
+      { timeout: 6000 },
+    );
+    expect(screen.queryByLabelText('Unsaved changes')).toBeNull();
+  }, 10_000);
+
+  it('never replaces unsaved edits with the text on disk', async () => {
+    disk.files.set('/notes/a.txt', 'first');
+    show('/notes/a.txt');
+    await type('my unsaved edit');
+
+    disk.files.set('/notes/a.txt', 'written elsewhere');
+    await new Promise((resolve) => {
+      setTimeout(resolve, 2600);
+    });
+
+    expect((await editor()).value).toBe('my unsaved edit');
+    expect(screen.getByLabelText('Unsaved changes')).toBeTruthy();
+  }, 10_000);
+});
+
 describe('saving', () => {
   it('marks the buffer dirty, writes it, then clears the mark', async () => {
     disk.files.set('/notes/a.txt', 'hello');
