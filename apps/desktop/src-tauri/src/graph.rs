@@ -45,6 +45,15 @@ const FRONTMATTER_BYTES: u64 = 16 * 1024;
 const MAX_JSON_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CANVAS_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CANVASES: usize = 200;
+/// The canvas text read in one pass over a vault, all canvases together.
+const MAX_CANVAS_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+/// The files and folders looked at in one walk of a vault, notes or not.
+/// A walk runs every few seconds, so its cost must not grow with a vault
+/// that is full of other files.
+const MAX_ENTRIES: usize = 100_000;
+/// The candidate tags searched for. Every line with a `#` is checked
+/// against each one.
+const MAX_TAG_RULES: usize = 64;
 /// A note over this size is not searched for candidate tags.
 const CANDIDATE_BYTES: u64 = 512 * 1024;
 /// Once this much text has been searched for candidate tags, the rest of
@@ -263,7 +272,23 @@ struct NoteFile {
 struct Walk {
     notes: Vec<NoteFile>,
     truncated: bool,
+    /// The walk stopped at the limit on files and folders, not on notes.
+    entries_cut: bool,
 }
+
+/// How much of a vault one pass reads.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    notes: usize,
+    entries: usize,
+    canvas_bytes: u64,
+}
+
+const LIMITS: Limits = Limits {
+    notes: MAX_NOTES,
+    entries: MAX_ENTRIES,
+    canvas_bytes: MAX_CANVAS_TOTAL_BYTES,
+};
 
 #[derive(Debug, Default, PartialEq)]
 struct Frontmatter {
@@ -303,17 +328,25 @@ fn is_skipped_dir(name: &str) -> bool {
         || name.eq_ignore_ascii_case(TEMPLATES_DIR)
 }
 
-/// Finds the notes under `root`, in a fixed order, stopping at `limit`.
+/// Finds the notes under `root`, in a fixed order, stopping at the limit
+/// on notes or on files and folders looked at, whichever comes first.
 /// A linked directory is not entered, so a link back up the tree cannot
 /// make the walk run for ever.
-fn walk(root: &Path, limit: usize) -> Walk {
+fn walk(root: &Path, limits: Limits) -> Walk {
     let mut notes = Vec::new();
+    let mut visited = 0_usize;
     let mut pending = vec![(root.to_path_buf(), 0_usize)];
     while let Some((dir, depth)) = pending.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        let mut entries: Vec<fs::DirEntry> = entries.filter_map(Result::ok).collect();
+        // One more than there is room for, to see that the room ran out.
+        let room = limits.entries.saturating_sub(visited);
+        let mut entries: Vec<fs::DirEntry> =
+            entries.filter_map(Result::ok).take(room + 1).collect();
+        let entries_cut = entries.len() > room;
+        entries.truncate(room);
+        visited += entries.len();
         entries.sort_by_key(fs::DirEntry::file_name);
         let mut subdirs = Vec::new();
         for entry in entries {
@@ -337,10 +370,11 @@ fn walk(root: &Path, limit: usize) -> Walk {
             if !metadata.is_file() {
                 continue;
             }
-            if notes.len() >= limit {
+            if notes.len() >= limits.notes {
                 return Walk {
                     notes,
                     truncated: true,
+                    entries_cut: false,
                 };
             }
             notes.push(NoteFile {
@@ -349,12 +383,20 @@ fn walk(root: &Path, limit: usize) -> Walk {
                 modified_ms: modified_ms(&metadata),
             });
         }
+        if entries_cut {
+            return Walk {
+                notes,
+                truncated: true,
+                entries_cut: true,
+            };
+        }
         // Popped from the end, so pushed in reverse to visit in name order.
         pending.extend(subdirs.into_iter().rev().map(|path| (path, depth + 1)));
     }
     Walk {
         notes,
         truncated: false,
+        entries_cut: false,
     }
 }
 
@@ -1050,7 +1092,7 @@ struct Holder {
     first: usize,
 }
 
-fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
+fn read_graph_with(dir: &str, limits: Limits) -> Result<VaultGraph, String> {
     let root = open_vault(dir)?;
     let mut warnings = Vec::new();
     let mut issues = Vec::new();
@@ -1081,7 +1123,7 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
             .map(|node_type| node_type.id.as_str())
             .collect()
     });
-    let rules: Vec<TagRule> = settings
+    let mut rules: Vec<TagRule> = settings
         .iter()
         .flat_map(|settings| &settings.node_types)
         .filter_map(|node_type| {
@@ -1091,12 +1133,33 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
             })
         })
         .collect();
+    if rules.len() > MAX_TAG_RULES {
+        issues.push(Issue {
+            kind: "limit",
+            text: format!(
+                "the settings give {} node types a candidate tag, so only the first \
+                 {MAX_TAG_RULES} were searched for",
+                rules.len()
+            ),
+            path: None,
+        });
+        rules.truncate(MAX_TAG_RULES);
+    }
 
-    let found = walk(&root, note_limit);
+    let found = walk(&root, limits);
     if found.truncated {
-        let text = format!(
-            "this vault has more than {note_limit} notes, so only the first {note_limit} were read"
-        );
+        let text = if found.entries_cut {
+            format!(
+                "this vault has more than {} files and folders, so the rest were not read",
+                limits.entries
+            )
+        } else {
+            let note_limit = limits.notes;
+            format!(
+                "this vault has more than {note_limit} notes, so only the first {note_limit} \
+                 were read"
+            )
+        };
         issues.push(Issue {
             kind: "limit",
             text: text.clone(),
@@ -1113,6 +1176,8 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
     let mut holders: HashMap<String, Holder> = HashMap::new();
     let mut budget = CANDIDATE_BUDGET;
     let mut unsearched = 0_usize;
+    let mut canvas_budget = limits.canvas_bytes;
+    let mut canvases_unread = 0_usize;
     for note in &found.notes {
         // The whole note is read only when it is to be searched for
         // candidate tags. Otherwise the top is enough.
@@ -1132,8 +1197,15 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
             .min(bytes.len());
         let frontmatter = parse_frontmatter(&String::from_utf8_lossy(&bytes[..top]));
         if frontmatter.canvas {
-            if canvases.len() >= MAX_CANVASES {
+            // A canvas over the limit for one canvas is not read at all, so
+            // it takes nothing from what is left for the others.
+            let fits_alone = note.size <= MAX_CANVAS_BYTES;
+            if canvases.len() >= MAX_CANVASES || (fits_alone && note.size > canvas_budget) {
+                canvases_unread += 1;
                 continue;
+            }
+            if fits_alone {
+                canvas_budget -= note.size;
             }
             match read_canvas(note, &index) {
                 Ok(canvas) => canvases.push(canvas),
@@ -1201,6 +1273,17 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
             text: format!(
                 "{unsearched} notes were not searched for candidates: each is over \
                  {CANDIDATE_BYTES} bytes, or a search limit was reached before it"
+            ),
+            path: None,
+        });
+    }
+    if canvases_unread > 0 {
+        issues.push(Issue {
+            kind: "limit",
+            text: format!(
+                "{canvases_unread} canvases were not read: at most {MAX_CANVASES} canvases \
+                 and {} bytes of canvas text are read from one vault",
+                limits.canvas_bytes
             ),
             path: None,
         });
@@ -1295,7 +1378,7 @@ fn read_graph_with(dir: &str, note_limit: usize) -> Result<VaultGraph, String> {
 }
 
 pub fn read_graph(dir: &str) -> Result<VaultGraph, String> {
-    read_graph_with(dir, MAX_NOTES)
+    read_graph_with(dir, LIMITS)
 }
 
 const HASH_SEED: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1321,7 +1404,7 @@ fn file_mark(name: &str, size: u64, modified_ms: u64) -> u64 {
 /// is cheap enough to ask for every few seconds.
 pub fn fingerprint(dir: &str) -> Result<String, String> {
     let root = open_vault(dir)?;
-    let found = walk(&root, MAX_NOTES);
+    let found = walk(&root, LIMITS);
     let mut sum = 0_u64;
     for note in &found.notes {
         let name = note.path.strip_prefix(&root).unwrap_or(&note.path);
@@ -1698,10 +1781,90 @@ mod tests {
         for name in ["a", "b", "c"] {
             write(&root, &format!("{name}.md"), &note("node_a", name));
         }
-        let graph = read_graph_with(root.to_str().unwrap(), 2).unwrap();
+        let limits = Limits { notes: 2, ..LIMITS };
+        let graph = read_graph_with(root.to_str().unwrap(), limits).unwrap();
         assert!(graph.truncated);
         assert_eq!(titles(&graph), vec!["a", "b"]);
         assert!(graph.warnings[0].contains("more than 2 notes"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_vault_full_of_other_files_is_cut_short_and_says_so() {
+        let root = scratch("entries");
+        write(&root, "a/first.md", &note("node_a", "first"));
+        for n in 0..40 {
+            write(&root, &format!("b/file-{n:02}.png"), "x");
+        }
+        write(&root, "c/never.md", &note("node_a", "never"));
+        let dir = root.to_str().unwrap();
+
+        // Three folders, one note, and room for six of the other files.
+        let limits = Limits {
+            entries: 10,
+            ..LIMITS
+        };
+        let found = walk(&root, limits);
+        assert!(found.truncated && found.entries_cut);
+        assert_eq!(found.notes.len(), 1);
+        let graph = read_graph_with(dir, limits).unwrap();
+        assert!(graph.truncated);
+        assert_eq!(titles(&graph), vec!["first"]);
+        assert_eq!(
+            graph.warnings,
+            ["this vault has more than 10 files and folders, so the rest were not read"]
+        );
+        assert_eq!(graph.issues[0].kind, "limit");
+
+        // With room for every file, nothing is cut.
+        let graph = read_graph_with(dir, LIMITS).unwrap();
+        assert!(!graph.truncated);
+        assert_eq!(titles(&graph), vec!["first", "never"]);
+        assert_eq!(graph.warnings, Vec::<String>::new());
+        // Three folders and 42 files: a limit of exactly that many cuts nothing.
+        for (entries, cut) in [(44, true), (45, false)] {
+            let limits = Limits { entries, ..LIMITS };
+            assert_eq!(walk(&root, limits).truncated, cut, "{entries}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canvases_are_read_up_to_a_total_size() {
+        let root = scratch("canvas-total");
+        let canvas = |name: &str| {
+            write(
+                &root,
+                name,
+                &format!("---\ntldr-dg: true\n---\n{}\n", "x".repeat(1000)),
+            );
+        };
+        for name in ["a.md", "b.md", "c.md", "d.md"] {
+            canvas(name);
+        }
+        let limits = Limits {
+            canvas_bytes: 2_500,
+            ..LIMITS
+        };
+        let graph = read_graph_with(root.to_str().unwrap(), limits).unwrap();
+        // Two were read, and each says it holds no canvas. Two were not read.
+        assert_eq!(graph.warnings.len(), 2, "{:?}", graph.warnings);
+        let limit: Vec<&str> = graph
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "limit")
+            .map(|issue| issue.text.as_str())
+            .collect();
+        assert_eq!(
+            limit,
+            [
+                "2 canvases were not read: at most 200 canvases and 2500 bytes of canvas text \
+              are read from one vault"
+            ]
+        );
+        let graph = read_graph(root.to_str().unwrap()).unwrap();
+        assert_eq!(graph.warnings.len(), 4);
+        assert!(graph.issues.iter().all(|issue| issue.kind != "limit"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2219,6 +2382,48 @@ mod tests {
     }
 
     #[test]
+    fn only_so_many_candidate_tags_are_searched_for() {
+        let root = scratch("many-tags");
+        let node_types: Vec<Value> = (0..MAX_TAG_RULES + 40)
+            .map(|n| json!({"id": format!("node_{n}"), "name": format!("N{n}"), "tag": format!("tag-{n}")}))
+            .collect();
+        write(
+            &root,
+            SETTINGS_PATH,
+            &json!({ "nodeTypes": node_types }).to_string(),
+        );
+        let last_searched = MAX_TAG_RULES - 1;
+        write(
+            &root,
+            "note.md",
+            &format!(
+                "first #tag-0
+last #tag-{last_searched}
+past #tag-{MAX_TAG_RULES}
+"
+            ),
+        );
+        let graph = read_graph(root.to_str().unwrap()).unwrap();
+        let lines: Vec<usize> = graph.candidates.iter().map(|found| found.line).collect();
+        assert_eq!(lines, [1, 2]);
+        let limits: Vec<&str> = graph
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "limit")
+            .map(|issue| issue.text.as_str())
+            .collect();
+        assert_eq!(
+            limits,
+            [format!(
+                "the settings give {} node types a candidate tag, so only the first \
+                 {MAX_TAG_RULES} were searched for",
+                MAX_TAG_RULES + 40
+            )]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_vault_with_no_candidate_tags_reads_only_the_top_of_each_note() {
         let root = scratch("no-tags");
         write(&root, "note.md", "A line with #clm-candidate in it.\n");
@@ -2296,7 +2501,7 @@ mod tests {
         write(&root, "real/a.md", &note("node_a", "a"));
         std::os::unix::fs::symlink(&root, root.join("real/loop")).unwrap();
         std::os::unix::fs::symlink(root.join("real/a.md"), root.join("linked.md")).unwrap();
-        let found = walk(&root, MAX_NOTES);
+        let found = walk(&root, LIMITS);
         let names: Vec<String> = found
             .notes
             .iter()
