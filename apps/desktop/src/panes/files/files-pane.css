@@ -1,0 +1,295 @@
+.files-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  font: var(--ui-font);
+  color: var(--text);
+  background: var(--bg);
+}
+
+.files-header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.files-header button {
+  flex: none;
+  height: 20px;
+  color: var(--muted);
+}
+
+.files-header button:hover:not(:disabled),
+.files-header button[aria-current='location'] {
+  color: var(--text);
+}
+
+.files-pane button:focus-visible,
+.files-filter:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.files-crumbs {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 80px;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.files-crumb {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.files-crumbs button {
+  padding: 0 3px;
+}
+
+.files-crumb-gap {
+  color: var(--line);
+}
+
+.files-toggle {
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+}
+
+.files-toggle[aria-pressed='true'] {
+  color: var(--focus);
+  background: color-mix(in srgb, var(--focus) 16%, transparent);
+}
+
+.files-filter {
+  flex: 0 1 140px;
+  min-width: 70px;
+  height: 20px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.files-filter::placeholder {
+  color: var(--muted);
+}
+
+.files-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.files-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  outline: none;
+}
+
+.files-col-kind {
+  width: 22px;
+}
+
+.files-col-size {
+  width: 58px;
+}
+
+.files-col-modified {
+  width: 116px;
+}
+
+.files-col-actions {
+  width: 78px;
+}
+
+.files-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 20px;
+  padding: 0;
+  font-weight: 400;
+  text-align: left;
+  background: var(--bg);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.files-sort {
+  width: 100%;
+  height: 20px;
+  padding: 0 6px;
+  overflow: hidden;
+  color: var(--muted);
+  text-align: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 0;
+}
+
+.files-table thead th[aria-sort='ascending'] .files-sort,
+.files-table thead th[aria-sort='descending'] .files-sort {
+  color: var(--text);
+}
+
+.files-sort-mark {
+  margin-left: 4px;
+  font-size: 8px;
+  color: var(--focus);
+}
+
+.files-table thead th:nth-child(2),
+.files-size {
+  text-align: right;
+}
+
+.files-row {
+  height: 20px;
+  /* Keeps a row scrolled into view clear of the pinned header. */
+  scroll-margin-top: 20px;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.files-row td,
+.files-row th {
+  padding: 0 6px;
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-row:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+.files-row[aria-selected='true'] {
+  background: rgb(255 255 255 / 9%);
+}
+
+.files-table:focus .files-row[aria-selected='true'],
+.files-table:focus-within .files-row[aria-selected='true'] {
+  background: color-mix(in srgb, var(--focus) 24%, transparent);
+  box-shadow: inset 2px 0 0 var(--focus);
+}
+
+.files-row .files-kind {
+  padding: 0 0 0 8px;
+  color: var(--muted);
+  text-overflow: clip;
+}
+
+.files-row[data-dir='true'] .files-kind,
+.files-row[data-dir='true'] .files-name {
+  color: var(--focus);
+}
+
+.files-name {
+  text-align: left;
+}
+
+.files-size,
+.files-modified {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.files-row .files-actions {
+  padding: 0 4px 0 0;
+  text-align: right;
+  text-overflow: clip;
+}
+
+/* Hidden, not just transparent, so Tab does not stop on every row. */
+.files-actions button {
+  visibility: hidden;
+  height: 18px;
+  padding: 0 4px;
+  color: var(--muted);
+}
+
+.files-row:hover .files-actions button,
+.files-row[aria-selected='true'] .files-actions button {
+  visibility: visible;
+}
+
+.files-actions button:hover {
+  color: var(--text);
+}
+
+.files-state {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--muted);
+}
+
+.files-error p {
+  margin: 0 0 6px;
+  color: var(--text);
+}
+
+.files-error-text {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  font:
+    11px/1.5 'SF Mono',
+    Menlo,
+    Monaco,
+    monospace;
+  color: #ff7b72;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.files-error-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.files-error-actions button {
+  height: 22px;
+  padding: 0 10px;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.files-footer {
+  flex: none;
+  height: 18px;
+  padding: 0 8px;
+  overflow: hidden;
+  line-height: 18px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top: 1px solid var(--line);
+}
+
+.files-hidden-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
