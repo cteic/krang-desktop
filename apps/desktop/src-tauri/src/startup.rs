@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::{State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::windows::{Source, WindowLayouts};
 
@@ -21,6 +21,10 @@ pub struct LayoutFile {
 pub struct Startup {
     layout: Option<LayoutFile>,
     layout_error: Option<String>,
+    /// The workspace this window saved last time, if it is one that restores.
+    saved: Option<String>,
+    /// Whether this window should save its workspace as it changes.
+    persist: bool,
     debug: bool,
 }
 
@@ -65,6 +69,7 @@ pub fn debug_dir() -> Option<PathBuf> {
 /// rule about what a layout means live in TypeScript.
 #[tauri::command]
 pub fn startup(
+    app: AppHandle,
     window: WebviewWindow,
     layouts: State<'_, WindowLayouts>,
     ptys: State<'_, crate::pty::PtyState>,
@@ -82,9 +87,15 @@ pub fn startup(
             Err(error) => (None, Some(format!("could not read {path}: {error}"))),
         },
     };
+    let restore_key = layouts.restore_key(window.label());
+    let saved = restore_key
+        .as_deref()
+        .and_then(|key| crate::state::load(&app, key));
     Startup {
         layout,
         layout_error,
+        saved,
+        persist: restore_key.is_some(),
         debug: debug_dir().is_some(),
     }
 }
