@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -11,11 +13,15 @@ use tauri::{State, WebviewWindow};
 use crate::startup::expand_home;
 
 const READ_BUFFER_BYTES: usize = 64 * 1024;
+/// How long the exit notice waits for the last of the output to be sent.
+const DRAIN_WAIT: Duration = Duration::from_millis(500);
 
 struct Session {
     window: String,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Behind its own lock, so a write that blocks on a full pty never
+    /// holds the session table.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
@@ -77,6 +83,7 @@ pub fn pty_spawn(
     window: WebviewWindow,
     state: State<'_, PtyState>,
     id: String,
+    pane_id: Option<String>,
     cwd: Option<String>,
     program: Option<String>,
     args: Option<Vec<String>>,
@@ -103,6 +110,13 @@ pub fn pty_spawn(
     };
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
+    command.env("DESKTOP_WINDOW", window.label());
+    if let Some(pane_id) = &pane_id {
+        command.env("DESKTOP_PANE_ID", pane_id);
+    }
+    for (key, value) in crate::ipc::pane_env() {
+        command.env(key, value);
+    }
     let home = std::env::var("HOME").ok();
     match cwd {
         Some(dir) => command.cwd(expand_home(&dir, home.as_deref())),
@@ -144,12 +158,13 @@ pub fn pty_spawn(
             Session {
                 window: window.label().to_string(),
                 master: pair.master,
-                writer,
+                writer: Arc::new(Mutex::new(writer)),
                 killer,
             },
         );
     }
 
+    let (drained_tx, drained_rx) = mpsc::channel::<()>();
     thread::spawn(move || {
         let mut buffer = vec![0u8; READ_BUFFER_BYTES];
         loop {
@@ -163,6 +178,7 @@ pub fn pty_spawn(
                 }
             }
         }
+        let _ = drained_tx.send(());
     });
 
     let sessions = Arc::clone(&state.sessions);
@@ -177,6 +193,10 @@ pub fn pty_spawn(
                 success: false,
             },
         };
+        // Let the reader send what the program printed last, so the exit
+        // notice never lands in the middle of its output. The wait is
+        // bounded: a background job can hold the terminal open for ever.
+        let _ = drained_rx.recv_timeout(DRAIN_WAIT);
         if let Ok(mut sessions) = sessions.lock() {
             sessions.remove(&id);
         }
@@ -188,17 +208,22 @@ pub fn pty_spawn(
 
 #[tauri::command]
 pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
-    let mut sessions = state
-        .sessions
+    let writer = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| String::from("session table is poisoned"))?;
+        let session = sessions
+            .get(&id)
+            .ok_or_else(|| format!("no session {id}"))?;
+        Arc::clone(&session.writer)
+    };
+    let mut writer = writer
         .lock()
-        .map_err(|_| String::from("session table is poisoned"))?;
-    let session = sessions
-        .get_mut(&id)
-        .ok_or_else(|| format!("no session {id}"))?;
-    session
-        .writer
+        .map_err(|_| String::from("session writer is poisoned"))?;
+    writer
         .write_all(data.as_bytes())
-        .and_then(|()| session.writer.flush())
+        .and_then(|()| writer.flush())
         .map_err(|error| format!("write: {error}"))
 }
 

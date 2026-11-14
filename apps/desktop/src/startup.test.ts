@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { terminalsOf } from './layout/layout';
+import { leavesOf } from './workspace/model';
 import { toSession } from './startup';
 
 const TWO_PANES =
@@ -14,14 +14,14 @@ describe('toSession', () => {
       debug: false,
     });
     expect(session.problem).toBeNull();
-    expect(terminalsOf(session.layout.root).map((pane) => pane.id)).toEqual(['a', 'b']);
+    expect(leavesOf(session.layout.root).map((pane) => pane.id)).toEqual(['a', 'b']);
   });
 
   it('opens the default layout when no file was given', () => {
     const session = toSession({ layout: null, layoutError: null, debug: true });
     expect(session.problem).toBeNull();
     expect(session.debug).toBe(true);
-    expect(session.layout.name).toBe('default');
+    expect(session.layout.title).toBe('shell');
   });
 
   it('opens the default layout and names the file when the layout is invalid', () => {
@@ -30,7 +30,7 @@ describe('toSession', () => {
       layoutError: null,
       debug: false,
     });
-    expect(session.layout.name).toBe('default');
+    expect(session.layout.title).toBe('shell');
     expect(session.problem).toContain('/tmp/bad.toml');
   });
 
@@ -40,13 +40,13 @@ describe('toSession', () => {
       layoutError: 'could not read /nope.toml: No such file or directory',
       debug: false,
     });
-    expect(session.layout.name).toBe('default');
+    expect(session.layout.title).toBe('shell');
     expect(session.problem).toContain('/nope.toml');
   });
 
   it('survives a reply of the wrong shape', () => {
     const session = toSession({ nonsense: true });
-    expect(session.layout.name).toBe('default');
+    expect(session.layout.title).toBe('shell');
     expect(session.problem).not.toBeNull();
   });
 });

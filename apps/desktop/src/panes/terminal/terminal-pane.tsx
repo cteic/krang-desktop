@@ -3,20 +3,14 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 
-import type { TerminalNode } from './layout/layout';
+import type { TerminalContent } from '../../workspace/model';
+import type { PaneProps } from '../pane-props';
+
 import { toBytes } from './pty-chunk';
 import { bufferText } from './terminal-text';
 import { whenQuiet } from './when-quiet';
-
-export interface TerminalPaneProps {
-  node: TerminalNode;
-  title: string;
-  accent: string;
-  autoFocus: boolean;
-  debug: boolean;
-}
 
 interface ExitInfo {
   exitCode: number;
@@ -34,9 +28,9 @@ function report(error: unknown) {
   console.error('[terminal-pane]', error);
 }
 
-export function TerminalPane({ node, title, accent, autoFocus, debug }: TerminalPaneProps) {
+export function TerminalPane({ paneId, name, content, active, debug }: PaneProps<TerminalContent>) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(false);
+  const terminalRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -62,6 +56,7 @@ export function TerminalPane({ node, title, accent, autoFocus, debug }: Terminal
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
+    terminalRef.current = terminal;
 
     // The GPU renderer is what keeps full-screen redraws from tearing. If the
     // context is lost or never starts, the DOM renderer takes over.
@@ -77,7 +72,14 @@ export function TerminalPane({ node, title, accent, autoFocus, debug }: Terminal
       report(error);
     }
 
-    fit.fit();
+    // A pane in a hidden tab keeps its size but a collapsed one has none.
+    // Fitting to nothing would shrink the shell to one column.
+    function fitIfVisible() {
+      if (host !== null && host.clientWidth > 0 && host.clientHeight > 0) {
+        fit.fit();
+      }
+    }
+    fitIfVisible();
 
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.key === 'Enter' && event.shiftKey && !event.metaKey && !event.ctrlKey) {
@@ -93,11 +95,11 @@ export function TerminalPane({ node, title, accent, autoFocus, debug }: Terminal
     // entered by hand. The shell stays open afterwards, which a `-c`
     // invocation would not. They wait for the prompt to settle first.
     const startup =
-      node.commands.length === 0
+      content.commands.length === 0
         ? null
         : whenQuiet(
             () => {
-              const typed = node.commands.map((command) => `${command}\r`).join('');
+              const typed = content.commands.map((command) => `${command}\r`).join('');
               invoke('pty_write', { id, data: typed }).catch(report);
             },
             PROMPT_QUIET_MS,
@@ -126,23 +128,13 @@ export function TerminalPane({ node, title, accent, autoFocus, debug }: Terminal
       invoke('pty_resize', { id, cols, rows }).catch(report);
     });
 
-    const observer = new ResizeObserver(() => {
-      fit.fit();
-    });
+    const observer = new ResizeObserver(fitIfVisible);
     observer.observe(host);
-
-    function onFocusIn() {
-      setActive(true);
-    }
-    function onFocusOut() {
-      setActive(false);
-    }
-    host.addEventListener('focusin', onFocusIn);
-    host.addEventListener('focusout', onFocusOut);
 
     invoke('pty_spawn', {
       id,
-      cwd: node.directory,
+      paneId,
+      cwd: content.directory,
       program: null,
       args: null,
       cols: terminal.cols,
@@ -159,13 +151,9 @@ export function TerminalPane({ node, title, accent, autoFocus, debug }: Terminal
       ? window.setInterval(() => {
           const header = `renderer=${renderer} cols=${String(terminal.cols)} rows=${String(terminal.rows)}\n`;
           const text = header + bufferText(terminal.buffer.active);
-          invoke('debug_snapshot', { id: node.id, text }).catch(report);
+          invoke('debug_snapshot', { id: name, text }).catch(report);
         }, DEBUG_SNAPSHOT_MS)
       : null;
-
-    if (autoFocus) {
-      terminal.focus();
-    }
 
     return () => {
       disposed = true;
@@ -173,22 +161,20 @@ export function TerminalPane({ node, title, accent, autoFocus, debug }: Terminal
       if (snapshotTimer !== null) {
         window.clearInterval(snapshotTimer);
       }
-      host.removeEventListener('focusin', onFocusIn);
-      host.removeEventListener('focusout', onFocusOut);
       observer.disconnect();
       inputSubscription.dispose();
       resizeSubscription.dispose();
       invoke('pty_kill', { id }).catch(report);
+      terminalRef.current = null;
       terminal.dispose();
     };
-  }, [node, autoFocus, debug]);
+  }, [paneId, name, content, debug]);
 
-  return (
-    <section className="pane" data-active={active} data-pane-id={node.id}>
-      <header className="pane-title" style={{ background: accent }}>
-        {title}
-      </header>
-      <div className="pane-body" ref={hostRef} />
-    </section>
-  );
+  useEffect(() => {
+    if (active) {
+      terminalRef.current?.focus();
+    }
+  }, [active]);
+
+  return <div className="terminal-host" ref={hostRef} />;
 }

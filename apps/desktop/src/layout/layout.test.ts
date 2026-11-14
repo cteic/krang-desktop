@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { defaultLayout, focusedPaneId, LayoutError, parseLayout, terminalsOf } from './layout';
+import { leavesOf } from '../workspace/model';
+
+import { LayoutError, parseLayout } from './layout';
 
 const PROJECT_COCKPIT = `
 name = "krang"
@@ -46,55 +48,109 @@ describe('parseLayout', () => {
   it('builds the tree of an existing cockpit tab config', () => {
     const layout = parseLayout(PROJECT_COCKPIT);
 
-    expect(layout.name).toBe('krang');
     expect(layout.title).toBe('personal · krang');
     expect(layout.color).toBe('blue');
+    expect(layout.focusedId).toBe('shell');
     expect(layout.root).toEqual({
       kind: 'split',
       id: 'root',
       direction: 'row',
+      shares: [0.5, 0.5],
       children: [
         {
           kind: 'split',
           id: 'left',
           direction: 'column',
+          shares: [0.5, 0.5],
           children: [
             {
-              kind: 'terminal',
+              kind: 'leaf',
               id: 'shell',
-              directory: '/tmp/project',
-              focused: true,
-              commands: ['banner shell'],
+              title: 'shell',
+              badge: null,
+              content: { type: 'terminal', directory: '/tmp/project', commands: ['banner shell'] },
             },
             {
-              kind: 'terminal',
+              kind: 'leaf',
               id: 'state',
-              directory: '/tmp/project',
-              focused: false,
-              commands: ['banner state', 'git status -sb'],
+              title: 'state',
+              badge: null,
+              content: {
+                type: 'terminal',
+                directory: '/tmp/project',
+                commands: ['banner state', 'git status -sb'],
+              },
             },
           ],
         },
         {
-          kind: 'terminal',
+          kind: 'leaf',
           id: 'agent',
-          directory: '/tmp/project',
-          focused: false,
-          commands: ['agent exec'],
+          title: 'agent',
+          badge: null,
+          content: { type: 'terminal', directory: '/tmp/project', commands: ['agent exec'] },
         },
       ],
     });
   });
 
+  it('reads the other pane types', () => {
+    const layout = parseLayout(`
+name = "mixed"
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["files", "notes", "board", "ask"]
+[[panes]]
+id = "files"
+type = "files"
+directory = "~/krang"
+[[panes]]
+id = "notes"
+type = "editor"
+path = "~/krang/README.md"
+title = "readme"
+[[panes]]
+id = "board"
+type = "web"
+url = "http://127.0.0.1:4747"
+[[panes]]
+id = "ask"
+type = "chat"
+agent = "claude"
+`);
+    const leaves = leavesOf(layout.root);
+
+    expect(leaves.map((leaf) => leaf.content)).toEqual([
+      { type: 'files', directory: '~/krang' },
+      { type: 'editor', path: '~/krang/README.md' },
+      { type: 'web', url: 'http://127.0.0.1:4747' },
+      { type: 'chat', agent: 'claude', directory: null },
+    ]);
+    expect(leaves.map((leaf) => leaf.title)).toEqual(['files', 'readme', 'board', 'ask']);
+    expect(layout.root.kind === 'split' ? layout.root.shares : []).toEqual([
+      0.25, 0.25, 0.25, 0.25,
+    ]);
+  });
+
+  it('rejects a web pane with no url', () => {
+    expectLayoutError('name = "x"\n[[panes]]\nid = "w"\ntype = "web"\n', 'needs a "url"');
+  });
+
+  it('rejects an unknown pane type', () => {
+    expectLayoutError('name = "x"\n[[panes]]\nid = "w"\ntype = "hologram"\n', 'expected shape');
+  });
+
   it('accepts a single terminal with no splits', () => {
     const layout = parseLayout('name = "one"\n[[panes]]\nid = "only"\n');
     expect(layout.title).toBe('one');
+    expect(layout.focusedId).toBeNull();
     expect(layout.root).toEqual({
-      kind: 'terminal',
+      kind: 'leaf',
       id: 'only',
-      directory: null,
-      focused: false,
-      commands: [],
+      title: 'only',
+      badge: null,
+      content: { type: 'terminal', directory: null, commands: [] },
     });
   });
 
@@ -163,7 +219,7 @@ children = ["a"]
   it('rejects a split that also sets terminal fields', () => {
     const text =
       'name = "x"\n[[panes]]\nid = "root"\nsplit = "vertical"\nchildren = ["a"]\ncommands = ["ls"]\n[[panes]]\nid = "a"\n';
-    expectLayoutError(text, 'cannot also be a terminal');
+    expectLayoutError(text, 'cannot also hold content');
   });
 
   it('rejects children without a split direction', () => {
@@ -171,33 +227,5 @@ children = ["a"]
       'name = "x"\n[[panes]]\nid = "root"\nchildren = ["a"]\n[[panes]]\nid = "a"\n',
       'needs both "split" and "children"',
     );
-  });
-});
-
-describe('focusedPaneId', () => {
-  it('picks the pane marked focused', () => {
-    expect(focusedPaneId(parseLayout(PROJECT_COCKPIT).root)).toBe('shell');
-  });
-
-  it('falls back to the first terminal', () => {
-    const layout = parseLayout(
-      'name = "x"\n[[panes]]\nid = "root"\nsplit = "vertical"\nchildren = ["a", "b"]\n[[panes]]\nid = "a"\n[[panes]]\nid = "b"\n',
-    );
-    expect(focusedPaneId(layout.root)).toBe('a');
-  });
-});
-
-describe('terminalsOf', () => {
-  it('lists leaves in reading order', () => {
-    const ids = terminalsOf(parseLayout(PROJECT_COCKPIT).root).map((terminal) => terminal.id);
-    expect(ids).toEqual(['shell', 'state', 'agent']);
-  });
-});
-
-describe('defaultLayout', () => {
-  it('is one focused shell', () => {
-    const layout = defaultLayout();
-    expect(terminalsOf(layout.root)).toHaveLength(1);
-    expect(focusedPaneId(layout.root)).toBe('shell');
   });
 });

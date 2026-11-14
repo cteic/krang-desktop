@@ -12,7 +12,7 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https: localfile:; font-src 'self' data:; frame-src http: https: localfile:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {

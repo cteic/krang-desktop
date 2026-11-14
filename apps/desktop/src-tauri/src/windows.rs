@@ -102,14 +102,18 @@ pub fn open_window(app: &AppHandle, source: Source) -> tauri::Result<()> {
         map.insert(label.clone(), source);
     }
     let title = app.config().product_name.clone().unwrap_or_default();
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+    let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title(title)
-        .inner_size(1200.0, 800.0)
+        .inner_size(1400.0, 900.0)
         .min_inner_size(480.0, 320.0)
         // An automated run must not take the keyboard from whatever the
         // person at the machine is typing into.
         .focused(debug_dir().is_none())
-        .build()?;
+        .build();
+    if let Err(error) = built {
+        layouts.forget(&label);
+        return Err(error);
+    }
     Ok(())
 }
 

@@ -1,4 +1,9 @@
+mod agents;
+mod fs;
+mod ipc;
 mod links;
+mod local_files;
+mod menu;
 mod pty;
 mod startup;
 mod windows;
@@ -6,13 +11,11 @@ mod windows;
 use std::thread;
 use std::time::Duration;
 
-use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use windows::{open_window, source_from_args, source_from_url, Source, WindowLayouts};
 
-const NEW_WINDOW_MENU_ID: &str = "new-window";
 /// How long a launch waits for a link before it opens the default window.
 /// The link that started the app arrives just after launch, not with it.
 const LAUNCH_LINK_GRACE: Duration = Duration::from_millis(400);
@@ -33,6 +36,12 @@ fn is_link(arg: &str) -> bool {
 }
 
 pub fn run() {
+    // The same binary doubles as the command-line tool used inside panes.
+    // That path must finish before any window or single-instance work.
+    if let Some(code) = ipc::run_cli(std::env::args()) {
+        std::process::exit(code);
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch lands here, in the first instance. A link in
@@ -44,7 +53,11 @@ pub fn run() {
             open_or_log(app, source.unwrap_or(Source::Default));
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .register_uri_scheme_protocol(local_files::SCHEME, |_context, request| {
+            local_files::handle(&request)
+        })
         .manage(pty::PtyState::default())
+        .manage(agents::AgentState::default())
         .manage(WindowLayouts::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
@@ -53,31 +66,30 @@ pub fn run() {
             pty::pty_kill,
             startup::startup,
             startup::debug_snapshot,
+            fs::fs_home,
+            fs::fs_list,
+            fs::fs_read_text,
+            fs::fs_write_text,
+            agents::agent_run,
+            agents::agent_cancel,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 let label = window.label();
                 window.state::<pty::PtyState>().kill_window(label);
+                window.state::<agents::AgentState>().kill_window(label);
                 window.state::<WindowLayouts>().forget(label);
             }
         })
         .setup(|app| {
             let handle = app.handle().clone();
 
-            let menu = Menu::default(&handle)?;
-            let new_window = MenuItemBuilder::with_id(NEW_WINDOW_MENU_ID, "New Window")
-                .accelerator("CmdOrCtrl+N")
-                .build(app)?;
-            let shell_menu = SubmenuBuilder::new(app, "Shell")
-                .item(&new_window)
-                .build()?;
-            menu.insert(&shell_menu, 1)?;
-            app.set_menu(menu)?;
+            app.set_menu(menu::build(&handle)?)?;
             app.on_menu_event(|app, event| {
-                if event.id().as_ref() == NEW_WINDOW_MENU_ID {
-                    open_or_log(app, Source::Default);
-                }
+                menu::handle(app, event.id().as_ref());
             });
+
+            ipc::start(&handle);
 
             let link_handle = handle.clone();
             app.deep_link().on_open_url(move |event| {

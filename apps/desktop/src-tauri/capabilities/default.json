@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "What every app window may call.",
   "windows": ["window-*"],
-  "permissions": ["core:default", "core:window:allow-set-title", "deep-link:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "core:window:allow-close",
+    "deep-link:default"
+  ]
 }

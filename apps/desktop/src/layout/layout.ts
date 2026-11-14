@@ -1,38 +1,18 @@
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 
+import type { PaneContent, PaneTree } from '../workspace/model';
+import type { TabDraft } from '../workspace/reducer';
+import { equalShares } from '../workspace/split-sizes';
+
 /**
- * A layout file describes one window: a tree of splits whose leaves are
- * terminal panes. The format is the tab-config TOML the cockpit templates
- * already use, so those files load unchanged.
+ * A layout file describes one tab: a tree of splits whose leaves are panes.
+ * The format is the tab-config TOML the cockpit templates already use, so
+ * those files load unchanged. A pane with no `type` is a terminal.
  *
  * `split = "vertical"` puts children side by side, divided by a vertical
  * line. `split = "horizontal"` stacks them.
  */
-
-export interface TerminalNode {
-  kind: 'terminal';
-  id: string;
-  directory: string | null;
-  focused: boolean;
-  commands: string[];
-}
-
-export interface SplitNode {
-  kind: 'split';
-  id: string;
-  direction: 'row' | 'column';
-  children: PaneTree[];
-}
-
-export type PaneTree = TerminalNode | SplitNode;
-
-export interface Layout {
-  name: string;
-  title: string;
-  color: string | null;
-  root: PaneTree;
-}
 
 export class LayoutError extends Error {
   override name = 'LayoutError';
@@ -42,10 +22,14 @@ const paneSchema = z.object({
   id: z.string().min(1),
   split: z.enum(['vertical', 'horizontal']).optional(),
   children: z.array(z.string().min(1)).min(1).optional(),
-  type: z.literal('terminal').optional(),
+  type: z.enum(['terminal', 'files', 'editor', 'web', 'chat']).optional(),
+  title: z.string().min(1).optional(),
   directory: z.string().min(1).optional(),
   is_focused: z.boolean().optional(),
   commands: z.array(z.string()).optional(),
+  path: z.string().min(1).optional(),
+  url: z.string().min(1).optional(),
+  agent: z.string().min(1).optional(),
 });
 
 const fileSchema = z.object({
@@ -57,7 +41,9 @@ const fileSchema = z.object({
 
 type PaneEntry = z.infer<typeof paneSchema>;
 
-export function parseLayout(text: string): Layout {
+const LEAF_ONLY_FIELDS = ['type', 'directory', 'commands', 'path', 'url', 'agent'] as const;
+
+export function parseLayout(text: string): TabDraft {
   let raw: unknown;
   try {
     raw = parse(text);
@@ -106,12 +92,35 @@ export function parseLayout(text: string): Layout {
     throw new LayoutError(`more than one root pane: ${names}. Exactly one pane may have no parent`);
   }
 
+  const focused = file.panes.find(
+    (pane) => pane.is_focused === true && pane.children === undefined,
+  );
+
   return {
-    name: file.name,
     title: file.title ?? file.name,
     color: file.color ?? null,
     root: buildNode(rootEntry, byId, new Set<string>()),
+    focusedId: focused?.id ?? null,
   };
+}
+
+function contentOf(entry: PaneEntry): PaneContent {
+  const type = entry.type ?? 'terminal';
+  switch (type) {
+    case 'terminal':
+      return { type, directory: entry.directory ?? null, commands: entry.commands ?? [] };
+    case 'files':
+      return { type, directory: entry.directory ?? null };
+    case 'editor':
+      return { type, path: entry.path ?? null };
+    case 'web':
+      if (entry.url === undefined) {
+        throw new LayoutError(`pane "${entry.id}" is a web pane, so it needs a "url"`);
+      }
+      return { type, url: entry.url };
+    case 'chat':
+      return { type, agent: entry.agent ?? null, directory: entry.directory ?? null };
+  }
 }
 
 function buildNode(entry: PaneEntry, byId: Map<string, PaneEntry>, path: Set<string>): PaneTree {
@@ -122,19 +131,20 @@ function buildNode(entry: PaneEntry, byId: Map<string, PaneEntry>, path: Set<str
   const isSplit = entry.split !== undefined || entry.children !== undefined;
   if (!isSplit) {
     return {
-      kind: 'terminal',
+      kind: 'leaf',
       id: entry.id,
-      directory: entry.directory ?? null,
-      focused: entry.is_focused ?? false,
-      commands: entry.commands ?? [],
+      // A layout's pane id is the best name it has for the pane.
+      title: entry.title ?? entry.id,
+      badge: null,
+      content: contentOf(entry),
     };
   }
 
   if (entry.split === undefined || entry.children === undefined) {
     throw new LayoutError(`pane "${entry.id}" needs both "split" and "children" to be a split`);
   }
-  if (entry.type !== undefined || entry.directory !== undefined || entry.commands !== undefined) {
-    throw new LayoutError(`pane "${entry.id}" is a split, so it cannot also be a terminal`);
+  if (LEAF_ONLY_FIELDS.some((field) => entry[field] !== undefined)) {
+    throw new LayoutError(`pane "${entry.id}" is a split, so it cannot also hold content`);
   }
 
   const nextPath = new Set(path).add(entry.id);
@@ -152,32 +162,6 @@ function buildNode(entry: PaneEntry, byId: Map<string, PaneEntry>, path: Set<str
     id: entry.id,
     direction: entry.split === 'vertical' ? 'row' : 'column',
     children,
+    shares: equalShares(children.length),
   };
-}
-
-/** The layout used when no file is given: one shell in the home directory. */
-export function defaultLayout(): Layout {
-  return {
-    name: 'default',
-    title: 'shell',
-    color: null,
-    root: { kind: 'terminal', id: 'shell', directory: null, focused: true, commands: [] },
-  };
-}
-
-export function terminalsOf(tree: PaneTree): TerminalNode[] {
-  if (tree.kind === 'terminal') {
-    return [tree];
-  }
-  return tree.children.flatMap(terminalsOf);
-}
-
-/**
- * The pane that takes keyboard focus when the window opens: the first one
- * marked focused, or the first terminal when none is marked.
- */
-export function focusedPaneId(tree: PaneTree): string | null {
-  const terminals = terminalsOf(tree);
-  const marked = terminals.find((terminal) => terminal.focused);
-  return marked?.id ?? terminals[0]?.id ?? null;
 }

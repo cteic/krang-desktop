@@ -64,7 +64,16 @@ pub fn debug_dir() -> Option<PathBuf> {
 /// Tells a window what to show. Rust only reads the file. Parsing and every
 /// rule about what a layout means live in TypeScript.
 #[tauri::command]
-pub fn startup(window: WebviewWindow, layouts: State<'_, WindowLayouts>) -> Startup {
+pub fn startup(
+    window: WebviewWindow,
+    layouts: State<'_, WindowLayouts>,
+    ptys: State<'_, crate::pty::PtyState>,
+    agents: State<'_, crate::agents::AgentState>,
+) -> Startup {
+    // A page that asks for its startup state is a fresh page. If the window
+    // was reloaded, the old page never got to end its shells, so end them.
+    ptys.kill_window(window.label());
+    agents.kill_window(window.label());
     let (layout, layout_error) = match layouts.source_of(window.label()) {
         Source::Default => (None, None),
         Source::Missing(reason) => (None, Some(reason)),
