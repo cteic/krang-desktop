@@ -16,8 +16,7 @@ description: Turn notes or source material in an Obsidian vault into a discourse
 ## Tools
 
 `kd` creates the files in the format the Discourse Graphs plugin uses. It works
-in any terminal, with or without the app running. If `kd` is not found, use
-`"$DESKTOP_CLI"` in its place.
+in any terminal, with or without the app running.
 
 | Command                                       | What it does                                                        |
 | --------------------------------------------- | ------------------------------------------------------------------- |
@@ -37,7 +36,8 @@ every time. Vaults differ, so never assume a type or a relation exists.
 3. Propose a short list, at most ten items, before you create anything. For
    each item give its type, its title, and the exact sentence it comes from,
    quoted word for word, with the source note's name. Wait for approval if a
-   person is present.
+   person is present. In a chat pane, end your turn after the list with the
+   question "Create these?" so the person can answer.
 4. Check `kd nodes` for a node that already says the same thing. Reuse it
    instead of creating a second one.
 5. Create each new node. Quote the text so the shell keeps it whole:
