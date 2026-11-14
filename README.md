@@ -6,6 +6,20 @@ vault, side by side in tiling panes.
 
 Built with Tauri 2 (a Rust core) and React. macOS only for now.
 
+## See it
+
+**Research.** An agent reads a lab notebook note and turns it into questions,
+claims and evidence. The graph pane redraws as the files appear, and the note
+gains a link beside each sentence a node came from. The data is an invented
+example.
+
+![An agent builds a discourse graph from a lab note](apps/desktop/docs/images/research.gif)
+
+**Engineering.** A script in a shell pane opens a file, a web page and a test
+run beside itself, then flags its tab for attention.
+
+![A shell script opens panes beside itself](apps/desktop/docs/images/engineering.gif)
+
 ## What it does
 
 | Pane     | What you get                                                               |
