@@ -30,6 +30,25 @@ describe('debugText', () => {
     );
   });
 
+  it('adds what the lists beside the drawing hold', () => {
+    const text = debugText('/vault', buildView(GRAPH, 'Overview'), null, {
+      unlinkedHidden: 1,
+      claims: 3,
+      unsupported: 2,
+      contested: 0,
+      supported: 1,
+      candidates: 2,
+      issues: 6,
+    });
+    expect(text.split('\n').slice(4, 9)).toEqual([
+      'skipped: 1',
+      'unlinked hidden: 1',
+      'claims: 3 (2 unsupported, 0 contested, 1 supported)',
+      'candidates: 2',
+      'issues: 6',
+    ]);
+  });
+
   it('reports a problem after the path', () => {
     expect(debugText('/nope', null, '/nope: No such file or directory (os error 2)')).toBe(
       '/nope\n! /nope: No such file or directory (os error 2)\n',

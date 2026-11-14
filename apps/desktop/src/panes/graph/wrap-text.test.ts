@@ -16,6 +16,13 @@ describe('wrapText', () => {
     ]);
   });
 
+  it('keeps the first line short when told to', () => {
+    expect(wrapText('one two three four five', 9, 4, 4)).toEqual(['one', 'two three', 'four five']);
+    // Not even one word fits beside what shares the first line.
+    expect(wrapText('three four', 9, 4, 3)).toEqual(['', 'three', 'four']);
+    expect(wrapText('one two three four five', 9, 1, 5)).toEqual(['one…']);
+  });
+
   it('fills each line as far as it can', () => {
     expect(wrapText('one two three four five', 9, 4)).toEqual(['one two', 'three', 'four five']);
   });

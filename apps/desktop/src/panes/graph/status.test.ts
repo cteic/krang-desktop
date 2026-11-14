@@ -8,32 +8,38 @@ const ALL = buildView(GRAPH, ALL_VIEW);
 
 describe('statusText', () => {
   it('says it is loading before there is a graph', () => {
-    expect(statusText({ graph: null, view: null, loading: true, stale: null })).toBe('Loading...');
-    expect(statusText({ graph: null, view: null, loading: false, stale: null })).toBe('');
+    expect(statusText({ graph: null, loading: true, stale: null })).toBe('Loading...');
+    expect(statusText({ graph: null, loading: false, stale: null })).toBe('');
   });
 
   it('gives a hint when there is nothing to report', () => {
-    expect(statusText({ graph: GRAPH, view: ALL, loading: false, stale: null })).toBe(
+    expect(statusText({ graph: GRAPH, loading: false, stale: null })).toBe(
       'Double-click a node, or press Enter, to open its note.',
     );
   });
 
-  it('lists what could not be read and what a canvas holds that is not drawn', () => {
+  it('leaves a standing warning to the issues list', () => {
     const graph = { ...GRAPH, warnings: ['3 notes share an instance id with an earlier note'] };
-    const canvas = buildView(graph, 'Overview');
-    expect(statusText({ graph, view: canvas, loading: false, stale: null })).toBe(
-      '3 notes share an instance id with an earlier note. 2 other shapes in this canvas are not drawn',
+    expect(statusText({ graph, loading: false, stale: null })).toBe(
+      'Double-click a node, or press Enter, to open its note.',
     );
-    expect(
-      statusText({ graph: GRAPH, view: { ...canvas, notDrawn: 1 }, loading: false, stale: null }),
-    ).toBe('1 other shape in this canvas is not drawn');
+  });
+
+  it('says what could not be read just now', () => {
+    const graph = {
+      ...GRAPH,
+      incomplete: true,
+      warnings: ['relations.json is not valid JSON (line 1, column 2)'],
+    };
+    expect(statusText({ graph, loading: false, stale: null })).toBe(
+      'relations.json is not valid JSON (line 1, column 2)',
+    );
   });
 
   it('says when the graph on screen is an older one', () => {
     expect(
       statusText({
         graph: GRAPH,
-        view: ALL,
         loading: false,
         stale: 'relations.json is not valid JSON (line 3, column 1)',
       }),

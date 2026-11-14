@@ -7,30 +7,28 @@ function plural(count: number, one: string, many: string): string {
 
 export interface StatusInput {
   graph: VaultGraph | null;
-  view: GraphView | null;
   loading: boolean;
   /** Why the graph on screen may be behind the vault. Null when it is current. */
   stale: string | null;
 }
 
-/** The one line under the drawing: what is going on, or what was left out. */
-export function statusText({ graph, view, loading, stale }: StatusInput): string {
+/**
+ * The one line under the drawing: what is going on right now. What the
+ * vault holds that could not be drawn is listed under Issues instead, so
+ * it does not sit here for good. A file that could not be read at this
+ * moment is different: it may be half written, so it is said here.
+ */
+export function statusText({ graph, loading, stale }: StatusInput): string {
   if (stale !== null) {
     return `Showing the last graph that read cleanly. ${stale}`;
   }
   if (graph === null) {
     return loading ? 'Loading...' : '';
   }
-  const parts = [...graph.warnings];
-  if (view !== null && view.notDrawn > 0) {
-    parts.push(
-      `${plural(view.notDrawn, 'other shape', 'other shapes')} in this canvas ${view.notDrawn === 1 ? 'is' : 'are'} not drawn`,
-    );
+  if (graph.incomplete && graph.warnings.length > 0) {
+    return graph.warnings.join('. ');
   }
-  if (parts.length === 0) {
-    return loading ? 'Loading...' : 'Double-click a node, or press Enter, to open its note.';
-  }
-  return parts.join('. ');
+  return loading ? 'Loading...' : 'Double-click a node, or press Enter, to open its note.';
 }
 
 /** The counts shown in the toolbar. */

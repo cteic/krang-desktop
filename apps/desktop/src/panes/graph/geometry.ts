@@ -32,6 +32,8 @@ export interface EdgeShape {
   head: string;
   /** Where the label sits: the middle of the line. */
   label: Point;
+  /** How far the line runs in the open, from one box's edge to the other's. */
+  span: Size;
 }
 
 export const IDENTITY: Transform = { x: 0, y: 0, k: 1 };
@@ -110,6 +112,7 @@ function loopShape(rect: Rect): EdgeShape {
     path: `M ${round(start.x)} ${round(start.y)} C ${round(first.x)} ${round(first.y)} ${round(second.x)} ${round(second.y)} ${round(head.base.x)} ${round(head.base.y)}`,
     head: head.points,
     label: { x: (start.x + tip.x) / 2, y: rect.y - LOOP_REACH * 0.75 },
+    span: { w: tip.x - start.x, h: LOOP_REACH },
   };
 }
 
@@ -148,6 +151,7 @@ export function edgeShape(source: Rect, target: Rect, bend = 0): EdgeShape {
       x: 0.25 * start.x + 0.5 * control.x + 0.25 * tip.x,
       y: 0.25 * start.y + 0.5 * control.y + 0.25 * tip.y,
     },
+    span: { w: Math.abs(tip.x - start.x), h: Math.abs(tip.y - start.y) },
   };
 }
 
@@ -157,16 +161,22 @@ function clamp(value: number, low: number, high: number): number {
 
 /**
  * The transform that shows all of `bounds` in the middle of a pane of the
- * given size, with a margin. It never zooms in past full size.
+ * given size, with a margin. It never zooms in past `maxScale`, which is
+ * full size unless told otherwise.
  */
-export function fitTransform(bounds: Rect | null, viewport: Size, padding = 32): Transform {
+export function fitTransform(
+  bounds: Rect | null,
+  viewport: Size,
+  padding = 32,
+  maxScale = 1,
+): Transform {
   if (bounds === null || viewport.w <= 0 || viewport.h <= 0) {
     return IDENTITY;
   }
   const roomW = Math.max(viewport.w - padding * 2, 1);
   const roomH = Math.max(viewport.h - padding * 2, 1);
   const wanted = Math.min(roomW / Math.max(bounds.w, 1), roomH / Math.max(bounds.h, 1));
-  const k = clamp(wanted, MIN_ZOOM, 1);
+  const k = clamp(wanted, MIN_ZOOM, maxScale);
   return {
     k,
     x: viewport.w / 2 - (bounds.x + bounds.w / 2) * k,
@@ -182,6 +192,19 @@ export function zoomAt(transform: Transform, point: Point, factor: number): Tran
     k,
     x: point.x - (point.x - transform.x) * ratio,
     y: point.y - (point.y - transform.y) * ratio,
+  };
+}
+
+/** Puts the middle of a box in the middle of the pane, at the same zoom. */
+export function centerOn(transform: Transform, rect: Rect, viewport: Size): Transform {
+  if (viewport.w <= 0 || viewport.h <= 0) {
+    return transform;
+  }
+  const middle = centerOf(rect);
+  return {
+    k: transform.k,
+    x: viewport.w / 2 - middle.x * transform.k,
+    y: viewport.h / 2 - middle.y * transform.k,
   };
 }
 

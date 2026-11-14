@@ -86,3 +86,61 @@ export function relationColor(color: string | null): string {
   }
   return parseHex(color) === null ? FALLBACK_RELATION_COLOR : color.trim().toLowerCase();
 }
+
+/** The fixed colours of the three relations a reader looks for first. */
+export const KIND_COLORS = {
+  supports: '#40c057',
+  opposes: '#ff6b6b',
+  informs: '#4f8ff7',
+} as const;
+
+/** Colours for the other relation types, each easy to tell from the three above. */
+const OTHER_COLORS = [
+  '#f5a742',
+  '#b583f5',
+  '#4dc4f7',
+  '#f5d742',
+  '#f783ac',
+  '#63e6be',
+  '#e599f7',
+  '#d0d7de',
+];
+
+export interface ColoredRelationType {
+  id: string;
+  color: string | null;
+  kind: 'supports' | 'opposes' | 'informs' | 'other';
+}
+
+/**
+ * A line colour per relation type. Supports is green, opposes red and
+ * informs blue, whatever the settings say. Every other type keeps its own
+ * colour when it has one that is not already in use, and otherwise takes
+ * the next free colour from a fixed list, so no two types look alike
+ * until the list runs out.
+ */
+export function relationColors(types: readonly ColoredRelationType[]): Map<string, string> {
+  const colors = new Map<string, string>();
+  const used = new Set<string>(Object.values(KIND_COLORS));
+  for (const type of types) {
+    if (type.kind !== 'other') {
+      colors.set(type.id, KIND_COLORS[type.kind]);
+    }
+  }
+  const spare = OTHER_COLORS.filter((color) => !used.has(color));
+  for (const type of types) {
+    if (type.kind !== 'other') {
+      continue;
+    }
+    const own = type.color === null ? null : relationColor(type.color);
+    const plain = own === null || own === FALLBACK_RELATION_COLOR || own === RELATION_COLORS.black;
+    let color = own ?? FALLBACK_RELATION_COLOR;
+    if (plain || used.has(color)) {
+      const next = spare.find((candidate) => !used.has(candidate));
+      color = next ?? color;
+    }
+    used.add(color);
+    colors.set(type.id, color);
+  }
+  return colors;
+}
