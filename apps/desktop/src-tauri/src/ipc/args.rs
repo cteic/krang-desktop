@@ -100,7 +100,8 @@ lists the types. A note that already has the title is never replaced.
   --vault <dir>        the vault. Without it, the nearest directory above the
                        current one that holds `.obsidian`
   --body <text>        the note's text below its frontmatter
-  --body-file <path>   read the note's text from a file, or from stdin with -";
+  --body-file <path>   read the note's text from a file inside the vault, or
+                       from stdin with -. At most 8 MiB";
 
 const RELATE_USAGE: &str = "\
 Usage: kd relate <source> <relation> <destination> [--vault <dir>] [--force]

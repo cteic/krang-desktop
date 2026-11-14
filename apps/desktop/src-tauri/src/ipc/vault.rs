@@ -8,8 +8,12 @@ use std::path::{Component, Path, PathBuf};
 use super::args::{Body, VaultAction, VaultCommand};
 use super::vault_init;
 use crate::graph_write::{self, NodeEntry, SkillInstall, VaultTypes};
+use crate::vault_guard;
 
 const NOTE_SUFFIX: &str = ".md";
+/// The most text a note's body may be given, from a file or from stdin.
+const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+const BODY_LIMIT: &str = "8 MiB";
 
 fn absolute(cwd: &Path, path: &str) -> PathBuf {
     let mut out = PathBuf::new();
@@ -25,16 +29,32 @@ fn absolute(cwd: &Path, path: &str) -> PathBuf {
     out
 }
 
+fn same_directory(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// The vault a command works on: the one named, or the nearest directory
-/// at or above the current one that holds `.obsidian`.
+/// at or above the current one that holds `.obsidian`. A command run
+/// inside one vault does not reach into another: there, a named vault must
+/// be the vault the current directory is in.
 fn vault_for(named: Option<&str>, cwd: &Path) -> Result<PathBuf, String> {
     match named {
         Some(dir) => {
             let path = absolute(cwd, dir);
-            if path.is_dir() {
-                Ok(path)
-            } else {
-                Err(format!("{} is not a directory", path.display()))
+            if !path.is_dir() {
+                return Err(format!("{} is not a directory", path.display()));
+            }
+            match graph_write::vault_root(cwd) {
+                Some(current) if !same_directory(&current, &path) => Err(format!(
+                    "--vault names {}, but the current directory is inside the vault at {}. \
+                     Run this inside the vault you name, or in a directory that is in no vault.",
+                    path.display(),
+                    current.display()
+                )),
+                _ => Ok(path),
             }
         }
         None => graph_write::vault_root(cwd).ok_or_else(|| {
@@ -59,19 +79,51 @@ fn note_argument(cwd: &Path, word: &str) -> String {
         .map_or_else(|| word.to_string(), |path| path.display().to_string())
 }
 
-fn body_text(body: &Body, cwd: &Path, stdin: &mut dyn Read) -> Result<String, String> {
+/// Reads text of at most `MAX_BODY_BYTES`. `source` names where it comes
+/// from, for the two messages.
+fn capped_text(reader: &mut dyn Read, source: &str) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read {source}: {error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BODY_BYTES {
+        return Err(format!("{source} is over the {BODY_LIMIT} limit"));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| format!("could not read {source}: stream did not contain valid UTF-8"))
+}
+
+/// The text for a new note's body. A body file is a regular file inside
+/// the vault, so the command cannot be used to copy some other file of the
+/// machine into a note.
+fn body_text(
+    body: &Body,
+    cwd: &Path,
+    vault: &Path,
+    stdin: &mut dyn Read,
+) -> Result<String, String> {
     match body {
         Body::Text(text) => Ok(text.clone()),
-        Body::File(path) if path == "-" => {
-            let mut text = String::new();
-            stdin
-                .read_to_string(&mut text)
-                .map_err(|error| format!("could not read the body from stdin: {error}"))?;
-            Ok(text)
-        }
+        Body::File(path) if path == "-" => capped_text(stdin, "the body from stdin"),
         Body::File(path) => {
             let path = absolute(cwd, path);
-            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))
+            let shown = path.display();
+            let root = fs::canonicalize(vault).map_err(|error| format!("{shown}: {error}"))?;
+            let real = vault_guard::file_inside(&root, &path)
+                .map_err(|error| format!("--body-file: {error}"))?;
+            let mut file =
+                vault_guard::open_regular(&real).map_err(|error| format!("{shown}: {error}"))?;
+            let size = file
+                .metadata()
+                .map_err(|error| format!("{shown}: {error}"))?
+                .len();
+            if size > MAX_BODY_BYTES {
+                return Err(format!(
+                    "--body-file: {shown} is over the {BODY_LIMIT} limit"
+                ));
+            }
+            capped_text(&mut file, &format!("--body-file: {shown}"))
         }
     }
 }
@@ -146,12 +198,12 @@ pub fn run(
             text,
             body,
         } => {
+            let vault = vault()?;
             let body = body
                 .as_ref()
-                .map(|body| body_text(body, cwd, stdin))
+                .map(|body| body_text(body, cwd, &vault, stdin))
                 .transpose()?;
-            graph_write::create_node(&vault()?, type_name, text, body.as_deref())
-                .map(|node| node.path)
+            graph_write::create_node(&vault, type_name, text, body.as_deref()).map(|node| node.path)
         }
         VaultAction::Relate {
             source,
@@ -306,6 +358,91 @@ mod tests {
         assert_eq!(listed[0]["typeName"], json!("Claim"));
         assert_eq!(listed[0]["path"], json!(claim));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_body_file_is_a_regular_file_inside_the_vault_and_not_too_big() {
+        let root = fixture("vault-body");
+        let daily = root.join("Daily");
+        let outside = fs::canonicalize(temp_dir("vault-body-out")).unwrap();
+        fs::write(outside.join("private.txt"), "PRIVATE WORDS").unwrap();
+        let far = outside.join("private.txt").display().to_string();
+        std::os::unix::fs::symlink(&far, daily.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
+        let big = fs::File::create(root.join("big.txt")).unwrap();
+        big.set_len(8 * 1024 * 1024 + 1).unwrap();
+
+        let node = |file: &str| {
+            kd(
+                &daily,
+                &["node", "claim", "Planted", "--body-file", file],
+                "",
+            )
+        };
+        for (file, said) in [
+            (far.as_str(), "outside the vault"),
+            ("../../", "outside the vault"),
+            ("../out/private.txt", "outside the vault"),
+            ("link.txt", "symbolic link"),
+            ("../Daily", "is not a regular file"),
+            ("../big.txt", "over the 8 MiB limit"),
+        ] {
+            let error = node(file).unwrap_err();
+            assert!(error.starts_with("--body-file: "), "{file}: {error}");
+            assert!(error.contains(said), "{file}: {error}");
+        }
+        let missing = node("none.txt").unwrap_err();
+        assert!(missing.contains("none.txt: No such file"), "{missing}");
+
+        // The body from stdin has the same limit, and an endless one stops.
+        let words: Vec<String> = ["node", "claim", "Planted", "--body-file", "-"]
+            .iter()
+            .map(|word| (*word).to_string())
+            .collect();
+        let Ok(Command::Vault(command)) = parse_args(&words) else {
+            panic!("not a vault command");
+        };
+        let endless = run(&command, Some(&daily), &mut std::io::repeat(b'a')).unwrap_err();
+        assert_eq!(endless, "the body from stdin is over the 8 MiB limit");
+
+        assert_eq!(kd(&daily, &["nodes"], "").unwrap(), "");
+        assert!(!root.join("Graph").exists());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn a_named_vault_must_be_the_one_the_current_directory_is_in() {
+        let root = fixture("vault-own");
+        let other = fixture("vault-other");
+        let daily = root.join("Daily");
+        let named = other.display().to_string();
+
+        for line in [
+            vec!["node", "claim", "Planted", "--vault", &named],
+            vec!["types", "--vault", &named],
+            vec!["skill", "install", "--vault", &named],
+            vec!["types", "--vault", "."],
+        ] {
+            let error = kd(&daily, &line, "").unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "but the current directory is inside the vault at {}",
+                    root.display()
+                )),
+                "{line:?}: {error}"
+            );
+        }
+        assert!(!other.join("Graph").exists());
+        assert!(!other.join(".claude").exists());
+
+        // Naming the vault the current directory is in changes nothing.
+        let own = root.display().to_string();
+        for line in [["types", "--vault", ".."], ["types", "--vault", &own]] {
+            assert!(kd(&daily, &line, "").is_ok(), "{line:?}");
+        }
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(other).unwrap();
     }
 
     #[test]
