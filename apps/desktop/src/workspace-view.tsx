@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, PointerEvent as ReactPointerEvent } from 'react';
 
-import { accentFor } from './accent';
+import { accentFor, badgeColorFor } from './accent';
 import { PaneBody } from './panes/pane-body';
 import type { PaneActions } from './panes/pane-props';
 import { computeGeometry } from './workspace/geometry';
@@ -336,7 +336,7 @@ function PaneFrame({ leaf, accent, active, magnified, dispatch, debug }: PaneFra
       <header className="pane-title" style={{ background: accent }}>
         <span className="pane-title-text">{title}</span>
         {leaf.badge === null ? null : (
-          <span className="pane-badge" style={{ background: leaf.badge.color ?? '#e0b956' }}>
+          <span className="pane-badge" style={{ background: badgeColorFor(leaf.badge.color) }}>
             {leaf.badge.text}
           </span>
         )}

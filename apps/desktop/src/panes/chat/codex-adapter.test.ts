@@ -4,7 +4,9 @@ import { codexArgs, parseCodexLine } from './codex-adapter';
 
 describe('codexArgs', () => {
   it('builds a first message in read-only mode', () => {
-    expect(codexArgs({ mode: 'read-only', directory: '/Users/x/src', sessionId: null })).toEqual([
+    expect(
+      codexArgs({ mode: 'read-only', directory: '/Users/x/src', sessionId: null, trusted: true }),
+    ).toEqual([
       'exec',
       '--json',
       '--skip-git-repo-check',
@@ -18,12 +20,18 @@ describe('codexArgs', () => {
 
   it('leaves out -C for home and for a path that starts with a tilde', () => {
     const expected = ['exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '-'];
-    expect(codexArgs({ mode: 'edit', directory: null, sessionId: null })).toEqual(expected);
-    expect(codexArgs({ mode: 'edit', directory: '~/src', sessionId: null })).toEqual(expected);
+    expect(codexArgs({ mode: 'edit', directory: null, sessionId: null, trusted: true })).toEqual(
+      expected,
+    );
+    expect(codexArgs({ mode: 'edit', directory: '~/src', sessionId: null, trusted: true })).toEqual(
+      expected,
+    );
   });
 
   it('resumes the thread for a follow-up, with flags resume accepts', () => {
-    expect(codexArgs({ mode: 'read-only', directory: '/Users/x/src', sessionId: 'th-1' })).toEqual([
+    expect(
+      codexArgs({ mode: 'read-only', directory: '/Users/x/src', sessionId: 'th-1', trusted: true }),
+    ).toEqual([
       'exec',
       'resume',
       'th-1',
@@ -33,17 +41,27 @@ describe('codexArgs', () => {
       'sandbox_mode="read-only"',
       '-',
     ]);
-    expect(codexArgs({ mode: 'edit', directory: null, sessionId: 'th-1' })).toContain(
-      'sandbox_mode="workspace-write"',
-    );
+    expect(
+      codexArgs({ mode: 'edit', directory: null, sessionId: 'th-1', trusted: true }),
+    ).toContain('sandbox_mode="workspace-write"');
+  });
+
+  it('builds the same arguments whether or not the folder is trusted here', () => {
+    for (const sessionId of [null, 'th-1']) {
+      const request = { mode: 'edit', directory: '/v', sessionId } as const;
+      const untrusted = codexArgs({ ...request, trusted: false });
+      expect(untrusted).toEqual(codexArgs({ ...request, trusted: true }));
+      // Codex asks before it runs a project's hooks. Nothing here skips that.
+      expect(untrusted.some((arg) => arg.includes('bypass'))).toBe(false);
+    }
   });
 
   it('never turns the sandbox off', () => {
     const all = [
-      ...codexArgs({ mode: 'read-only', directory: null, sessionId: null }),
-      ...codexArgs({ mode: 'edit', directory: null, sessionId: null }),
-      ...codexArgs({ mode: 'read-only', directory: null, sessionId: 's' }),
-      ...codexArgs({ mode: 'edit', directory: null, sessionId: 's' }),
+      ...codexArgs({ mode: 'read-only', directory: null, sessionId: null, trusted: true }),
+      ...codexArgs({ mode: 'edit', directory: null, sessionId: null, trusted: true }),
+      ...codexArgs({ mode: 'read-only', directory: null, sessionId: 's', trusted: true }),
+      ...codexArgs({ mode: 'edit', directory: null, sessionId: 's', trusted: true }),
     ];
     expect(all.some((arg) => arg.includes('danger'))).toBe(false);
   });

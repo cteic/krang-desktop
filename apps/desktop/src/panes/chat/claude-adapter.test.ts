@@ -4,7 +4,9 @@ import { claudeArgs, parseClaudeLine, summariseToolInput } from './claude-adapte
 
 describe('claudeArgs', () => {
   it('builds a first message in read-only mode', () => {
-    expect(claudeArgs({ mode: 'read-only', directory: '~/src', sessionId: null })).toEqual([
+    expect(
+      claudeArgs({ mode: 'read-only', directory: '~/src', sessionId: null, trusted: true }),
+    ).toEqual([
       '-p',
       '--output-format',
       'stream-json',
@@ -12,11 +14,16 @@ describe('claudeArgs', () => {
       '--include-partial-messages',
       '--permission-mode',
       'plan',
+      '--disallowedTools',
+      'Read(.obsidian/**)',
+      'Read(**/.obsidian/**)',
     ]);
   });
 
   it('resumes the session for a follow-up', () => {
-    expect(claudeArgs({ mode: 'edit', directory: null, sessionId: 'abc-123' })).toEqual([
+    expect(
+      claudeArgs({ mode: 'edit', directory: null, sessionId: 'abc-123', trusted: true }),
+    ).toEqual([
       '-p',
       '--output-format',
       'stream-json',
@@ -24,6 +31,9 @@ describe('claudeArgs', () => {
       '--include-partial-messages',
       '--permission-mode',
       'acceptEdits',
+      '--disallowedTools',
+      'Read(.obsidian/**)',
+      'Read(**/.obsidian/**)',
       '--allowedTools',
       'Bash(kd node:*)',
       'Bash(kd relate:*)',
@@ -35,7 +45,7 @@ describe('claudeArgs', () => {
   });
 
   it('allows an editing chat the four graph commands and nothing wider', () => {
-    const args = claudeArgs({ mode: 'edit', directory: '~/vault', sessionId: null });
+    const args = claudeArgs({ mode: 'edit', directory: '~/vault', sessionId: null, trusted: true });
     const start = args.indexOf('--allowedTools');
     expect(args.slice(start + 1)).toEqual([
       'Bash(kd node:*)',
@@ -51,15 +61,51 @@ describe('claudeArgs', () => {
   });
 
   it('allows no shell command in read-only mode', () => {
-    const args = claudeArgs({ mode: 'read-only', directory: null, sessionId: 's' });
+    const args = claudeArgs({ mode: 'read-only', directory: null, sessionId: 's', trusted: true });
     expect(args).not.toContain('--allowedTools');
     expect(args.some((arg) => arg.startsWith('Bash'))).toBe(false);
   });
 
+  it('keeps a folder that is not trusted from loading its own settings', () => {
+    for (const mode of ['read-only', 'edit'] as const) {
+      const untrusted = claudeArgs({ mode, directory: '/v', sessionId: null, trusted: false });
+      const at = untrusted.indexOf('--setting-sources');
+      expect(untrusted[at + 1]).toBe('user');
+      // It comes before the flags that take a list, so it is not read as a tool.
+      expect(at).toBeLessThan(untrusted.indexOf('--disallowedTools'));
+      const trusted = claudeArgs({ mode, directory: '/v', sessionId: null, trusted: true });
+      expect(trusted).not.toContain('--setting-sources');
+      expect(untrusted.filter((arg) => arg !== '--setting-sources' && arg !== 'user')).toEqual(
+        trusted,
+      );
+    }
+  });
+
+  it('keeps the untrusted setting sources on a follow-up', () => {
+    const args = claudeArgs({ mode: 'edit', directory: '/v', sessionId: 's-1', trusted: false });
+    expect(args).toContain('--setting-sources');
+    expect(args.slice(-2)).toEqual(['--resume', 's-1']);
+  });
+
+  it('denies reading the plugin settings folder in every mode and trust state', () => {
+    for (const mode of ['read-only', 'edit'] as const) {
+      for (const trusted of [true, false]) {
+        const args = claudeArgs({ mode, directory: '/v', sessionId: null, trusted });
+        const start = args.indexOf('--disallowedTools');
+        expect(args.slice(start + 1, start + 3)).toEqual([
+          'Read(.obsidian/**)',
+          'Read(**/.obsidian/**)',
+        ]);
+        // The next word is a flag or the end, so no allow rule is read as a deny.
+        expect(args[start + 3] ?? '--').toMatch(/^--/);
+      }
+    }
+  });
+
   it('never passes a flag that skips permissions or the login', () => {
     const all = [
-      ...claudeArgs({ mode: 'read-only', directory: null, sessionId: 's' }),
-      ...claudeArgs({ mode: 'edit', directory: null, sessionId: 's' }),
+      ...claudeArgs({ mode: 'read-only', directory: null, sessionId: 's', trusted: true }),
+      ...claudeArgs({ mode: 'edit', directory: null, sessionId: 's', trusted: true }),
     ];
     expect(all).not.toContain('--bare');
     expect(all).not.toContain('bypassPermissions');

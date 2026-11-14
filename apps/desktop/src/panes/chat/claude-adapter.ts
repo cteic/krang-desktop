@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 import { type AgentEvent, oneLine, parseJsonLine } from './agent-event';
-import { CLAUDE_ALLOWED_TOOLS, CLAUDE_PERMISSION_MODES } from './modes';
+import {
+  CLAUDE_ALLOWED_TOOLS,
+  CLAUDE_DENIED_TOOLS,
+  CLAUDE_PERMISSION_MODES,
+  CLAUDE_UNTRUSTED_SETTING_SOURCES,
+} from './modes';
 import type { RunRequest } from './run-request';
 
 const typedSchema = z.object({ type: z.string() });
@@ -58,7 +63,7 @@ const SUMMARY_KEYS = [
  * The arguments for one message. The prompt goes on standard input. The
  * working directory is the process's own, so it is not an argument.
  */
-export function claudeArgs({ mode, sessionId }: RunRequest): string[] {
+export function claudeArgs({ mode, sessionId, trusted }: RunRequest): string[] {
   const args = [
     '-p',
     '--output-format',
@@ -68,6 +73,12 @@ export function claudeArgs({ mode, sessionId }: RunRequest): string[] {
     '--permission-mode',
     CLAUDE_PERMISSION_MODES[mode],
   ];
+  if (!trusted) {
+    // Print mode skips the workspace trust question, so this stands in for
+    // it: the directory's own settings stay out until the person says yes.
+    args.push('--setting-sources', CLAUDE_UNTRUSTED_SETTING_SOURCES);
+  }
+  args.push('--disallowedTools', ...CLAUDE_DENIED_TOOLS);
   const allowed = CLAUDE_ALLOWED_TOOLS[mode];
   if (allowed.length > 0) {
     // The flag takes every word up to the next flag, so it goes after the

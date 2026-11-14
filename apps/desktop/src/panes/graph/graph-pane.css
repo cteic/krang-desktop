@@ -264,7 +264,7 @@
   white-space: nowrap;
 }
 
-/* The same three marks the boxes in the drawing carry. */
+/* The same four marks the boxes in the drawing carry. */
 .graph-mark {
   flex: none;
   box-sizing: border-box;
@@ -277,6 +277,11 @@
 .graph-mark[data-status='supported'] {
   background: var(--graph-for);
   border-color: var(--graph-for);
+}
+
+.graph-mark[data-status='opposed'] {
+  background: var(--graph-against);
+  border-color: var(--graph-against);
 }
 
 .graph-mark[data-status='contested'] {
@@ -329,6 +334,30 @@
 
 .graph-backers[data-side='against'] {
   border-left-color: var(--graph-against);
+}
+
+.graph-backers[data-side='tentative'] {
+  border-left-style: dashed;
+  border-left-color: var(--muted);
+}
+
+.graph-backers[data-side='related'] {
+  border-left-color: var(--muted);
+}
+
+.graph-backers-head {
+  margin: 4px 0 0;
+  padding-left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.graph-backer-kind {
+  color: var(--graph-for);
+}
+
+.graph-backer-kind[data-kind='opposes'] {
+  color: var(--graph-against);
 }
 
 .graph-backers button {
@@ -406,7 +435,7 @@
   stroke-dasharray: 5 4;
 }
 
-/* The support lens: hollow for no support, a split edge for both, solid green for support. */
+/* The support lens: hollow for no evidence, red for opposing evidence only, a split edge for both, solid green for support. */
 .graph-node[data-lens='unsupported'] .graph-node-box {
   stroke-width: 2.5;
   stroke-dasharray: 6 4;
@@ -414,6 +443,11 @@
 
 .graph-node[data-lens='supported'] .graph-node-box {
   stroke: var(--graph-for);
+  stroke-width: 4;
+}
+
+.graph-node[data-lens='opposed'] .graph-node-box {
+  stroke: var(--graph-against);
   stroke-width: 4;
 }
 

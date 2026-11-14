@@ -30,11 +30,28 @@ describe('debugText', () => {
     );
   });
 
+  it('says when support could not be counted, and gives no counts for it', () => {
+    const text = debugText('/vault', buildView(GRAPH, 'Overview'), null, {
+      unlinkedHidden: 0,
+      claims: 3,
+      supportCounted: false,
+      unsupported: 0,
+      opposed: 0,
+      contested: 0,
+      supported: 0,
+      candidates: 0,
+      issues: 0,
+    });
+    expect(text.split('\n')).toContain('claims: 3 (support not counted)');
+  });
+
   it('adds what the lists beside the drawing hold', () => {
     const text = debugText('/vault', buildView(GRAPH, 'Overview'), null, {
       unlinkedHidden: 1,
       claims: 3,
+      supportCounted: true,
       unsupported: 2,
+      opposed: 1,
       contested: 0,
       supported: 1,
       candidates: 2,
@@ -43,7 +60,7 @@ describe('debugText', () => {
     expect(text.split('\n').slice(4, 9)).toEqual([
       'skipped: 1',
       'unlinked hidden: 1',
-      'claims: 3 (2 unsupported, 0 contested, 1 supported)',
+      'claims: 3 (2 unsupported, 1 opposed, 0 contested, 1 supported)',
       'candidates: 2',
       'issues: 6',
     ]);

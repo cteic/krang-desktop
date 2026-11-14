@@ -223,3 +223,27 @@
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+
+.chat-trust {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid #e0b956;
+  background: var(--panel);
+}
+
+.chat-trust-text {
+  flex: 1;
+  min-width: 12em;
+  margin: 0;
+}
+
+.chat-trust-yes,
+.chat-trust-no {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+}

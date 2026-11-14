@@ -950,7 +950,9 @@ describe('the claims list', () => {
 
     fireEvent.click(toggle(/^Claims/));
     expect(
-      within(claims()).getByText('3 claims: 2 unsupported, 0 contested, 1 supported'),
+      within(claims()).getByText(
+        '3 claims by evidence: 2 unsupported, 0 opposed, 0 contested, 1 supported',
+      ),
     ).toBeTruthy();
     expect(
       within(claims())
@@ -982,6 +984,104 @@ describe('the claims list', () => {
     expect(node('CLM - It does not').getAttribute('data-lens')).toBeNull();
   });
 
+  it('marks a claim with only opposing evidence in red, apart from one with none', async () => {
+    vault.graph = {
+      ...GRAPH,
+      relations: [
+        // The other claim opposes the question, which keeps it in the drawing.
+        ...GRAPH.relations.filter((relation) => relation.id === 'r2'),
+        {
+          id: 'r4',
+          typeId: 'relation_o',
+          source: 'id-e',
+          destination: 'id-c1',
+          ambiguous: false,
+          tentative: null,
+        },
+      ],
+    };
+    renderPane();
+    await findGraph();
+
+    fireEvent.click(toggle(/^Claims/));
+    expect(node('CLM - It scales').getAttribute('data-lens')).toBe('opposed');
+    expect(node('CLM - It does not').getAttribute('data-lens')).toBe('unsupported');
+    expect(claimRow('CLM - It scales').getAttribute('aria-label')).toBe(
+      'CLM - It scales, opposed, 0 supporting, 1 opposing',
+    );
+    expect(
+      within(claims()).getByText(
+        '3 claims by evidence: 2 unsupported, 1 opposed, 0 contested, 0 supported',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('lists a related claim and a tentative relation without counting them', async () => {
+    vault.graph = {
+      ...GRAPH,
+      relations: [
+        {
+          id: 'r4',
+          typeId: 'rel_s',
+          source: 'id-c2',
+          destination: 'id-c1',
+          ambiguous: false,
+          tentative: null,
+        },
+        {
+          id: 'r5',
+          typeId: 'relation_o',
+          source: 'id-e',
+          destination: 'id-c1',
+          ambiguous: false,
+          tentative: false,
+        },
+      ],
+    };
+    renderPane();
+    await findGraph();
+
+    fireEvent.click(toggle(/^Claims/));
+    expect(claimRow('CLM - It scales').getAttribute('aria-label')).toBe(
+      'CLM - It scales, unsupported, 0 supporting, 0 opposing',
+    );
+    expect(node('CLM - It scales').getAttribute('data-lens')).toBe('unsupported');
+
+    fireEvent.click(within(claims()).getByRole('button', { name: 'Evidence for CLM - It scales' }));
+    expect(within(claims()).getByText('Tentative, not counted')).toBeTruthy();
+    expect(
+      within(claims()).getByRole('list', { name: 'Tentative evidence for CLM - It scales' })
+        .textContent,
+    ).toBe('opposes: EVD - Benchmark run');
+    expect(within(claims()).getByText('Related claims, not counted')).toBeTruthy();
+    expect(
+      within(claims()).getByRole('list', { name: 'Related claims for CLM - It scales' })
+        .textContent,
+    ).toBe('supports: CLM - It does not');
+  });
+
+  it('says support is not counted when no relation type can be read', async () => {
+    vault.graph = {
+      ...GRAPH,
+      relationTypes: [{ id: 'rel_s', label: 'Backs', complement: 'Backed by', color: null }],
+    };
+    renderPane();
+    await findGraph();
+
+    fireEvent.click(toggle(/^Claims/));
+    expect(
+      within(claims()).getByText(
+        '3 claims. Support is not counted: no relation type here is labelled supports or opposes.',
+      ),
+    ).toBeTruthy();
+    // No claim is drawn or read out as unsupported.
+    expect(node('CLM - It scales').getAttribute('data-lens')).toBeNull();
+    expect(node('CLM - It does not').getAttribute('data-lens')).toBeNull();
+    expect(claimRow('CLM - It does not').getAttribute('aria-label')).toBe(
+      'CLM - It does not, not counted, 0 supporting, 0 opposing',
+    );
+  });
+
   it('marks a claim that is both supported and opposed with a split edge', async () => {
     vault.graph = {
       ...GRAPH,
@@ -1006,7 +1106,9 @@ describe('the claims list', () => {
     expect(contested.querySelector('.graph-lens-for')).not.toBeNull();
     expect(contested.querySelector('.graph-lens-against')).not.toBeNull();
     expect(
-      within(claims()).getByText('3 claims: 2 unsupported, 1 contested, 0 supported'),
+      within(claims()).getByText(
+        '3 claims by evidence: 2 unsupported, 0 opposed, 1 contested, 0 supported',
+      ),
     ).toBeTruthy();
   });
 
@@ -1285,7 +1387,9 @@ describe('a vault that changes while it is on show', () => {
     await settle(POLL_MS);
 
     expect(node('CLM - It does not').getAttribute('data-lens')).toBe('supported');
-    expect(screen.getByText('3 claims: 1 unsupported, 0 contested, 2 supported')).toBeTruthy();
+    expect(
+      screen.getByText('3 claims by evidence: 1 unsupported, 0 opposed, 0 contested, 2 supported'),
+    ).toBeTruthy();
   });
 });
 
@@ -1469,7 +1573,7 @@ describe('debug snapshots', () => {
         'relations: 1',
         'skipped: 1',
         'unlinked hidden: 0',
-        'claims: 3 (2 unsupported, 0 contested, 1 supported)',
+        'claims: 3 (2 unsupported, 0 opposed, 0 contested, 1 supported)',
         'candidates: 2',
         'issues: 6',
         '- QUE - Does it scale',

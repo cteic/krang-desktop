@@ -692,6 +692,35 @@ describe('making a node from the selection', () => {
     expect(dot?.style.background).toBe('rgb(125, 161, 62)');
   });
 
+  it('never puts a colour that is not a hex value into a style', async () => {
+    const hostile = [
+      'url(https://example.invalid/x)',
+      'red; background-image: url(https://example.invalid/x)',
+      'image-set("https://example.invalid/x" 1x)',
+      'var(--bg)',
+      '#12345',
+    ];
+    disk.nodeTypes = hostile.map((color, index) => ({
+      id: `n-${String(index)}`,
+      name: `Type ${String(index)}`,
+      format: 'T - {content}',
+      color,
+    }));
+    show(NOTE);
+    const area = await select();
+    fireEvent.click(screen.getByRole('button', { name: 'Node' }));
+    await screen.findByRole('option', { name: /Type 0/ });
+    expect(area).toBeTruthy();
+
+    const dots = Array.from(document.querySelectorAll<HTMLElement>('.editor-capture-dot'));
+    expect(dots).toHaveLength(hostile.length);
+    for (const dot of dots) {
+      // The neutral grey a type with no colour gets.
+      expect(dot.style.background).toBe('rgb(110, 118, 129)');
+      expect(dot.getAttribute('style')).not.toMatch(/url|image|var|invalid/);
+    }
+  });
+
   it('opens on Cmd+Shift+N', async () => {
     show(NOTE);
     const area = await select();

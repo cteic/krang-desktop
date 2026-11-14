@@ -1,5 +1,7 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 
+import { nodeColor } from '../graph/colors';
+
 import { candidateTag, filterTypes, nodeText } from './capture';
 import { truncateMiddle } from './truncate-middle';
 import type { NodeType } from './vault-api';
@@ -122,7 +124,9 @@ export function CapturePopover({
           >
             <span
               className="editor-capture-dot"
-              style={{ background: type.color ?? 'var(--muted)' }}
+              // The colour comes from a file in the vault. Only a hex value
+              // gets through: anything else could name an address to fetch.
+              style={{ background: nodeColor(type.color ?? null) }}
             />
             <span className="editor-capture-name">{type.name}</span>
             <span className="editor-capture-format">{type.format}</span>

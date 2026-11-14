@@ -3,7 +3,7 @@ import { boundsOf, edgeShape } from './geometry';
 import type { EdgeShape, Rect, Size } from './geometry';
 import { DEFAULT_LAYOUT, layoutGraph } from './layout';
 import type { LayoutEdge, LayoutNode } from './layout';
-import { relationReader, relationSense } from './lens';
+import { relationSense, relationTypeSense } from './lens';
 import type { RelationKind } from './lens';
 import type { Canvas, NodeType, VaultGraph } from './vault-graph';
 import { wrapText } from './wrap-text';
@@ -346,7 +346,7 @@ interface RelationLook {
 
 /** How each relation type is drawn. */
 function relationLooks(graph: VaultGraph): Map<string, RelationLook> {
-  const senses = graph.relationTypes.map((type) => ({ type, sense: relationSense(type.label) }));
+  const senses = graph.relationTypes.map((type) => ({ type, sense: relationTypeSense(type) }));
   const colors = relationColors(
     senses.map(({ type, sense }) => ({ id: type.id, color: type.color, kind: sense.kind })),
   );
@@ -388,8 +388,6 @@ export function layoutInput(graph: VaultGraph): LayoutInput {
 function allNodesView(graph: VaultGraph, placed: ReadonlyMap<string, Rect> | null): GraphView {
   const types = new Map(graph.nodeTypes.map((type) => [type.id, type]));
   const looks = relationLooks(graph);
-  const typeOf = new Map(graph.nodes.map((node) => [node.id, node.typeId]));
-  const storedBackwards = relationReader(graph);
 
   const drafts: EdgeDraft[] = graph.relations.map((relation) => {
     const look = looks.get(relation.typeId);
@@ -397,13 +395,7 @@ function allNodesView(graph: VaultGraph, placed: ReadonlyMap<string, Rect> | nul
     if (relation.ambiguous) {
       dash = 'dotted';
     }
-    const turned =
-      (look?.inverse ?? false) !==
-      storedBackwards(
-        relation.typeId,
-        typeOf.get(relation.source) ?? '',
-        typeOf.get(relation.destination) ?? '',
-      );
+    const turned = look?.inverse ?? false;
     return {
       id: relation.id,
       source: relation.source,
@@ -493,7 +485,6 @@ function viewNode(
 function canvasView(graph: VaultGraph, canvas: Canvas, wantedPage: string | null): GraphView {
   const types = new Map(graph.nodeTypes.map((type) => [type.id, type]));
   const looks = relationLooks(graph);
-  const storedBackwards = relationReader(graph);
   const pages = drawablePages(canvas);
   const pageId = pages.some((page) => page.id === wantedPage) ? wantedPage : defaultPageId(canvas);
   const page = pages.find((item) => item.id === pageId);
@@ -509,7 +500,6 @@ function canvasView(graph: VaultGraph, canvas: Canvas, wantedPage: string | null
       ),
     );
   const rects = new Map(nodes.map((node) => [node.id, node.rect]));
-  const typeOf = new Map(nodes.map((node) => [node.id, node.typeId]));
 
   const drafts: EdgeDraft[] = canvas.relations
     .filter((relation) => relation.pageId === pageId)
@@ -518,13 +508,7 @@ function canvasView(graph: VaultGraph, canvas: Canvas, wantedPage: string | null
       // An arrow's own text wins over its type's label when it says which way it reads.
       const own = relationSense(relation.label);
       const sense = own.kind === 'other' ? look : own;
-      const turned =
-        (sense?.inverse ?? false) !==
-        storedBackwards(
-          relation.typeId,
-          typeOf.get(relation.source) ?? '',
-          typeOf.get(relation.destination) ?? '',
-        );
+      const turned = sense?.inverse ?? false;
       return {
         id: relation.id,
         source: relation.source,
