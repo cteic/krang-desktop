@@ -26,13 +26,13 @@ You need Node 24, pnpm 11.5.2 and Rust 1.90 or later.
 
 ```sh
 pnpm install
-pnpm --filter @trath/desktop tauri dev
+pnpm --filter @krang-desktop/desktop tauri dev
 ```
 
 Build an app bundle:
 
 ```sh
-pnpm --filter @trath/desktop tauri build --debug
+pnpm --filter @krang-desktop/desktop tauri build --debug
 open "apps/desktop/src-tauri/target/debug/bundle/macos/Krang Desktop.app"
 ```
 
@@ -150,3 +150,7 @@ pnpm check                                  # format, lint, typecheck, tests
 cd apps/desktop/src-tauri && cargo test     # Rust tests
 cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
 ```
+
+## Licence
+
+AGPL-3.0-only. See [LICENSE](LICENSE).

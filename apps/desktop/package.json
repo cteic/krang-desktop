@@ -1,6 +1,7 @@
 {
-  "name": "@trath/desktop",
+  "name": "@krang-desktop/desktop",
   "version": "0.0.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "scripts": {
@@ -35,8 +36,8 @@
     "@tauri-apps/cli": "catalog:",
     "@testing-library/dom": "catalog:",
     "@testing-library/react": "catalog:",
-    "@trath/eslint-config": "workspace:*",
-    "@trath/tsconfig-config": "workspace:*",
+    "@krang-desktop/eslint-config": "workspace:*",
+    "@krang-desktop/tsconfig-config": "workspace:*",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",

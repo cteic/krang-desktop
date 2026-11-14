@@ -122,13 +122,13 @@ importers:
 
   .:
     devDependencies:
-      '@trath/eslint-config':
+      '@krang-desktop/eslint-config':
         specifier: workspace:*
         version: link:packages/eslint-config
-      '@trath/prettier-config':
+      '@krang-desktop/prettier-config':
         specifier: workspace:*
         version: link:packages/prettier-config
-      '@trath/tsconfig-config':
+      '@krang-desktop/tsconfig-config':
         specifier: workspace:*
         version: link:packages/tsconfig-config
       '@types/node':
@@ -152,20 +152,20 @@ importers:
 
   apps/cli:
     dependencies:
-      '@trath/core':
+      '@krang-desktop/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@trath/db':
+      '@krang-desktop/db':
         specifier: workspace:*
         version: link:../../packages/db
       commander:
         specifier: 'catalog:'
         version: 15.1.0
     devDependencies:
-      '@trath/eslint-config':
+      '@krang-desktop/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
-      '@trath/tsconfig-config':
+      '@krang-desktop/tsconfig-config':
         specifier: workspace:*
         version: link:../../packages/tsconfig-config
       '@types/node':
@@ -244,6 +244,12 @@ importers:
         specifier: 'catalog:'
         version: 4.6.7
     devDependencies:
+      '@krang-desktop/eslint-config':
+        specifier: workspace:*
+        version: link:../../packages/eslint-config
+      '@krang-desktop/tsconfig-config':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig-config
       '@tauri-apps/cli':
         specifier: 'catalog:'
         version: 2.12.4
@@ -253,12 +259,6 @@ importers:
       '@testing-library/react':
         specifier: 'catalog:'
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      '@trath/eslint-config':
-        specifier: workspace:*
-        version: link:../../packages/eslint-config
-      '@trath/tsconfig-config':
-        specifier: workspace:*
-        version: link:../../packages/tsconfig-config
       '@types/react':
         specifier: 'catalog:'
         version: 19.3.0
@@ -290,10 +290,10 @@ importers:
         specifier: 'catalog:'
         version: 3.0.2
     devDependencies:
-      '@trath/eslint-config':
+      '@krang-desktop/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@trath/tsconfig-config':
+      '@krang-desktop/tsconfig-config':
         specifier: workspace:*
         version: link:../tsconfig-config
       eslint:
@@ -311,17 +311,17 @@ importers:
 
   packages/db:
     dependencies:
-      '@trath/core':
+      '@krang-desktop/core':
         specifier: workspace:*
         version: link:../core
       zod:
         specifier: 'catalog:'
         version: 4.6.7
     devDependencies:
-      '@trath/eslint-config':
+      '@krang-desktop/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
-      '@trath/tsconfig-config':
+      '@krang-desktop/tsconfig-config':
         specifier: workspace:*
         version: link:../tsconfig-config
       '@types/node':
@@ -391,7 +391,7 @@ importers:
 
   packages/ui:
     dependencies:
-      '@trath/core':
+      '@krang-desktop/core':
         specifier: workspace:*
         version: link:../core
       react:
@@ -401,18 +401,18 @@ importers:
         specifier: 'catalog:'
         version: 19.3.1(react@19.3.1)
     devDependencies:
+      '@krang-desktop/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@krang-desktop/tsconfig-config':
+        specifier: workspace:*
+        version: link:../tsconfig-config
       '@testing-library/dom':
         specifier: 'catalog:'
         version: 10.4.2
       '@testing-library/react':
         specifier: 'catalog:'
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      '@trath/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@trath/tsconfig-config':
-        specifier: workspace:*
-        version: link:../tsconfig-config
       '@types/react':
         specifier: 'catalog:'
         version: 19.3.0

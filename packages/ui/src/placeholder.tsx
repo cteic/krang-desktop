@@ -1,4 +1,4 @@
-import { corePlaceholder } from '@trath/core/placeholder';
+import { corePlaceholder } from '@krang-desktop/core/placeholder';
 
 export interface PlaceholderProps {
   label: string;

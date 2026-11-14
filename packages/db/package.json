@@ -1,6 +1,7 @@
 {
-  "name": "@trath/db",
+  "name": "@krang-desktop/db",
   "version": "0.0.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "exports": {
@@ -12,12 +13,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@trath/core": "workspace:*",
+    "@krang-desktop/core": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@trath/eslint-config": "workspace:*",
-    "@trath/tsconfig-config": "workspace:*",
+    "@krang-desktop/eslint-config": "workspace:*",
+    "@krang-desktop/tsconfig-config": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",
     "typescript": "catalog:",

@@ -1,3 +1,3 @@
-import { createEslintConfig } from '@trath/eslint-config/base';
+import { createEslintConfig } from '@krang-desktop/eslint-config/base';
 
 export default createEslintConfig();

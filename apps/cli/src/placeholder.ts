@@ -1,4 +1,4 @@
-import { dbPlaceholder } from '@trath/db/placeholder';
+import { dbPlaceholder } from '@krang-desktop/db/placeholder';
 
 export function cliPlaceholder(): string {
   return `cli on ${dbPlaceholder()}`;

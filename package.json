@@ -1,6 +1,7 @@
 {
-  "name": "trath",
+  "name": "krang-desktop",
   "version": "0.0.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.2",
@@ -19,9 +20,9 @@
     "check": "turbo run //#format:check lint //#lint:root typecheck //#typecheck:root test"
   },
   "devDependencies": {
-    "@trath/eslint-config": "workspace:*",
-    "@trath/prettier-config": "workspace:*",
-    "@trath/tsconfig-config": "workspace:*",
+    "@krang-desktop/eslint-config": "workspace:*",
+    "@krang-desktop/prettier-config": "workspace:*",
+    "@krang-desktop/tsconfig-config": "workspace:*",
     "@types/node": "catalog:",
     "dependency-cruiser": "catalog:",
     "eslint": "catalog:",

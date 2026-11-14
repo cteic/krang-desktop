@@ -1,4 +1,4 @@
 {
-  "extends": "@trath/tsconfig-config/react",
+  "extends": "@krang-desktop/tsconfig-config/react",
   "include": ["src", "vitest.config.ts"]
 }

@@ -1,6 +1,7 @@
 {
-  "name": "@trath/cli",
+  "name": "@krang-desktop/cli",
   "version": "0.0.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "exports": {
@@ -13,13 +14,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@trath/core": "workspace:*",
-    "@trath/db": "workspace:*",
+    "@krang-desktop/core": "workspace:*",
+    "@krang-desktop/db": "workspace:*",
     "commander": "catalog:"
   },
   "devDependencies": {
-    "@trath/eslint-config": "workspace:*",
-    "@trath/tsconfig-config": "workspace:*",
+    "@krang-desktop/eslint-config": "workspace:*",
+    "@krang-desktop/tsconfig-config": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",
     "tsdown": "catalog:",

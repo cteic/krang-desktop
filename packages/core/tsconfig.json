@@ -1,4 +1,4 @@
 {
-  "extends": "@trath/tsconfig-config/base",
+  "extends": "@krang-desktop/tsconfig-config/base",
   "include": ["src"]
 }

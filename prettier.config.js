@@ -1,1 +1,1 @@
-export { default } from '@trath/prettier-config/base';
+export { default } from '@krang-desktop/prettier-config/base';
