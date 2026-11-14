@@ -1,0 +1,109 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #0b0e14;
+  overflow: hidden;
+}
+
+.window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.window-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.problem {
+  flex: none;
+  padding: 6px 10px;
+  font:
+    12px/1.4 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  color: #fff;
+  background: #991b1b;
+}
+
+.split {
+  display: flex;
+  height: 100%;
+}
+
+.split[data-direction='row'] {
+  flex-direction: row;
+}
+
+.split[data-direction='column'] {
+  flex-direction: column;
+}
+
+.split-child {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  background: #0b0e14;
+}
+
+.split-divider {
+  flex: none;
+  background: #30363d;
+  touch-action: none;
+}
+
+.split-divider:hover,
+.split[data-dragging='true'] > .split-divider {
+  background: #58a6ff;
+}
+
+.split[data-direction='row'] > .split-divider {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.split[data-direction='column'] > .split-divider {
+  height: 4px;
+  cursor: row-resize;
+}
+
+/* A terminal under the pointer would swallow the drag. */
+.split[data-dragging='true'] .pane-body {
+  pointer-events: none;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.pane-title {
+  flex: none;
+  padding: 3px 10px;
+  font:
+    12px/1.4 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  color: #c9d1d9;
+  opacity: 0.55;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pane[data-active='true'] .pane-title {
+  opacity: 1;
+}
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 0 0 8px;
+}
+
+.pane-body .xterm {
+  height: 100%;
+}
