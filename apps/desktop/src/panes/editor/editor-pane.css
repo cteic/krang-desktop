@@ -1,0 +1,347 @@
+.editor-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font: var(--ui-font);
+  color: var(--text);
+  background: var(--bg);
+}
+
+.editor-status {
+  margin: 0;
+  padding: 16px;
+  color: var(--muted);
+}
+
+.editor-load-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+}
+
+.editor-load-error p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.editor-toolbar {
+  flex: none;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.editor-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 8px;
+}
+
+.editor-toolbar-space {
+  flex: 1;
+}
+
+.editor-path {
+  overflow: hidden;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.editor-dirty {
+  flex: none;
+  color: var(--focus);
+}
+
+.editor-note {
+  flex: none;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.editor-button {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.editor-view-switch {
+  display: flex;
+  flex: none;
+}
+
+.editor-view-switch .editor-button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+.editor-view-switch .editor-button:first-child {
+  margin-left: 0;
+  border-radius: 4px 0 0 4px;
+}
+
+.editor-view-switch .editor-button:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.editor-view-switch .editor-button[aria-pressed='true'] {
+  color: var(--bg);
+  background: var(--focus);
+  border-color: var(--focus);
+}
+
+.editor-save-as {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+  max-width: 480px;
+}
+
+.editor-save-as-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.editor-save-as-input:focus {
+  border-color: var(--focus);
+  outline: none;
+}
+
+.editor-confirm {
+  border-top: 1px solid var(--line);
+}
+
+.editor-error {
+  color: #ff7b72;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-code,
+.editor-preview {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor-code[hidden] {
+  display: none;
+}
+
+.editor-code-host {
+  height: 100%;
+}
+
+.editor-body[data-view='split'] .editor-preview {
+  border-left: 1px solid var(--line);
+}
+
+.editor-preview {
+  overflow: auto;
+}
+
+.editor-preview-content {
+  box-sizing: border-box;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+  font:
+    14px/1.65 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  color: var(--text);
+  overflow-wrap: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.editor-preview-content > :first-child {
+  margin-top: 0;
+}
+
+.editor-preview-content h1,
+.editor-preview-content h2,
+.editor-preview-content h3,
+.editor-preview-content h4,
+.editor-preview-content h5,
+.editor-preview-content h6 {
+  margin: 1.6em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.editor-preview-content h1 {
+  padding-bottom: 0.3em;
+  font-size: 1.9em;
+  border-bottom: 1px solid var(--line);
+}
+
+.editor-preview-content h2 {
+  padding-bottom: 0.3em;
+  font-size: 1.45em;
+  border-bottom: 1px solid var(--line);
+}
+
+.editor-preview-content h3 {
+  font-size: 1.2em;
+}
+
+.editor-preview-content h4,
+.editor-preview-content h5 {
+  font-size: 1em;
+}
+
+.editor-preview-content h6 {
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+.editor-preview-content p,
+.editor-preview-content ul,
+.editor-preview-content ol,
+.editor-preview-content pre,
+.editor-preview-content table,
+.editor-preview-content blockquote {
+  margin: 0 0 1em;
+}
+
+.editor-preview-content ul,
+.editor-preview-content ol {
+  padding-left: 1.8em;
+}
+
+.editor-preview-content li + li {
+  margin-top: 0.25em;
+}
+
+.editor-preview-content li > ul,
+.editor-preview-content li > ol {
+  margin: 0.25em 0 0;
+}
+
+.editor-preview-content .contains-task-list {
+  padding-left: 0.4em;
+  list-style: none;
+}
+
+.editor-preview-content .task-list-item input {
+  margin: 0 0.5em 0 0;
+  vertical-align: middle;
+}
+
+.editor-preview-content a {
+  color: var(--focus);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.editor-preview-content a:hover {
+  text-decoration: underline;
+}
+
+.editor-preview-content a.editor-wikilink {
+  border-bottom: 1px dashed var(--focus);
+}
+
+.editor-preview-content a.editor-wikilink:hover {
+  text-decoration: none;
+  border-bottom-style: solid;
+}
+
+.editor-preview-content code {
+  padding: 0.15em 0.4em;
+  font:
+    0.88em 'SF Mono',
+    Menlo,
+    Monaco,
+    monospace;
+  background: var(--panel);
+  border-radius: 4px;
+}
+
+.editor-preview-content pre {
+  padding: 12px 14px;
+  overflow: auto;
+  line-height: 1.5;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.editor-preview-content pre code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+}
+
+.editor-preview-content blockquote {
+  padding: 0 1em;
+  color: var(--muted);
+  border-left: 3px solid var(--line);
+}
+
+.editor-preview-content blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.editor-preview-content table {
+  display: block;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+}
+
+.editor-preview-content th,
+.editor-preview-content td {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+}
+
+.editor-preview-content th {
+  font-weight: 600;
+  background: var(--panel);
+}
+
+.editor-preview-content tr:nth-child(even) td {
+  background: rgb(255 255 255 / 3%);
+}
+
+.editor-preview-content hr {
+  height: 1px;
+  margin: 1.6em 0;
+  background: var(--line);
+  border: 0;
+}
+
+.editor-preview-content img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+.editor-preview-content del {
+  color: var(--muted);
+}
