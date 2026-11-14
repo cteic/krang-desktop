@@ -24,9 +24,36 @@ describe('claudeArgs', () => {
       '--include-partial-messages',
       '--permission-mode',
       'acceptEdits',
+      '--allowedTools',
+      'Bash(kd node:*)',
+      'Bash(kd relate:*)',
+      'Bash(kd types:*)',
+      'Bash(kd nodes:*)',
       '--resume',
       'abc-123',
     ]);
+  });
+
+  it('allows an editing chat the four graph commands and nothing wider', () => {
+    const args = claudeArgs({ mode: 'edit', directory: '~/vault', sessionId: null });
+    const start = args.indexOf('--allowedTools');
+    expect(args.slice(start + 1)).toEqual([
+      'Bash(kd node:*)',
+      'Bash(kd relate:*)',
+      'Bash(kd types:*)',
+      'Bash(kd nodes:*)',
+    ]);
+    // The bare tool would also allow the commands that drive the app.
+    for (const tool of ['Bash', 'Bash(kd:*)', 'Bash(kd *)', 'Bash(*)']) {
+      expect(args).not.toContain(tool);
+    }
+    expect(args.some((arg) => /kd (term|layout|view|web|chat|skill|vault)/.test(arg))).toBe(false);
+  });
+
+  it('allows no shell command in read-only mode', () => {
+    const args = claudeArgs({ mode: 'read-only', directory: null, sessionId: 's' });
+    expect(args).not.toContain('--allowedTools');
+    expect(args.some((arg) => arg.startsWith('Bash'))).toBe(false);
   });
 
   it('never passes a flag that skips permissions or the login', () => {

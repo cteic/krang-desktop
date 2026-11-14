@@ -10,8 +10,8 @@ use super::vault;
 
 pub const SOCKET_ENV: &str = "DESKTOP_SOCKET";
 pub const CLI_ENV: &str = "DESKTOP_CLI";
-const WINDOW_ENV: &str = "DESKTOP_WINDOW";
-const PANE_ENV: &str = "DESKTOP_PANE_ID";
+pub const WINDOW_ENV: &str = "DESKTOP_WINDOW";
+pub const PANE_ENV: &str = "DESKTOP_PANE_ID";
 
 const OUTSIDE_APP: &str = "kd only works inside a pane of the app (DESKTOP_SOCKET is not set)";
 

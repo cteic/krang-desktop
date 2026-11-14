@@ -343,8 +343,39 @@ id = "c"
   });
 
   it('refuses a mode that is not edit, split or preview, and a mode on a split', () => {
-    expectLayoutError(columns('', 'mode = "reading"'), 'expected shape');
+    expectLayoutError(
+      columns('', 'mode = "reading"'),
+      'pane "b" has mode "reading", and an editor pane takes one of "edit", "split", "preview"',
+    );
+    expectLayoutError(columns('', 'mode = "read-only"'), 'an editor pane takes one of');
+    expectLayoutError(columns('', 'mode = 3'), 'expected shape');
     expectLayoutError(columns('mode = "edit"'), 'cannot also hold content');
+  });
+
+  function chat(mode: string): string {
+    return `name = "x"\n[[panes]]\nid = "c"\ntype = "chat"\nagent = "claude"\ndirectory = "~/v"\n${mode}\n`;
+  }
+
+  it('reads the mode a chat pane starts in, and leaves it out when not given', () => {
+    const base = { type: 'chat', agent: 'claude', directory: '~/v' };
+    expect(leavesOf(parseLayout(chat('mode = "edit"')).root)[0]?.content).toEqual({
+      ...base,
+      mode: 'edit',
+    });
+    expect(leavesOf(parseLayout(chat('mode = "read-only"')).root)[0]?.content).toEqual({
+      ...base,
+      mode: 'read-only',
+    });
+    expect(leavesOf(parseLayout(chat('')).root)[0]?.content).toEqual(base);
+  });
+
+  it('refuses a chat mode that is not read-only or edit', () => {
+    expectLayoutError(
+      chat('mode = "preview"'),
+      'pane "c" has mode "preview", and a chat pane takes one of "read-only", "edit"',
+    );
+    expectLayoutError(chat('mode = "bypassPermissions"'), 'a chat pane takes one of');
+    expectLayoutError(chat('mode = ""'), 'expected shape');
   });
 
   it('parses the example layouts', () => {
@@ -366,6 +397,33 @@ id = "c"
       'graph',
       'chat',
     ]);
+  });
+
+  it('points the research example at the demo vault, with a chat that can edit it', () => {
+    const text = readFileSync(new URL('../../examples/lab.toml', import.meta.url), 'utf8');
+    const [files, shell, note, graph, chat] = leavesOf(parseLayout(text).root);
+    expect(files?.content).toEqual({ type: 'files', directory: '~/discourse-demo' });
+    expect(shell?.title).toBe('Shell');
+    expect(shell?.content).toEqual({
+      type: 'terminal',
+      directory: '~/discourse-demo',
+      commands: [],
+    });
+    expect(note?.content).toEqual({
+      type: 'editor',
+      path: '~/discourse-demo/Lab notebook - starter trial.md',
+      mode: 'preview',
+    });
+    expect(graph?.content).toEqual({ type: 'graph', directory: '~/discourse-demo', view: null });
+    expect(chat?.content).toEqual({
+      type: 'chat',
+      agent: 'claude',
+      directory: '~/discourse-demo',
+      mode: 'edit',
+    });
+    const column = parseLayout(text).root;
+    const right = column.kind === 'split' ? column.children[2] : undefined;
+    expect(right?.kind === 'split' ? right.shares : null).toEqual([2 / 3, 1 / 3]);
   });
 
   it('lays out the board example around a saved canvas', () => {

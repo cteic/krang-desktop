@@ -68,11 +68,17 @@ path = "~/src/project/README.md"
 | `files`    | `directory`                                                     |
 | `editor`   | `path`, `mode` (`edit`, `split` or `preview`, for Markdown)     |
 | `web`      | `url` (a URL, `localhost:3000`, or a path to an HTML file)      |
-| `chat`     | `agent` (`claude` or `codex`), `directory`                      |
+| `chat`     | `agent` (`claude` or `codex`), `directory`, `mode` (see below)  |
 | `graph`    | `directory` (the vault), `view` (`all` or a canvas file name)   |
 
 Every pane also takes `title` and `is_focused`. A split takes `sizes`, one
 relative size per child: `sizes = [1, 2]` gives the second child two thirds.
+
+A chat pane's `mode` is `read-only` or `edit`, and a chat starts read only.
+In `edit` mode the agent may change files in its directory. For Claude Code
+the app also allows four shell commands: `kd node`, `kd relate`, `kd types`
+and `kd nodes`. Any other shell command falls under Claude Code's own rules
+and your settings, and one that needs approval is refused.
 
 A full example is in `apps/desktop/examples/demo.toml`. A tour of the graph
 pane is in `apps/desktop/examples/lab.toml` and `board.toml`.
@@ -114,6 +120,36 @@ Notes in a `Templates` folder are left out. A dashed line is a relation the
 vault marks as not tentative. A dotted line is a relation whose end names an
 instance id that several notes share, so it may point at the wrong note.
 
+## Try the discourse graph demo
+
+Start the app once first, so the `open` link below has an app to go to. Run
+the first command in a terminal pane of the app, where `kd` is on the path.
+
+```sh
+kd vault init ~/discourse-demo --example    # a small vault with one lab note
+cp apps/desktop/examples/lab.toml apps/desktop/examples/board.toml \
+  ~/Library/Application\ Support/ie.cteic.krang-desktop/layouts/
+open "krang-desktop://layout/lab+board"     # two tabs: Research and Lab board
+```
+
+Then type this to the agent in the Research tab's chat pane:
+
+```text
+Use the discourse-graph skill on the lab notebook note
+```
+
+The agent creates nodes and relations with `kd`, and the graph pane above it
+draws each one within a few seconds. There are three ways to add a node:
+
+| Way      | How                                                             |
+| -------- | --------------------------------------------------------------- |
+| Terminal | `kd node claim "A warmer proof makes a more sour loaf"`         |
+| Agent    | Ask a chat pane in `edit` mode to use the discourse-graph skill |
+| Editor   | Select a sentence in a note and press Node                      |
+
+The Lab board tab shows a saved canvas from a larger sample vault. Change the
+vault path in `board.toml` to a vault of your own.
+
 ## Writing to a vault
 
 `kd` creates graph nodes and relations from any terminal, with or without the
@@ -132,8 +168,10 @@ kd skill install                           # teach Claude Code the procedure
 The app reads and writes vault files in the plugin's format: a node is a
 Markdown note with `nodeTypeId` and `nodeInstanceId` in its frontmatter, and a
 relation is an entry in the vault's `relations.json`. The plugin itself is not
-modified, and nothing inside `.obsidian` is written. The commands are
-described in `apps/desktop/docs/pane-cli.md`.
+modified. The node and relation commands write nothing inside `.obsidian`.
+`kd vault init` writes the settings file of a new vault there once, and never
+replaces one that exists. The commands are described in
+`apps/desktop/docs/pane-cli.md`.
 
 ## Shortcuts
 

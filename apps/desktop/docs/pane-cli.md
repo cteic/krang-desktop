@@ -77,9 +77,10 @@ variables below.
 | `kd node <type> <text...> --body-file <path>`       | The same, with the note's text read from a file, or `-` for stdin |
 | `kd relate <source> <relation> <destination>`       | Adds a relation between two nodes                            |
 | `kd skill install [--force]`, `kd skill path`       | Copies the discourse-graph skill into the vault, or prints where it goes |
+| `kd vault init <dir> [--example] [--force]`         | Makes a new, small vault. See below                          |
 
-Every command takes `--vault <dir>`. Without it, the vault is the nearest
-directory at or above the current one that holds `.obsidian`.
+Every command but `kd vault init` takes `--vault <dir>`. Without it, the vault
+is the nearest directory at or above the current one that holds `.obsidian`.
 
 ```sh
 $ kd node claim "Sleep loss reduces working memory"
@@ -92,7 +93,8 @@ relation 019a8f3e-7c1a-7d52-9b0e-3f6a1c2d4e5f
 Details that matter:
 
 - The app reads and writes vault files in the plugin's format. The plugin
-  itself is not modified, and nothing inside `.obsidian` is written.
+  itself is not modified. These commands write nothing inside `.obsidian`;
+  only `kd vault init` does, once, in a new vault.
 - `<type>` is a node type's name, its prefix, its tag or its id: `claim`,
   `CLM` or `clm-candidate`. Case does not matter.
 - The text becomes the note's title in the type's naming pattern, so
@@ -129,6 +131,57 @@ each new node from its source note. `kd skill install` copies it to
 `<vault>/.claude/skills/discourse-graph/SKILL.md`, where Claude Code finds it
 when it runs in the vault. It keeps a copy you have edited unless you pass
 `--force`.
+
+### A new vault: `kd vault init`
+
+`kd vault init <dir>` makes a small vault to build a graph in. It creates the
+directory when it is missing.
+
+```sh
+$ kd vault init ~/discourse-demo --example
+created /Users/you/discourse-demo/.obsidian/plugins/discourse-graphs/data.json
+created /Users/you/discourse-demo/Start here.md
+created /Users/you/discourse-demo/Lab notebook - starter trial.md
+created /Users/you/discourse-demo/.claude/skills/discourse-graph/SKILL.md
+
+Next: cd /Users/you/discourse-demo && kd types
+```
+
+| File                                             | What it holds                                             |
+| ------------------------------------------------ | --------------------------------------------------------- |
+| `.obsidian/plugins/discourse-graphs/data.json`   | Node types, relation types and allowed relations          |
+| `Start here.md`                                  | What the vault is, and three ways to add a node           |
+| `.claude/skills/discourse-graph/SKILL.md`        | The skill, as `kd skill install` writes it                |
+| `Lab notebook - starter trial.md`                | With `--example`: an invented note to try the skill on    |
+
+Details that matter:
+
+- The settings file is written in the format of the plugin's own settings,
+  with ids made when the command runs. It has no account, password or sync
+  fields.
+- The node types are Question, Claim, Evidence, Hypothesis, Result,
+  Experiment and Source. The relation types are supports, opposes, informs,
+  addresses, produces and motivates. `kd types` lists the allowed relations.
+- New nodes go in the `Discourse Graph` folder.
+- `relations.json` is not created. `kd relate` creates it with the first
+  relation.
+- A directory that holds anything is refused. `--force` uses it anyway, and
+  keeps every file already in it.
+- A settings file that already exists is never replaced, with or without
+  `--force`. The command then fails and writes nothing.
+
+### An agent in a chat pane
+
+A chat pane in `edit` mode puts the `kd` directory on the agent's `PATH`.
+For Claude Code the app allows four commands: `kd node`, `kd relate`,
+`kd types` and `kd nodes`. Any other shell command falls under Claude Code's
+own rules and your settings. A run has nobody to ask, so a command that needs
+approval, such as `kd term`, is refused. Codex gets no such list: in `edit`
+mode it runs commands inside its own sandbox, which may write to the chat's
+directory.
+
+The agent does not get `DESKTOP_SOCKET`, `DESKTOP_WINDOW` or
+`DESKTOP_PANE_ID`, so the commands that drive panes fail for it.
 
 ## Environment variables
 

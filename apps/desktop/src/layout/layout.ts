@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { PaneContent, PaneTree } from '../workspace/model';
 import type { TabDraft } from '../workspace/reducer';
-import { EDITOR_MODES } from '../workspace/model';
+import { CHAT_MODES, EDITOR_MODES } from '../workspace/model';
 import { equalShares, sharesFromSizes } from '../workspace/split-sizes';
 
 /**
@@ -16,7 +16,7 @@ import { equalShares, sharesFromSizes } from '../workspace/split-sizes';
  *
  * Two keys go beyond that format, and a reader that does not know them
  * ignores them: `sizes` on a split gives its children relative sizes, and
- * `mode` on an editor pane says how it opens.
+ * `mode` says how an editor pane opens, or what a chat pane's agent may do.
  */
 
 export class LayoutError extends Error {
@@ -36,7 +36,7 @@ const paneSchema = z.object({
   url: z.string().min(1).optional(),
   agent: z.string().min(1).optional(),
   view: z.string().min(1).optional(),
-  mode: z.enum(EDITOR_MODES).optional(),
+  mode: z.string().min(1).optional(),
   sizes: z.array(z.number()).optional(),
 });
 
@@ -128,17 +128,22 @@ function contentOf(entry: PaneEntry): PaneContent {
       return { type, directory: entry.directory ?? null, commands: entry.commands ?? [] };
     case 'files':
       return { type, directory: entry.directory ?? null };
-    case 'editor':
-      return entry.mode === undefined
+    case 'editor': {
+      const mode = modeOf(entry, EDITOR_MODES, 'an editor');
+      return mode === undefined
         ? { type, path: entry.path ?? null }
-        : { type, path: entry.path ?? null, mode: entry.mode };
+        : { type, path: entry.path ?? null, mode };
+    }
     case 'web':
       if (entry.url === undefined) {
         throw new LayoutError(`pane "${entry.id}" is a web pane, so it needs a "url"`);
       }
       return { type, url: entry.url };
-    case 'chat':
-      return { type, agent: entry.agent ?? null, directory: entry.directory ?? null };
+    case 'chat': {
+      const mode = modeOf(entry, CHAT_MODES, 'a chat');
+      const chat = { type, agent: entry.agent ?? null, directory: entry.directory ?? null };
+      return mode === undefined ? chat : { ...chat, mode };
+    }
     case 'graph':
       return {
         type,
@@ -147,6 +152,25 @@ function contentOf(entry: PaneEntry): PaneContent {
         view: entry.view === undefined || entry.view === 'all' ? null : entry.view,
       };
   }
+}
+
+/** A pane's `mode`, checked against the modes its type has. */
+function modeOf<Mode extends string>(
+  entry: PaneEntry,
+  modes: readonly Mode[],
+  kind: string,
+): Mode | undefined {
+  if (entry.mode === undefined) {
+    return undefined;
+  }
+  const mode = modes.find((known) => known === entry.mode);
+  if (mode === undefined) {
+    const known = modes.map((each) => `"${each}"`).join(', ');
+    throw new LayoutError(
+      `pane "${entry.id}" has mode "${entry.mode}", and ${kind} pane takes one of ${known}`,
+    );
+  }
+  return mode;
 }
 
 function buildNode(entry: PaneEntry, byId: Map<string, PaneEntry>, path: Set<string>): PaneTree {

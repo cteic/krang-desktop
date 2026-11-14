@@ -1,14 +1,19 @@
-# Research: one question from a Discourse Graphs vault, read beside its graph.
+# Research: a lab notebook note, the graph made from it, and an agent that
+# makes the graph.
 #
-# Change the vault path below to your own vault. It appears in five places.
+# This layout uses a small demo vault at ~/discourse-demo. Create it first:
+#
+#   kd vault init ~/discourse-demo --example
+#
 # Then copy this file and board.toml to the app's layouts folder (see the
 # README) and open both as tabs of one window:
 #
 #   open "krang-desktop://layout/lab+board"
 #
+# Ask the chat pane: Use the discourse-graph skill on the lab notebook note.
+# The graph redraws within a few seconds of each new node or relation.
 # Double-click a node in the graph to open its note beside it. Select text in
-# a note and press Node to make a node of it. Ask the chat pane to add a note
-# or a relation, and the graph redraws within a few seconds.
+# a note and press Node to make a node of it.
 name = "lab"
 title = "Research"
 color = "green"
@@ -38,32 +43,33 @@ sizes = [2, 1]
 id = "files"
 type = "files"
 title = "Vault"
-directory = "~/src/obsidian-lab-example"
+directory = "~/discourse-demo"
 
 [[panes]]
 id = "shell"
 type = "terminal"
 title = "Shell"
-directory = "~/src/obsidian-lab-example"
+directory = "~/discourse-demo"
 
 [[panes]]
 id = "note"
 type = "editor"
-title = "Is citation count a confounded metric?"
-path = "~/src/obsidian-lab-example/DiscourseGraph/QUE - Is citation count a hopelessly confounded metric.md"
+title = "Lab notebook"
+path = "~/discourse-demo/Lab notebook - starter trial.md"
 mode = "preview"      # or "edit" or "split"
 
 [[panes]]
 id = "graph"
 type = "graph"
 title = "Discourse graph"
-directory = "~/src/obsidian-lab-example"
-view = "all"          # or a canvas file name, such as "Canvas - QUE - Matthew Effect"
+directory = "~/discourse-demo"
+view = "all"          # or a canvas file name
 is_focused = true
 
 [[panes]]
 id = "chat"
 type = "chat"
-title = "Ask about the vault"
+title = "Agent"
 agent = "claude"
-directory = "~/src/obsidian-lab-example"
+directory = "~/discourse-demo"
+mode = "edit"         # or "read-only", which is what a chat starts in

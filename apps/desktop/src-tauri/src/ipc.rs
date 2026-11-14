@@ -267,6 +267,19 @@ pub fn pane_env() -> Vec<(String, String)> {
     env
 }
 
+/// The directory that holds the pane tool. `None` before the socket is up,
+/// or when the tool could not be linked.
+pub fn tool_dir() -> Option<PathBuf> {
+    RUNNING
+        .get()
+        .and_then(|running| running.tool.as_ref())
+        .map(|tool| tool.dir.clone())
+}
+
+/// The variables that tell the tool how to reach the app and which pane is
+/// calling. A process that has them can drive the app's panes.
+pub const PANE_ONLY_ENV: [&str; 3] = [cli::SOCKET_ENV, cli::WINDOW_ENV, cli::PANE_ENV];
+
 /// For zsh, the settings that keep the tool on PATH whatever the person's
 /// startup files do to it. Other shells get the plain PATH entry only.
 fn zsh_wrapper_env(tool: &Tool) -> Vec<(String, String)> {
@@ -409,5 +422,6 @@ mod tests {
     #[test]
     fn nothing_is_added_to_a_pane_before_the_socket_is_up() {
         assert!(pane_env().is_empty());
+        assert_eq!(tool_dir(), None);
     }
 }

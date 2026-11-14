@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { type AgentEvent, oneLine, parseJsonLine } from './agent-event';
-import { CLAUDE_PERMISSION_MODES } from './modes';
+import { CLAUDE_ALLOWED_TOOLS, CLAUDE_PERMISSION_MODES } from './modes';
 import type { RunRequest } from './run-request';
 
 const typedSchema = z.object({ type: z.string() });
@@ -68,6 +68,12 @@ export function claudeArgs({ mode, sessionId }: RunRequest): string[] {
     '--permission-mode',
     CLAUDE_PERMISSION_MODES[mode],
   ];
+  const allowed = CLAUDE_ALLOWED_TOOLS[mode];
+  if (allowed.length > 0) {
+    // The flag takes every word up to the next flag, so it goes after the
+    // others and before `--resume`.
+    args.push('--allowedTools', ...allowed);
+  }
   if (sessionId !== null) {
     args.push('--resume', sessionId);
   }

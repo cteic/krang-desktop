@@ -234,10 +234,49 @@ describe('ChatPane', () => {
     expect(lastRun().args).not.toContain('plan');
   });
 
+  it('starts in the mode its content names, and follows a change from outside', () => {
+    const content: ChatContent = { type: 'chat', agent: 'claude', directory: '~/v', mode: 'edit' };
+    const { rerender } = renderPane({ content });
+    expect(screen.getByLabelText('Mode')).toHaveProperty('value', 'edit');
+    sendMessage('add a claim');
+    expect(lastRun().args).toContain('acceptEdits');
+    expect(lastRun().args).toContain('Bash(kd node:*)');
+
+    rerender({ content: { ...content, mode: 'read-only' } });
+    expect(screen.getByLabelText('Mode')).toHaveProperty('value', 'read-only');
+  });
+
+  it('keeps a chosen mode in the pane content, so it is restored with the window', () => {
+    const { actions } = renderPane();
+    fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'edit' } });
+    expect(actions.replaceContent).toHaveBeenCalledWith({
+      type: 'chat',
+      agent: null,
+      directory: '~/src/demo',
+      mode: 'edit',
+    });
+  });
+
+  it('keeps the mode when the agent changes', () => {
+    const { actions } = renderPane({
+      content: { type: 'chat', agent: 'claude', directory: '~/v', mode: 'edit' },
+    });
+    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'codex' } });
+    expect(actions.replaceContent).toHaveBeenCalledWith({
+      type: 'chat',
+      agent: 'codex',
+      directory: '~/v',
+      mode: 'edit',
+    });
+  });
+
   it('offers only the two safe modes', () => {
     renderPane();
     const options = Array.from(screen.getByLabelText('Mode').querySelectorAll('option'));
-    expect(options.map((option) => option.textContent)).toEqual(['Read only', 'Can edit files']);
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Read only',
+      'Edit files and graph',
+    ]);
     expect(screen.getByLabelText('Mode')).toHaveProperty('value', 'read-only');
   });
 
