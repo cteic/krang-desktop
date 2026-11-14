@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 
 import type { FilesContent } from '../../workspace/model';
 import { useDebugSnapshot } from '../debug-snapshot';
 import type { PaneProps } from '../pane-props';
 
+import { columnsFor, isNarrowHeader } from './columns';
+import type { Columns } from './columns';
 import { debugText } from './debug-text';
 import { DEFAULT_SORT, emptyMessage, nextSort, summaryText, visibleEntries } from './entries';
 import type { SortKey, SortState } from './entries';
@@ -68,6 +70,7 @@ interface EntryRowProps {
   id: string;
   entry: FileEntry;
   selected: boolean;
+  columns: Columns;
   onSelect: (entry: FileEntry) => void;
   onOpen: (entry: FileEntry) => void;
   onOpenWeb: (entry: FileEntry) => void;
@@ -79,6 +82,7 @@ function EntryRow({
   id,
   entry,
   selected,
+  columns,
   onSelect,
   onOpen,
   onOpenWeb,
@@ -112,8 +116,12 @@ function EntryRow({
       <th scope="row" className="files-name" title={entry.path}>
         {entry.name}
       </th>
-      <td className="files-size">{entry.isDir ? '' : formatSize(entry.size)}</td>
-      <td className="files-modified">{formatModified(entry.modifiedMs)}</td>
+      {columns.size ? (
+        <td className="files-size">{entry.isDir ? '' : formatSize(entry.size)}</td>
+      ) : null}
+      {columns.modified ? (
+        <td className="files-modified">{formatModified(entry.modifiedMs)}</td>
+      ) : null}
       <td className="files-actions">
         {entry.isDir ? (
           <button
@@ -171,6 +179,10 @@ export function FilesPane({ name, content, active, debug, actions }: PaneProps<F
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // The pane's width, which decides the columns. Null until it is measured.
+  const [width, setWidth] = useState<number | null>(null);
+
+  const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLTableElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const requestRef = useRef(0);
@@ -271,6 +283,30 @@ export function FilesPane({ name, content, active, debug, actions }: PaneProps<F
   }, [selectedId, selected?.path]);
 
   useDebugSnapshot(name, debug, () => debugText(currentPath, visible, failure?.message ?? null));
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (root === null) {
+      return;
+    }
+    function measure() {
+      if (root !== null) {
+        setWidth(root.clientWidth);
+      }
+    }
+    measure();
+    // Not every DOM has it: the one the tests run in does not.
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const columns = columnsFor(width);
 
   function showNotice(text: string) {
     if (noticeTimerRef.current !== null) {
@@ -418,7 +454,12 @@ export function FilesPane({ name, content, active, debug, actions }: PaneProps<F
   const status = notice ?? (loading ? 'Loading...' : summary);
 
   return (
-    <div className="files-pane" onKeyDown={handleKeyDown}>
+    <div
+      className="files-pane"
+      ref={rootRef}
+      data-narrow={isNarrowHeader(width) ? 'true' : undefined}
+      onKeyDown={handleKeyDown}
+    >
       <div className="files-header">
         <button
           type="button"
@@ -493,15 +534,19 @@ export function FilesPane({ name, content, active, debug, actions }: PaneProps<F
           <colgroup>
             <col className="files-col-kind" />
             <col />
-            <col className="files-col-size" />
-            <col className="files-col-modified" />
+            {columns.size ? <col className="files-col-size" /> : null}
+            {columns.modified ? <col className="files-col-modified" /> : null}
             <col className="files-col-actions" />
           </colgroup>
           <thead>
             <tr>
               <SortHeader label="Name" sortKey="name" sort={sort} colSpan={2} onSort={handleSort} />
-              <SortHeader label="Size" sortKey="size" sort={sort} onSort={handleSort} />
-              <SortHeader label="Modified" sortKey="modified" sort={sort} onSort={handleSort} />
+              {columns.size ? (
+                <SortHeader label="Size" sortKey="size" sort={sort} onSort={handleSort} />
+              ) : null}
+              {columns.modified ? (
+                <SortHeader label="Modified" sortKey="modified" sort={sort} onSort={handleSort} />
+              ) : null}
               <th scope="col">
                 <span className="files-hidden-text">Actions</span>
               </th>
@@ -514,6 +559,7 @@ export function FilesPane({ name, content, active, debug, actions }: PaneProps<F
                 id={`${rowIdBase}-${String(index)}`}
                 entry={entry}
                 selected={index === selectedIndex}
+                columns={columns}
                 onSelect={selectEntry}
                 onOpen={openEntry}
                 onOpenWeb={openInWeb}

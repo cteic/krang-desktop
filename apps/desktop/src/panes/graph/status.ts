@@ -28,7 +28,14 @@ export function statusText({ graph, loading, stale }: StatusInput): string {
   if (graph.incomplete && graph.warnings.length > 0) {
     return graph.warnings.join('. ');
   }
-  return loading ? 'Loading...' : 'Double-click a node, or press Enter, to open its note.';
+  if (loading) {
+    return 'Loading...';
+  }
+  // With nothing drawn there is no node to open, so no hint about opening one.
+  if (graph.nodes.length === 0 && graph.canvases.length === 0) {
+    return '';
+  }
+  return 'Double-click a node, or press Enter, to open its note.';
 }
 
 /** The counts shown in the toolbar. */

@@ -247,3 +247,39 @@
   padding: 3px 10px;
   border: 1px solid var(--line);
 }
+
+/* The answer the question is asking for stands out from the way round it. */
+.chat-trust-yes[data-primary='true'] {
+  font-weight: 600;
+  color: #1a1300;
+  background: #e0b956;
+  border-color: #e0b956;
+}
+
+.chat-trust-yes[data-primary='true']:hover {
+  background: #edc96b;
+}
+
+.chat-trust-yes:focus-visible,
+.chat-trust-no:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.chat-trust-no {
+  color: var(--muted);
+}
+
+/* While the trust question is open, the composer is plainly on hold. */
+.chat-composer[data-waiting='trust'] .chat-input {
+  border-style: dashed;
+}
+
+.chat-composer[data-waiting='trust'] .chat-input::placeholder {
+  color: #e0b956;
+}
+
+.chat-composer[data-waiting='trust'] .chat-send {
+  color: var(--muted);
+  border-style: dashed;
+}

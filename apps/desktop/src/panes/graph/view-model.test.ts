@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { GRAPH, OVERVIEW, VAULT } from './fixtures';
-import type { VaultGraph } from './vault-graph';
+import { curveHitsRect, rectsOverlap } from './geometry';
+import type { Rect } from './geometry';
+import { layoutGraph } from './layout';
+import type { Canvas, VaultGraph } from './vault-graph';
 import {
   ALL_VIEW,
   buildView,
+  canvasTextFloor,
   defaultPageId,
   drawablePages,
+  fitCap,
   legendOf,
   layoutInput,
   resolveViewKey,
@@ -196,7 +201,12 @@ describe('the all nodes view', () => {
       '000002',
       '000001',
     ]);
-    expect(layoutInput(GRAPH).edges[0]).toEqual({ source: 'id-c1', target: 'id-q' });
+    // Each relation says how wide its label is, so the layout can leave room for it.
+    expect(layoutInput(GRAPH).edges[0]).toEqual({
+      source: 'id-c1',
+      target: 'id-q',
+      labelWidth: edgeOf(view, 'r1').labelBox.w,
+    });
   });
 
   it('draws the relations from the relations file, labelled and coloured by type', () => {
@@ -290,6 +300,252 @@ describe('the all nodes view', () => {
   });
 });
 
+describe('lines and labels among the boxes of the all nodes view', () => {
+  const BOX = { w: 176, h: 60 };
+
+  function pillOf(edge: ViewEdge): Rect {
+    return {
+      x: edge.shape.label.x - edge.labelBox.w / 2,
+      y: edge.shape.label.y - edge.labelBox.h / 2,
+      w: edge.labelBox.w,
+      h: edge.labelBox.h,
+    };
+  }
+
+  /** The question, one claim and the evidence in a row, the rest out of the way. */
+  function row(middle: { x: number; y: number }): Map<string, Rect> {
+    const placed = new Map(
+      GRAPH.nodes.map((node, index) => [node.id, { x: 5000, y: index * 200, ...BOX }]),
+    );
+    placed.set('id-c1', { x: 0, y: 0, ...BOX });
+    placed.set('id-c2', { ...middle, ...BOX });
+    placed.set('id-q', { x: 700, y: 0, ...BOX });
+    return placed;
+  }
+
+  it('puts every label clear of every box in a graph it laid out itself', () => {
+    // Eight nodes, each claim tied to the question and to its neighbours.
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const links: [string, string][] = [
+      ['b', 'a'],
+      ['c', 'a'],
+      ['d', 'a'],
+      ['e', 'b'],
+      ['f', 'b'],
+      ['g', 'c'],
+      ['h', 'd'],
+      ['e', 'd'],
+      ['f', 'c'],
+      ['g', 'h'],
+      ['h', 'b'],
+    ];
+    const graph: VaultGraph = {
+      ...GRAPH,
+      nodes: ids.map((id) => ({
+        id,
+        typeId: 'node_c',
+        title: `CLM - Claim ${id}`,
+        path: `${VAULT}/CLM - Claim ${id}.md`,
+      })),
+      relations: links.map(([source, destination], index) => ({
+        id: `l${String(index)}`,
+        typeId: index % 2 === 0 ? 'rel_s' : 'relation_o',
+        source,
+        destination,
+        ambiguous: false,
+        tentative: null,
+      })),
+      canvases: [],
+    };
+    const input = layoutInput(graph);
+    const built = buildView(graph, ALL_VIEW, null, layoutGraph(input.nodes, input.edges));
+    expect(built.edges.length).toBe(links.length);
+    for (const edge of built.edges) {
+      expect(edge.labelFits, edge.id).toBe(true);
+      for (const node of built.nodes) {
+        expect(rectsOverlap(pillOf(edge), node.rect), `${edge.id} on ${node.id}`).toBe(false);
+      }
+      // No line runs under a box that is not at one of its ends.
+      for (const node of built.nodes) {
+        const { curve } = edge.shape;
+        if (curve !== null && node.id !== edge.source && node.id !== edge.target) {
+          expect(curveHitsRect(curve, node.rect), `${edge.id} under ${node.id}`).toBe(false);
+        }
+      }
+    }
+    // And no label lies on another.
+    built.edges.forEach((edge, index) => {
+      for (const other of built.edges.slice(index + 1)) {
+        expect(rectsOverlap(pillOf(edge), pillOf(other)), `${edge.id} on ${other.id}`).toBe(false);
+      }
+    });
+  });
+
+  it('puts a label in the middle of the open part of its line when that is clear', () => {
+    const edge = edgeOf(buildView(GRAPH, ALL_VIEW, null, row({ x: 5000, y: 3000 })), 'r1');
+    expect(edge.labelFits).toBe(true);
+    // From the right edge of one box, at 176, to the left edge of the other, at 700.
+    expect(edge.shape.label.x).toBeCloseTo((176 + 700) / 2, 5);
+    expect(edge.shape.label.y).toBeCloseTo(30, 5);
+  });
+
+  it('moves a label along its line, off a box that sits by the middle', () => {
+    // A box just above the middle of the line: the line passes, the label would not.
+    const placed = row({ x: 350, y: -37 });
+    const edge = edgeOf(buildView(GRAPH, ALL_VIEW, null, placed), 'r1');
+    expect(edge.shape.path.includes('Q')).toBe(false);
+    expect(edge.labelFits).toBe(true);
+    expect(Math.abs(edge.shape.label.x - 438)).toBeGreaterThan(40);
+    for (const rect of placed.values()) {
+      expect(rectsOverlap(pillOf(edge), rect)).toBe(false);
+    }
+  });
+
+  it('bows a line around a box that is in its way', () => {
+    const placed = row({ x: 350, y: 0 });
+    const edge = edgeOf(buildView(GRAPH, ALL_VIEW, null, placed), 'r1');
+    expect(edge.shape.path.includes('Q')).toBe(true);
+    const { curve } = edge.shape;
+    const blocker = placed.get('id-c2');
+    expect(curve !== null && blocker !== undefined && curveHitsRect(curve, blocker)).toBe(false);
+    // Its label goes with it, clear of the box.
+    expect(edge.labelFits).toBe(true);
+    expect(blocker !== undefined && rectsOverlap(pillOf(edge), blocker)).toBe(false);
+  });
+
+  it('keeps a label back when no place along its line is clear', () => {
+    const placed = row({ x: 5000, y: 3000 });
+    placed.set('id-q', { x: 200, y: 0, ...BOX });
+    const edge = edgeOf(buildView(GRAPH, ALL_VIEW, null, placed), 'r1');
+    expect(edge.labelFits).toBe(false);
+    // It still has a place, for when one of its boxes is selected.
+    expect(edge.shape.label.x).toBeCloseTo(188, 5);
+  });
+
+  it('fits a few nodes larger than full size, but keeps their titles to about 18 px', () => {
+    const all = buildView(GRAPH, ALL_VIEW);
+    const cap = fitCap(all);
+    expect(cap).toBeGreaterThan(1.25);
+    expect(nodeOf(all, 'id-q').fontSize * cap).toBeLessThanOrEqual(18.001);
+    expect(fitCap(buildView(GRAPH, 'Overview'))).toBe(1.25);
+  });
+});
+
+describe('the text of a canvas box', () => {
+  const LONG = 'CLM - Status amplification explains most early citations of famous authors';
+
+  function canvasWith(size: string, box: { w: number; h: number }): VaultGraph {
+    return {
+      ...GRAPH,
+      canvases: [
+        {
+          ...OVERVIEW,
+          nodes: [
+            {
+              id: 'shape:long',
+              pageId: 'page:main',
+              x: 0,
+              y: 0,
+              ...box,
+              size,
+              title: LONG,
+              typeId: 'node_c',
+              path: null,
+            },
+          ],
+          relations: [],
+        },
+      ],
+    };
+  }
+
+  it('shrinks to fit its box, but not below what reads with the canvas fitted', () => {
+    const graph = canvasWith('m', { w: 200, h: 100 });
+    // Fitted at about a third of full size, 5 px on screen is about 15 in the canvas.
+    const floor = canvasTextFloor(0.35);
+    expect(floor * 0.35).toBeGreaterThanOrEqual(5);
+    expect(floor * 0.35).toBeLessThan(6);
+    const node = nodeOf(buildView(graph, 'Overview', null, null, floor), 'shape:long');
+    expect(node.fontSize).toBe(floor);
+    // What does not fit at that size is cut short, never dropped.
+    expect(node.lines.length).toBeGreaterThan(1);
+    expect(node.lines.at(-1)?.endsWith('…')).toBe(true);
+    expect(node.lines.length * node.fontSize * 1.2).toBeLessThanOrEqual(100);
+    expect(node.chip).toBe('CLM');
+  });
+
+  it('keeps the saved size when the title fits at it', () => {
+    const graph = canvasWith('s', { w: 400, h: 121 });
+    const node = nodeOf(
+      buildView(graph, 'Overview', null, null, canvasTextFloor(0.35)),
+      'shape:long',
+    );
+    expect(node.fontSize).toBe(16);
+    expect(node.lines.at(-1)?.endsWith('…')).toBe(false);
+  });
+
+  it('never grows text past the size the canvas saved', () => {
+    // Fitted very small, the floor is above the saved size. The saved size stays.
+    const graph = canvasWith('s', { w: 120, h: 60 });
+    const node = nodeOf(
+      buildView(graph, 'Overview', null, null, canvasTextFloor(0.1)),
+      'shape:long',
+    );
+    expect(node.fontSize).toBe(16);
+    expect(node.lines.at(-1)?.endsWith('…')).toBe(true);
+  });
+
+  it('moves its floor in steps, so a small change of zoom wraps nothing again', () => {
+    expect(canvasTextFloor(0.35)).toBe(canvasTextFloor(0.36));
+    expect(canvasTextFloor(0.2)).toBeGreaterThan(canvasTextFloor(0.4));
+    expect(canvasTextFloor(0)).toBe(9);
+  });
+});
+
+describe('loose text on a canvas', () => {
+  function withText(text: Partial<Canvas['texts'][number]>): GraphView {
+    const canvas: Canvas = {
+      ...OVERVIEW,
+      texts: [
+        {
+          id: 'shape:t',
+          pageId: 'page:main',
+          x: -1164,
+          y: 427,
+          w: 260,
+          size: 'xl',
+          scale: 1.3,
+          text: 'Untested claims!!',
+          ...text,
+        },
+      ],
+    };
+    return buildView({ ...GRAPH, canvases: [canvas] }, 'Overview', 'page:main');
+  }
+
+  it('wraps at the width the canvas saved, measured before the text is scaled', () => {
+    const [text] = withText({}).texts;
+    // At 44 units a line of 260 holds about nine letters, so the two words part.
+    expect(text?.lines).toEqual(['Untested', 'claims!!']);
+    expect(text?.fontSize).toBeCloseTo(44 * 1.3, 5);
+    // The room it takes is the saved width, scaled: it stops short of a box at -786.
+    expect(text?.w).toBeCloseTo(338, 5);
+    expect((text?.x ?? 0) + (text?.w ?? 0)).toBeLessThan(-786);
+    expect(text?.h).toBeCloseTo(2 * 44 * 1.3 * 1.35, 5);
+  });
+
+  it('leaves text that sets its own width on the lines it was written on', () => {
+    const [text] = withText({ w: 0, text: 'Untested claims!!\nsecond line' }).texts;
+    expect(text?.lines).toEqual(['Untested claims!!', 'second line']);
+    expect(text?.w).toBeGreaterThan(400);
+  });
+
+  it('keeps an empty line between two paragraphs', () => {
+    const [text] = withText({ w: 600, text: 'one\n\ntwo' }).texts;
+    expect(text?.lines).toEqual(['one', '', 'two']);
+  });
+});
+
 describe('a canvas view', () => {
   it('opens on the first page that has boxes, not the first page', () => {
     expect(drawablePages(OVERVIEW).map((page) => page.name)).toEqual(['Notes', 'Main', 'Detail']);
@@ -379,7 +635,15 @@ describe('a canvas view', () => {
     const notes = buildView(GRAPH, 'Overview', 'page:notes');
     expect(notes.nodes).toEqual([]);
     expect(notes.texts).toEqual([
-      { id: 'shape:t', x: -100, y: -200, fontSize: 66, lines: ['Untested', 'claims'] },
+      {
+        id: 'shape:t',
+        x: -100,
+        y: -200,
+        w: 390,
+        h: 2 * 66 * 1.35,
+        fontSize: 66,
+        lines: ['Untested', 'claims'],
+      },
     ]);
   });
 
@@ -455,7 +719,8 @@ describe('viewBounds', () => {
     const bounds = viewBounds(notes);
     expect(bounds?.x).toBe(-100);
     expect(bounds?.y).toBe(-200);
-    expect(bounds?.h).toBeCloseTo(165, 5);
+    expect(bounds?.h).toBeCloseTo(178.2, 5);
+    expect(bounds?.w).toBe(390);
     expect(bounds?.w).toBeGreaterThan(200);
     expect(viewBounds(buildView(GRAPH, 'Overview'))).toEqual({ x: 0, y: 0, w: 800, h: 400 });
   });

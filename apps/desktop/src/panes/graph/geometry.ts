@@ -25,6 +25,13 @@ export interface Transform {
   k: number;
 }
 
+/** A line from `start` to `end` that bows towards `control`. */
+export interface Curve {
+  start: Point;
+  control: Point;
+  end: Point;
+}
+
 export interface EdgeShape {
   /** The SVG path of the line, from the source box to the base of the arrowhead. */
   path: string;
@@ -34,6 +41,11 @@ export interface EdgeShape {
   label: Point;
   /** How far the line runs in the open, from one box's edge to the other's. */
   span: Size;
+  /**
+   * The line in the open, from the source box's edge to the target box's.
+   * Null for a relation from a box to itself.
+   */
+  curve: Curve | null;
 }
 
 export const IDENTITY: Transform = { x: 0, y: 0, k: 1 };
@@ -84,6 +96,40 @@ export function clipToRect(rect: Rect, target: Point): Point {
   return { x: center.x + dx * scale, y: center.y + dy * scale };
 }
 
+/**
+ * True when the straight line between two points touches a box. The line
+ * is cut down to the part inside the box's left and right sides, then its
+ * top and bottom: if anything is left, it touches.
+ */
+export function segmentHitsRect(from: Point, to: Point, rect: Rect): boolean {
+  let enter = 0;
+  let leave = 1;
+  const spans: [number, number, number][] = [
+    [to.x - from.x, rect.x - from.x, rect.x + rect.w - from.x],
+    [to.y - from.y, rect.y - from.y, rect.y + rect.h - from.y],
+  ];
+  for (const [run, low, high] of spans) {
+    if (run === 0) {
+      if (low > 0 || high < 0) {
+        return false;
+      }
+      continue;
+    }
+    const first = low / run;
+    const second = high / run;
+    enter = Math.max(enter, Math.min(first, second));
+    leave = Math.min(leave, Math.max(first, second));
+    if (enter > leave) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
 function round(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
@@ -113,6 +159,7 @@ function loopShape(rect: Rect): EdgeShape {
     head: head.points,
     label: { x: (start.x + tip.x) / 2, y: rect.y - LOOP_REACH * 0.75 },
     span: { w: tip.x - start.x, h: LOOP_REACH },
+    curve: null,
   };
 }
 
@@ -152,7 +199,34 @@ export function edgeShape(source: Rect, target: Rect, bend = 0): EdgeShape {
       y: 0.25 * start.y + 0.5 * control.y + 0.25 * tip.y,
     },
     span: { w: Math.abs(tip.x - start.x), h: Math.abs(tip.y - start.y) },
+    curve: { start, control, end: tip },
   };
+}
+
+/** The point a share `t` of the way along a curve: 0 is its start, 1 its end. */
+export function curvePoint(curve: Curve, t: number): Point {
+  const a = (1 - t) * (1 - t);
+  const b = 2 * (1 - t) * t;
+  const c = t * t;
+  return {
+    x: a * curve.start.x + b * curve.control.x + c * curve.end.x,
+    y: a * curve.start.y + b * curve.control.y + c * curve.end.y,
+  };
+}
+
+const CURVE_STEPS = 12;
+
+/** True when a curve touches a box. The curve is walked in short straight steps. */
+export function curveHitsRect(curve: Curve, rect: Rect): boolean {
+  let from = curve.start;
+  for (let step = 1; step <= CURVE_STEPS; step += 1) {
+    const to = curvePoint(curve, step / CURVE_STEPS);
+    if (segmentHitsRect(from, to, rect)) {
+      return true;
+    }
+    from = to;
+  }
+  return false;
 }
 
 function clamp(value: number, low: number, high: number): number {

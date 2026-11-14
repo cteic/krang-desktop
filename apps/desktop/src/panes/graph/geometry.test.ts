@@ -4,13 +4,17 @@ import {
   boundsOf,
   centerOn,
   clipToRect,
+  curveHitsRect,
+  curvePoint,
   edgeShape,
   fitTransform,
   IDENTITY,
   MAX_ZOOM,
   MIN_ZOOM,
   panBy,
+  rectsOverlap,
   revealRect,
+  segmentHitsRect,
   zoomAt,
 } from './geometry';
 import type { Rect } from './geometry';
@@ -164,5 +168,57 @@ describe('panBy and revealRect', () => {
   it('does nothing in a pane with no size', () => {
     const view = { x: 0, y: 0, k: 1 };
     expect(revealRect(view, { x: 5000, y: 0, w: 1, h: 1 }, { w: 0, h: 0 })).toBe(view);
+  });
+});
+
+describe('segmentHitsRect', () => {
+  const box: Rect = { x: 100, y: 100, w: 100, h: 40 };
+
+  it('is true for a line through a box, into it, or inside it', () => {
+    expect(segmentHitsRect({ x: 0, y: 120 }, { x: 300, y: 120 }, box)).toBe(true);
+    expect(segmentHitsRect({ x: 150, y: 0 }, { x: 150, y: 110 }, box)).toBe(true);
+    expect(segmentHitsRect({ x: 120, y: 110 }, { x: 130, y: 120 }, box)).toBe(true);
+    // Corner to corner, across the diagonal.
+    expect(segmentHitsRect({ x: 90, y: 90 }, { x: 210, y: 150 }, box)).toBe(true);
+  });
+
+  it('is false for a line that passes by or stops short', () => {
+    expect(segmentHitsRect({ x: 0, y: 90 }, { x: 300, y: 90 }, box)).toBe(false);
+    expect(segmentHitsRect({ x: 0, y: 120 }, { x: 90, y: 120 }, box)).toBe(false);
+    expect(segmentHitsRect({ x: 90, y: 0 }, { x: 90, y: 300 }, box)).toBe(false);
+    // Past a corner, close but clear.
+    expect(segmentHitsRect({ x: 60, y: 100 }, { x: 100, y: 60 }, box)).toBe(false);
+  });
+});
+
+describe('rectsOverlap', () => {
+  it('is true only when two boxes share some area', () => {
+    expect(rectsOverlap(LEFT, { x: 90, y: 30, w: 50, h: 50 })).toBe(true);
+    expect(rectsOverlap(LEFT, { x: 100, y: 0, w: 50, h: 40 })).toBe(false);
+    expect(rectsOverlap(LEFT, RIGHT)).toBe(false);
+  });
+});
+
+describe('the open part of a line', () => {
+  it('runs from the edge of one box to the edge of the other', () => {
+    const { curve } = edgeShape(LEFT, RIGHT);
+    expect(curve?.start).toEqual({ x: 100, y: 20 });
+    expect(curve?.end).toEqual({ x: 300, y: 20 });
+    expect(curve === null ? null : curvePoint(curve, 0.5)).toEqual(edgeShape(LEFT, RIGHT).label);
+    expect(curve === null ? null : curvePoint(curve, 0)).toEqual({ x: 100, y: 20 });
+    expect(curve === null ? null : curvePoint(curve, 1)).toEqual({ x: 300, y: 20 });
+  });
+
+  it('knows when it touches a box, bowed or straight', () => {
+    const between: Rect = { x: 180, y: 0, w: 40, h: 40 };
+    const straight = edgeShape(LEFT, RIGHT).curve;
+    const bowed = edgeShape(LEFT, RIGHT, 120).curve;
+    expect(straight !== null && curveHitsRect(straight, between)).toBe(true);
+    // Bowed by 120, the middle of the line is 60 off the straight one.
+    expect(bowed !== null && curveHitsRect(bowed, between)).toBe(false);
+  });
+
+  it('has none for a relation from a box to itself', () => {
+    expect(edgeShape(LEFT, LEFT).curve).toBeNull();
   });
 });

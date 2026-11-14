@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, State, WebviewWindow};
@@ -97,11 +97,25 @@ pub fn expand_home(path: &str, home: Option<&str>) -> String {
     }
 }
 
+fn debug_dir_from(value: Option<String>) -> Option<PathBuf> {
+    value.filter(|dir| !dir.is_empty()).map(PathBuf::from)
+}
+
 pub fn debug_dir() -> Option<PathBuf> {
-    std::env::var(DEBUG_DIR_ENV)
-        .ok()
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
+    debug_dir_from(std::env::var(DEBUG_DIR_ENV).ok())
+}
+
+/// Whether the app may come to the front or take the keyboard, given the
+/// debug directory. A run with one set is an automated run: it must leave
+/// the keyboard with whatever the person at the machine is typing into.
+pub fn may_take_focus_given(debug: Option<&Path>) -> bool {
+    debug.is_none()
+}
+
+/// Every place that could bring the app to the front, or give one of its
+/// windows the keyboard, asks this first.
+pub fn may_take_focus() -> bool {
+    may_take_focus_given(debug_dir().as_deref())
 }
 
 /// Tells a window what to show. Rust only reads the file. Parsing and every
@@ -253,6 +267,24 @@ mod tests {
             Some(last.as_str())
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_run_with_a_debug_directory_never_takes_focus() {
+        assert!(may_take_focus_given(None));
+        assert!(!may_take_focus_given(Some(Path::new("/tmp/debug"))));
+    }
+
+    #[test]
+    fn an_empty_debug_directory_is_a_normal_run() {
+        assert_eq!(debug_dir_from(None), None);
+        assert_eq!(debug_dir_from(Some(String::new())), None);
+        assert!(may_take_focus_given(
+            debug_dir_from(Some(String::new())).as_deref()
+        ));
+        let set = debug_dir_from(Some(String::from("/tmp/debug")));
+        assert_eq!(set, Some(PathBuf::from("/tmp/debug")));
+        assert!(!may_take_focus_given(set.as_deref()));
     }
 
     #[test]

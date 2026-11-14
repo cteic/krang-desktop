@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { invoke } from '@tauri-apps/api/core';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { FilesContent } from '../../workspace/model';
@@ -626,5 +626,86 @@ describe('FilesPane', () => {
       },
       { timeout: 3000 },
     );
+  });
+});
+
+describe('FilesPane in a narrow pane', () => {
+  let paneWidth = 0;
+  let resized: (() => void)[] = [];
+
+  class FakeResizeObserver {
+    private readonly notify: () => void;
+
+    constructor(callback: () => void) {
+      this.notify = callback;
+    }
+
+    observe() {
+      resized.push(this.notify);
+    }
+
+    disconnect() {
+      resized = resized.filter((item) => item !== this.notify);
+    }
+  }
+
+  function resizeTo(width: number) {
+    paneWidth = width;
+    act(() => {
+      for (const notify of resized) {
+        notify();
+      }
+    });
+  }
+
+  function headers(): string[] {
+    return screen.getAllByRole('columnheader').map((cell) => cell.textContent.trim());
+  }
+
+  beforeEach(() => {
+    resized = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => paneWidth);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the names and drops the date first, then the size', async () => {
+    paneWidth = 600;
+    renderPane('/home/pete');
+    await findListing('/home/pete');
+    expect(headers()).toEqual(['Name▲', 'Size', 'Modified', 'Actions']);
+    expect(within(rowFor('index.html')).getByText('2026-01-05 09:07')).toBeDefined();
+
+    // About the width of a files pane in a three-column layout.
+    resizeTo(270);
+    expect(headers()).toEqual(['Name▲', 'Size', 'Actions']);
+    expect(rowNames()).toContain('index.html');
+    expect(within(rowFor('index.html')).getByText('2.0K')).toBeDefined();
+    expect(within(rowFor('index.html')).queryByText('2026-01-05 09:07')).toBeNull();
+    // Every row has as many cells as there are columns left.
+    expect(rowFor('index.html').children.length).toBe(grid().querySelectorAll('col').length);
+
+    resizeTo(230);
+    expect(headers()).toEqual(['Name▲', 'Actions']);
+    expect(rowNames()).toContain('index.html');
+    expect(within(rowFor('index.html')).queryByText('2.0K')).toBeNull();
+    expect(rowFor('index.html').children.length).toBe(grid().querySelectorAll('col').length);
+
+    resizeTo(600);
+    expect(headers()).toEqual(['Name▲', 'Size', 'Modified', 'Actions']);
+  });
+
+  it('gives the filter a row of its own only when the pane is narrow', async () => {
+    paneWidth = 270;
+    renderPane('/home/pete');
+    await findListing('/home/pete');
+    const pane = grid().closest('.files-pane');
+    expect(pane?.getAttribute('data-narrow')).toBe('true');
+
+    resizeTo(500);
+    expect(pane?.getAttribute('data-narrow')).toBeNull();
   });
 });

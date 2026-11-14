@@ -47,7 +47,18 @@ pub fn run() {
         std::process::exit(code);
     }
 
-    let app = tauri::Builder::default()
+    // An automated run stays in the background from its first moment.
+    let quiet = !startup::may_take_focus();
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    if quiet {
+        // Without this the app puts itself in front as it finishes launching.
+        builder = builder.activate_ignoring_other_apps(false);
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut app = builder
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // A second launch lands here, in the first instance. A link in
             // its arguments is handled by the link handler below.
@@ -145,6 +156,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build the desktop shell");
 
+    #[cfg(target_os = "macos")]
+    if quiet {
+        // An accessory app has no Dock icon and is not made the front app
+        // by launching it.
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = quiet;
+
     app.run(|app, event| match event {
         // Closing the last window leaves the app running, as Mac apps do.
         RunEvent::ExitRequested { api, code, .. } => {
@@ -156,7 +176,7 @@ pub fn run() {
         RunEvent::Reopen {
             has_visible_windows: false,
             ..
-        } => open_or_log(app, Source::Default),
+        } if startup::may_take_focus() => open_or_log(app, Source::Default),
         _ => {}
     });
 }

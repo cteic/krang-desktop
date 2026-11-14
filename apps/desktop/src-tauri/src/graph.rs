@@ -206,6 +206,8 @@ pub struct CanvasText {
     page_id: String,
     x: f64,
     y: f64,
+    /// The width the text wraps at, before `scale`. Zero when the text
+    /// sets its own width and so wraps nowhere.
     w: f64,
     /// The canvas size step: `s`, `m`, `l` or `xl`.
     size: String,
@@ -831,12 +833,20 @@ fn canvas_text(record: &Value) -> Option<CanvasText> {
     if text.is_empty() {
         return None;
     }
+    // A text that sizes itself keeps a width too, but it is not one the
+    // drawing wraps at.
+    let fixed = props.get("autoSize").and_then(Value::as_bool) == Some(false);
+    let width = if fixed {
+        number_field(props, "w").unwrap_or(0.0)
+    } else {
+        0.0
+    };
     Some(CanvasText {
         id: string_field(record, "id")?,
         page_id: page_of(record)?,
         x: number_field(record, "x")?,
         y: number_field(record, "y")?,
-        w: number_field(props, "w").unwrap_or(0.0),
+        w: width,
         size: string_field(props, "size").unwrap_or_else(|| String::from("m")),
         scale: number_field(props, "scale").unwrap_or(1.0),
         text,
@@ -2017,7 +2027,7 @@ mod tests {
             {"typeName": "binding", "type": "arrow", "id": "binding:4",
              "fromId": "shape:plain", "toId": "shape:q", "props": {"terminal": "end"}},
             {"typeName": "shape", "type": "text", "id": "shape:t", "parentId": "page:one", "x": 5, "y": 6,
-             "props": {"w": 260, "size": "xl", "scale": 1.5, "richText": {"type": "doc", "content": [
+             "props": {"w": 260, "autoSize": false, "size": "xl", "scale": 1.5, "richText": {"type": "doc", "content": [
                  {"type": "paragraph", "content": [
                      {"type": "text", "marks": [{"type": "highlight"}], "text": "Untested"},
                      {"type": "text", "text": " claims"}
@@ -2026,7 +2036,7 @@ mod tests {
                  {"type": "paragraph", "content": [{"type": "text", "text": "second line"}]}
              ]}}},
             {"typeName": "shape", "type": "text", "id": "shape:older", "parentId": "page:two", "x": 1, "y": 1,
-             "props": {"text": "plain text, no size"}},
+             "props": {"text": "plain text, no size", "w": 90, "autoSize": true}},
             {"typeName": "shape", "type": "text", "id": "shape:blank", "parentId": "page:one", "x": 5, "y": 6,
              "props": {"richText": {"type": "doc", "content": [{"type": "paragraph"}]}}},
             {"typeName": "shape", "type": "image", "id": "shape:img", "parentId": "page:one", "x": 0, "y": 0},

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::links::{layout_name_from_url, layout_names_from_url, resolve_layout, MAX_LINK_LAYOUTS};
-use crate::startup::{debug_dir, expand_home, layout_paths_from};
+use crate::startup::{debug_dir, expand_home, layout_paths_from, may_take_focus};
 
 const LAYOUT_ENV: &str = "DESKTOP_LAYOUT";
 const LAYOUT_SUBDIR: &str = "layouts";
@@ -179,7 +179,7 @@ pub fn open_window(app: &AppHandle, source: Source) -> tauri::Result<()> {
         .min_inner_size(480.0, 320.0)
         // An automated run must not take the keyboard from whatever the
         // person at the machine is typing into.
-        .focused(debug_dir().is_none())
+        .focused(may_take_focus())
         .build();
     if let Err(error) = built {
         layouts.forget(&label);

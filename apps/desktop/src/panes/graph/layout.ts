@@ -1,4 +1,5 @@
-import type { Point, Rect } from './geometry';
+import { segmentHitsRect } from './geometry';
+import type { Point, Rect, Size } from './geometry';
 
 /**
  * Places the nodes of the "all nodes" view. The same notes and relations
@@ -27,6 +28,12 @@ export interface LayoutNode {
 export interface LayoutEdge {
   source: string;
   target: string;
+  /**
+   * How wide the relation's label is drawn. Two related boxes are kept
+   * far enough apart for it to sit between them. Left out, they are kept
+   * only the usual gap apart.
+   */
+  labelWidth?: number;
 }
 
 export interface LayoutOptions {
@@ -83,6 +90,7 @@ const RETRY_TOLERANCE = 0.14;
 const MIN_RETRY_ASPECT = 0.7;
 const GAP_X = 24;
 const GAP_Y = 24;
+const PLAIN_GAP: Size = { w: GAP_X, h: GAP_Y };
 const CLUSTER_GAP = 72;
 const SEPARATION_PASSES = 120;
 /**
@@ -99,6 +107,22 @@ const PACK_STEPS = 32;
 /** How far out from its neighbours a new node looks for a free place, in boxes. */
 const SEARCH_RINGS = 24;
 const CELL_OFFSET = 32768;
+/** The line kept in sight either side of a label, arrowhead included. */
+const LABEL_LEAD = 16;
+/** The gap between two related boxes one above the other: a label and the line around it. */
+const LINK_GAP_Y = 44;
+/**
+ * A cluster up to this size is small: it is given room to breathe, and its
+ * boxes are moved off the lines that are not theirs.
+ */
+const SMALL_LIMIT = 40;
+/** How much more room than its boxes need a cluster of a few nodes gets. */
+const SMALL_SLACK = 1.7;
+const UNTANGLE_ROUNDS = 40;
+/** How far a line stays from a box that is not at one of its ends. */
+const LINE_CLEARANCE = 10;
+/** How much a small cluster may grow, in area, to get its lines clear of its boxes. */
+const UNTANGLE_GROWTH = 1.8;
 
 function compareText(a: string, b: string): number {
   if (a === b) {
@@ -145,6 +169,39 @@ function clusters(ids: readonly string[], edges: readonly LayoutEdge[]): string[
     found.push(members.sort(compareText));
   }
   return found.sort((a, b) => b.length - a.length || compareText(a[0] ?? '', b[0] ?? ''));
+}
+
+/**
+ * The gaps to keep between the boxes of one cluster. Two boxes with a
+ * labelled relation between them need more than the usual gap.
+ */
+interface Gaps {
+  count: number;
+  /** The widest label between a pair of members, by `low * count + high`. */
+  labels: Map<number, number>;
+}
+
+function gapsOf(members: readonly string[], edges: readonly LayoutEdge[]): Gaps {
+  const indexOf = new Map(members.map((id, index) => [id, index]));
+  const labels = new Map<number, number>();
+  for (const edge of edges) {
+    const a = indexOf.get(edge.source);
+    const b = indexOf.get(edge.target);
+    if (a === undefined || b === undefined || a === b || edge.labelWidth === undefined) {
+      continue;
+    }
+    const key = Math.min(a, b) * members.length + Math.max(a, b);
+    labels.set(key, Math.max(labels.get(key) ?? 0, edge.labelWidth));
+  }
+  return { count: members.length, labels };
+}
+
+function gapBetween(gaps: Gaps, a: number, b: number): Size {
+  const label = gaps.labels.get(Math.min(a, b) * gaps.count + Math.max(a, b));
+  if (label === undefined || label <= 0) {
+    return PLAIN_GAP;
+  }
+  return { w: Math.max(GAP_X, label + LABEL_LEAD * 2), h: Math.max(GAP_Y, LINK_GAP_Y) };
 }
 
 function linksOf(members: readonly string[], edges: readonly LayoutEdge[]): [number, number][] {
@@ -357,11 +414,11 @@ function simulateNear(count: number, links: [number, number][]): Point[] {
  */
 function simulate(
   members: readonly string[],
-  edges: readonly LayoutEdge[],
+  links: [number, number][],
   options: LayoutOptions,
   aspect: number,
+  gaps: Gaps,
 ): Point[] {
-  const links = linksOf(members, edges);
   const points =
     members.length <= EXACT_LIMIT
       ? simulateExact(members.length, links)
@@ -380,8 +437,7 @@ function simulate(
   const high = Math.max(bottom - top, 1);
   // A cluster that came out taller than wide is laid on its side.
   const turn = high > wide;
-  const room =
-    members.length * (options.nodeWidth + GAP_X) * (options.nodeHeight + GAP_Y) * CLUSTER_SLACK;
+  const room = members.length * cellArea(members.length, options, gaps);
   const scaleX = Math.sqrt(room * aspect) / (turn ? high : wide);
   const scaleY = Math.sqrt(room / aspect) / (turn ? wide : high);
   return points.map((point) => ({
@@ -390,17 +446,36 @@ function simulate(
   }));
 }
 
+/**
+ * The room one node of a cluster is given, before its boxes are pushed
+ * apart. A small cluster gets more than its boxes need, and room for the
+ * labels on its relations, so its lines have somewhere to run.
+ */
+function cellArea(count: number, options: LayoutOptions, gaps: Gaps): number {
+  if (count > SMALL_LIMIT || gaps.labels.size === 0) {
+    return (options.nodeWidth + GAP_X) * (options.nodeHeight + GAP_Y) * CLUSTER_SLACK;
+  }
+  let widest = 0;
+  for (const label of gaps.labels.values()) {
+    widest = Math.max(widest, label);
+  }
+  const gapX = Math.max(GAP_X, widest + LABEL_LEAD * 2);
+  // The extra room tails off as the cluster grows, down to none at the limit.
+  const slack = 1 + (SMALL_SLACK - 1) * Math.min(1, (SMALL_LIMIT - count) / (SMALL_LIMIT / 2));
+  return (options.nodeWidth + gapX) * (options.nodeHeight + LINK_GAP_Y) * slack;
+}
+
 /** Moves two boxes apart if they are closer than the gaps allow. True when it did. */
-function part(ra: Rect, rb: Rect): boolean {
+function part(ra: Rect, rb: Rect, gap: Size): boolean {
   const dx = rb.x + rb.w / 2 - (ra.x + ra.w / 2);
   const dy = rb.y + rb.h / 2 - (ra.y + ra.h / 2);
-  const overlapX = (ra.w + rb.w) / 2 + GAP_X - Math.abs(dx);
-  const overlapY = (ra.h + rb.h) / 2 + GAP_Y - Math.abs(dy);
+  const overlapX = (ra.w + rb.w) / 2 + gap.w - Math.abs(dx);
+  const overlapY = (ra.h + rb.h) / 2 + gap.h - Math.abs(dy);
   if (overlapX <= 0 || overlapY <= 0) {
     return false;
   }
   // Measured in boxes, so a wide box is as ready to move sideways as up or down.
-  if (overlapX / (ra.w + GAP_X) < overlapY / (ra.h + GAP_Y)) {
+  if (overlapX / (ra.w + gap.w) < overlapY / (ra.h + gap.h)) {
     const shift = (overlapX / 2 + 0.5) * (dx < 0 ? -1 : 1);
     ra.x -= shift;
     rb.x += shift;
@@ -413,14 +488,14 @@ function part(ra: Rect, rb: Rect): boolean {
 }
 
 /** Pushes overlapping boxes apart until none touch, or the passes run out. */
-function separate(rects: Rect[]): void {
+function separate(rects: Rect[], gaps: Gaps): void {
   for (let pass = 0; pass < SEPARATION_PASSES; pass += 1) {
     let moved = false;
     for (let a = 0; a < rects.length; a += 1) {
       for (let b = a + 1; b < rects.length; b += 1) {
         const ra = rects[a];
         const rb = rects[b];
-        if (ra !== undefined && rb !== undefined && part(ra, rb)) {
+        if (ra !== undefined && rb !== undefined && part(ra, rb, gapBetween(gaps, a, b))) {
           moved = true;
         }
       }
@@ -429,6 +504,108 @@ function separate(rects: Rect[]): void {
       return;
     }
   }
+}
+
+function middleOf(rect: Rect): Point {
+  return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+}
+
+function grown(rect: Rect, by: number): Rect {
+  return { x: rect.x - by, y: rect.y - by, w: rect.w + by * 2, h: rect.h + by * 2 };
+}
+
+/** A line of a cluster and a box it runs under that is at neither of its ends. */
+interface Crossing {
+  from: number;
+  to: number;
+  under: number;
+}
+
+function crossingsOf(rects: readonly Rect[], links: readonly [number, number][]): Crossing[] {
+  const found: Crossing[] = [];
+  for (const [from, to] of links) {
+    const ra = rects[from];
+    const rb = rects[to];
+    if (ra === undefined || rb === undefined) {
+      continue;
+    }
+    const start = middleOf(ra);
+    const end = middleOf(rb);
+    rects.forEach((rect, under) => {
+      if (
+        under !== from &&
+        under !== to &&
+        segmentHitsRect(start, end, grown(rect, LINE_CLEARANCE / 2))
+      ) {
+        found.push({ from, to, under });
+      }
+    });
+  }
+  return found;
+}
+
+function areaOf(rects: readonly Rect[]): number {
+  const bounds = boundsOfAll(rects);
+  return bounds.w * bounds.h;
+}
+
+/**
+ * Moves the boxes of a small cluster off the lines that are not theirs. A
+ * box under a line is pushed sideways off it, the line's own boxes a
+ * little the other way, and the boxes are parted again. The picture with
+ * the fewest boxes under lines is kept, and it may not grow past a limit:
+ * a cluster with too many relations to untangle stays compact.
+ */
+function untangle(rects: Rect[], links: readonly [number, number][], gaps: Gaps): Rect[] {
+  let best = rects.map((rect) => ({ ...rect }));
+  let fewest = crossingsOf(rects, links).length;
+  if (fewest === 0) {
+    return best;
+  }
+  const limit = areaOf(rects) * UNTANGLE_GROWTH;
+  const work = rects.map((rect) => ({ ...rect }));
+  for (let round = 0; round < UNTANGLE_ROUNDS && fewest > 0; round += 1) {
+    for (const { from, to, under } of crossingsOf(work, links)) {
+      const ra = work[from];
+      const rb = work[to];
+      const rc = work[under];
+      if (ra === undefined || rb === undefined || rc === undefined) {
+        continue;
+      }
+      const start = middleOf(ra);
+      const end = middleOf(rb);
+      const length = Math.hypot(end.x - start.x, end.y - start.y) || 1;
+      // The unit vector across the line.
+      const nx = -(end.y - start.y) / length;
+      const ny = (end.x - start.x) / length;
+      const middle = middleOf(rc);
+      const off = (middle.x - start.x) * nx + (middle.y - start.y) * ny;
+      // How far from the line the box's middle must be for the box to clear it.
+      const reach = (Math.abs(nx) * rc.w) / 2 + (Math.abs(ny) * rc.h) / 2 + LINE_CLEARANCE;
+      const short = reach - Math.abs(off);
+      if (short <= 0) {
+        continue;
+      }
+      // A box dead on the line goes the same way every time.
+      let side = off < 0 ? -1 : 1;
+      if (off === 0) {
+        side = under % 2 === 0 ? 1 : -1;
+      }
+      rc.x += nx * side * short * 0.6;
+      rc.y += ny * side * short * 0.6;
+      ra.x -= nx * side * short * 0.2;
+      ra.y -= ny * side * short * 0.2;
+      rb.x -= nx * side * short * 0.2;
+      rb.y -= ny * side * short * 0.2;
+    }
+    separate(work, gaps);
+    const count = crossingsOf(work, links).length;
+    if (count < fewest && areaOf(work) <= limit) {
+      fewest = count;
+      best = work.map((rect) => ({ ...rect }));
+    }
+  }
+  return best;
 }
 
 /**
@@ -508,7 +685,9 @@ function clusterBlock(
   options: LayoutOptions,
   aspect: number,
 ): Block {
-  const points = simulate(members, edges, options, aspect);
+  const links = linksOf(members, edges);
+  const gaps = gapsOf(members, edges);
+  const points = simulate(members, links, options, aspect, gaps);
   if (members.length > EXACT_LIMIT) {
     return blockOf(members, snapToLattice(points, options));
   }
@@ -518,8 +697,11 @@ function clusterBlock(
     w: options.nodeWidth,
     h: options.nodeHeight,
   }));
-  separate(rects);
-  return blockOf(members, rects);
+  separate(rects, gaps);
+  if (members.length > SMALL_LIMIT) {
+    return blockOf(members, rects);
+  }
+  return blockOf(members, untangle(rects, links, gaps));
 }
 
 interface Packing {
@@ -799,6 +981,31 @@ class Occupied {
   }
 }
 
+/** A placed node that a new node relates to, and how wide the label between them is. */
+interface Anchor {
+  rect: Rect;
+  label: number;
+}
+
+interface Neighbour {
+  id: string;
+  label: number;
+}
+
+/**
+ * True when a new box would sit beside a box it relates to with too
+ * little room between them for the relation's label.
+ */
+function crowds(rect: Rect, anchor: Anchor): boolean {
+  if (anchor.label <= 0) {
+    return false;
+  }
+  const other = anchor.rect;
+  const gapX = Math.abs(other.x + other.w / 2 - (rect.x + rect.w / 2)) - (other.w + rect.w) / 2;
+  const gapY = Math.abs(other.y + other.h / 2 - (rect.y + rect.h / 2)) - (other.h + rect.h) / 2;
+  return gapX < anchor.label + LABEL_LEAD * 2 && gapY < GAP_Y;
+}
+
 /** The steps out from a point to try, nearest first, always in the same order. */
 function searchSteps(options: LayoutOptions): Point[] {
   const cellW = options.nodeWidth + GAP_X;
@@ -849,10 +1056,17 @@ function extend(previous: KeptLayout, input: Input, options: LayoutOptions): Kep
     return fresh(input, options);
   }
 
-  const neighbours = new Map<string, string[]>();
+  const neighbours = new Map<string, Neighbour[]>();
   for (const edge of input.real) {
-    neighbours.set(edge.source, [...(neighbours.get(edge.source) ?? []), edge.target]);
-    neighbours.set(edge.target, [...(neighbours.get(edge.target) ?? []), edge.source]);
+    const label = edge.labelWidth ?? 0;
+    neighbours.set(edge.source, [
+      ...(neighbours.get(edge.source) ?? []),
+      { id: edge.target, label },
+    ]);
+    neighbours.set(edge.target, [
+      ...(neighbours.get(edge.target) ?? []),
+      { id: edge.source, label },
+    ]);
   }
   const steps = searchSteps(options);
   let waiting = input.linkedIds.filter((id) => !placed.has(id));
@@ -862,16 +1076,16 @@ function extend(previous: KeptLayout, input: Input, options: LayoutOptions): Kep
     const later: string[] = [];
     for (const id of waiting) {
       const anchors = (neighbours.get(id) ?? []).flatMap((other) => {
-        const rect = placed.get(other);
-        return rect === undefined ? [] : [rect];
+        const rect = placed.get(other.id);
+        return rect === undefined ? [] : [{ rect, label: other.label }];
       });
       if (anchors.length === 0) {
         later.push(id);
         continue;
       }
       const middle = {
-        x: anchors.reduce((sum, rect) => sum + rect.x, 0) / anchors.length,
-        y: anchors.reduce((sum, rect) => sum + rect.y, 0) / anchors.length,
+        x: anchors.reduce((sum, anchor) => sum + anchor.rect.x, 0) / anchors.length,
+        y: anchors.reduce((sum, anchor) => sum + anchor.rect.y, 0) / anchors.length,
       };
       let spot: Rect | null = null;
       for (const offset of steps) {
@@ -881,7 +1095,7 @@ function extend(previous: KeptLayout, input: Input, options: LayoutOptions): Kep
           w: options.nodeWidth,
           h: options.nodeHeight,
         };
-        if (!occupied.blocks(rect)) {
+        if (!occupied.blocks(rect) && !anchors.some((anchor) => crowds(rect, anchor))) {
           spot = rect;
           break;
         }

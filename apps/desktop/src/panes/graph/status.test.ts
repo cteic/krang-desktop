@@ -18,6 +18,12 @@ describe('statusText', () => {
     );
   });
 
+  it('gives no hint about opening a node when there is none to open', () => {
+    const graph = { ...GRAPH, nodes: [], relations: [], canvases: [] };
+    expect(statusText({ graph, loading: false, stale: null })).toBe('');
+    expect(statusText({ graph, loading: true, stale: null })).toBe('Loading...');
+  });
+
   it('leaves a standing warning to the issues list', () => {
     const graph = { ...GRAPH, warnings: ['3 notes share an instance id with an earlier note'] };
     expect(statusText({ graph, loading: false, stale: null })).toBe(

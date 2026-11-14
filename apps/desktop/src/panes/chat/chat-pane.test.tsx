@@ -611,6 +611,30 @@ describe('ChatPane folder trust', () => {
     expect(composer()).toHaveProperty('value', 'hello');
   });
 
+  it('shows the composer as waiting on the trust answer, with Trust as the main button', () => {
+    renderPane({ content: UNTRUSTED });
+    const question = trustQuestion();
+    expect(question).not.toBeNull();
+    // Trust is the one button marked as the main answer.
+    expect(screen.getByRole('button', { name: 'Trust' }).getAttribute('data-primary')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Not now' }).getAttribute('data-primary')).toBeNull();
+
+    // The composer says what it is waiting for, and points at the question.
+    expect(composer().getAttribute('placeholder')).toBe('Answer the trust question above to send');
+    expect(composer().closest('.chat-composer')?.getAttribute('data-waiting')).toBe('trust');
+    const describedBy = composer().getAttribute('aria-describedby') ?? '';
+    expect(document.getElementById(describedBy)?.textContent).toContain('Trust this folder?');
+    expect(screen.getByRole('button', { name: 'Send' }).getAttribute('title')).toBe(
+      'Answer the question above first',
+    );
+
+    // Once answered, the composer is an ordinary composer again.
+    fireEvent.click(screen.getByRole('button', { name: 'Trust' }));
+    expect(composer().getAttribute('placeholder')).toBe('Message Claude Code');
+    expect(composer().closest('.chat-composer')?.getAttribute('data-waiting')).toBeNull();
+    expect(composer().getAttribute('aria-describedby')).toBeNull();
+  });
+
   it('keeps the folder settings out after "Not now", says what is off, and asks once', () => {
     renderPane({ content: UNTRUSTED });
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }));

@@ -29,6 +29,8 @@ import type { VaultGraph } from './vault-graph';
 import {
   ALL_VIEW,
   buildView,
+  canvasTextFloor,
+  fitCap,
   layoutInput,
   legendOf,
   resolveViewKey,
@@ -47,8 +49,6 @@ const NOTICE_MS = 2500;
 const FRESH_MS = 4000;
 /** The space left around the drawing when it is fitted to the pane. */
 const FIT_MARGIN = 14;
-/** A small graph is drawn a little over full size to fill the pane, and no more. */
-const FIT_MAX_SCALE = 1.25;
 const NO_TYPES: ReadonlySet<string> = new Set();
 const NO_IDS: ReadonlySet<string> = new Set();
 
@@ -279,9 +279,25 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     return layout.rects;
     // `layoutRound` is here so Reload lays the graph out afresh.
   }, [graph, viewKey, aspect, layoutRound]);
-  const fullView = useMemo(
+  const baseView = useMemo(
     () => (graph === null ? null : buildView(graph, viewKey, pageId, placed)),
     [graph, viewKey, pageId, placed],
+  );
+  // The text of a canvas box shrinks to fit its box, but only as far as
+  // can still be read with the canvas fitted to the pane.
+  const textFloor = useMemo(() => {
+    if (baseView === null || baseView.key === ALL_VIEW || size.w <= 0 || size.h <= 0) {
+      return null;
+    }
+    const fitted = fitTransform(viewBounds(baseView), size, FIT_MARGIN, fitCap(baseView));
+    return canvasTextFloor(fitted.k);
+  }, [baseView, size]);
+  const fullView = useMemo(
+    () =>
+      graph === null || textFloor === null
+        ? baseView
+        : buildView(graph, viewKey, pageId, placed, textFloor),
+    [graph, baseView, viewKey, pageId, placed, textFloor],
   );
   const linkedView = useMemo(() => {
     if (fullView === null) {
@@ -361,13 +377,14 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
   // While the drawing is kept fitted, it is fitted again whenever what is
   // drawn or the pane's size changes.
   const bounds = useMemo(() => (view === null ? null : viewBounds(view)), [view]);
+  const cap = view === null ? 1 : fitCap(view);
   useLayoutEffect(() => {
     // A pane in a tab that is not showing has no size yet. It fits when it does.
     if (!auto || bounds === null || size.w <= 0 || size.h <= 0) {
       return;
     }
-    setTransform(fitTransform(bounds, size, FIT_MARGIN, FIT_MAX_SCALE));
-  }, [auto, bounds, size]);
+    setTransform(fitTransform(bounds, size, FIT_MARGIN, cap));
+  }, [auto, bounds, size, cap]);
 
   // Picks out, for a few seconds, the nodes a refresh has added: the ones
   // that are new, and the ones that have just gained their first relation.
@@ -405,7 +422,10 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
     }, FRESH_MS);
   }, [fullView, viewToken]);
 
-  const hasDrawing = view !== null && graph?.message === null;
+  // A vault that is set up and holds no node yet has nothing to draw.
+  const noNodes =
+    graph !== null && graph.message === null && viewKey === ALL_VIEW && graph.nodes.length === 0;
+  const hasDrawing = view !== null && graph?.message === null && !noNodes;
   useEffect(() => {
     if (!active || !hasDrawing) {
       return;
@@ -466,7 +486,7 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
   function fit() {
     if (view !== null) {
       setAuto(true);
-      setTransform(fitTransform(viewBounds(view), size, FIT_MARGIN, FIT_MAX_SCALE));
+      setTransform(fitTransform(viewBounds(view), size, FIT_MARGIN, fitCap(view)));
     }
   }
 
@@ -789,7 +809,7 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
       )}
       <div className="graph-main" ref={mainRef}>
         <div className="graph-body">
-          {view !== null && graph?.message === null ? (
+          {view !== null && hasDrawing ? (
             <GraphCanvas
               view={view}
               transform={transform}
@@ -807,8 +827,26 @@ export function GraphPane({ name, content, active, debug, actions }: PaneProps<G
             />
           ) : null}
           {graph === null && failure === null ? <p className="graph-state">Loading...</p> : null}
+          {noNodes && failure === null ? (
+            <div className="graph-state graph-empty">
+              <p className="graph-empty-title">No nodes yet</p>
+              <ul className="graph-empty-ways" aria-label="Ways to add a node">
+                <li>Ask the agent in the chat pane to use the discourse-graph skill on a note.</li>
+                <li>Select text in the editor and choose Node.</li>
+                <li>
+                  Run <code>kd node claim &quot;...&quot;</code> in the shell.
+                </li>
+              </ul>
+            </div>
+          ) : null}
           {graph !== null && graph.message !== null ? (
-            <p className="graph-state">{graph.message}</p>
+            <div className="graph-state graph-empty">
+              <p className="graph-empty-title">This folder is not a vault</p>
+              <p>{graph.message}</p>
+              <p>
+                To make one, run <code>kd vault init &lt;folder&gt;</code> in the shell.
+              </p>
+            </div>
           ) : null}
           {failure === null ? null : (
             <div className="graph-state" role="alert">
