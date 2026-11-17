@@ -85,9 +85,26 @@ describe('adding a pane', () => {
     render(<Harness />);
     expect(screen.queryByText('graph')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: '+ Graph' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add pane' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Graph' }));
     // A graph pane with no vault yet is named after its type.
     expect(screen.getByText('graph')).toBeTruthy();
     expect(screen.getByText('from the layout')).toBeTruthy();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('offers every pane type from one menu, not a button each', () => {
+    render(<Harness />);
+    expect(screen.queryByRole('button', { name: /^\+ / })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add pane' }));
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Terminal',
+      'Files',
+      'Editor',
+      'Web',
+      'Chat',
+      'Graph',
+    ]);
   });
 });
