@@ -34,6 +34,27 @@ export const CHAT_MODES = ['read-only', 'edit'] as const;
 
 export type ChatMode = (typeof CHAT_MODES)[number];
 
+/** One line of a saved chat, as plain data. */
+export type ChatHistoryItem =
+  | { kind: 'user'; text: string }
+  | { kind: 'assistant'; text: string; stopped: boolean }
+  | { kind: 'tool'; name: string; summary: string }
+  | { kind: 'note'; text: string }
+  | { kind: 'error'; text: string }
+  /** A run that was still going when the pane went away. It was not restarted. */
+  | { kind: 'interrupted' };
+
+/** What a chat pane keeps of its conversation between runs of the app. */
+export interface ChatHistory {
+  /** The agent's id for the conversation, so a follow-up carries on from it. */
+  sessionId: string | null;
+  /** True when a run was in progress at the time this was saved. */
+  running: boolean;
+  /** True when older items were left out to keep the saved size bounded. */
+  truncated: boolean;
+  items: ChatHistoryItem[];
+}
+
 export interface ChatContent {
   type: 'chat';
   /** Which command-line agent answers. Null means the pane's default. */
@@ -41,6 +62,8 @@ export interface ChatContent {
   directory: string | null;
   /** What the agent may do. Left out, the chat is read only. */
   mode?: ChatMode | undefined;
+  /** The conversation so far. Left out, the chat is new. */
+  history?: ChatHistory | undefined;
 }
 
 export interface GraphContent {

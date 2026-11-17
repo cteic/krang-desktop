@@ -24,9 +24,10 @@ import type { PaneActions, PaneProps } from '../pane-props';
 
 import { ADAPTERS, AGENT_IDS, type AgentId, isAgentId, toAgentId } from './adapters';
 import './chat-pane.css';
+import { fromHistory, sameHistory, toHistory } from './history';
 import { DEFAULT_MODE, MODE_IDS, MODE_LABELS, type ModeId, isModeId } from './modes';
 import {
-  EMPTY_TRANSCRIPT,
+  INTERRUPTED_TEXT,
   type TranscriptItem,
   transcriptReducer,
   transcriptText,
@@ -44,6 +45,8 @@ const FOLLOW_SLACK_PX = 24;
 const COMPOSER_MAX_PX = 132;
 const DONE_BADGE: Badge = { text: 'done', color: null };
 const FAILED_BADGE: Badge = { text: 'failed', color: '#ff7b72' };
+// How often a run in progress is written to the pane's content.
+const HISTORY_SAVE_MS = 1000;
 
 function report(error: unknown) {
   console.error('[chat-pane]', error);
@@ -127,11 +130,18 @@ const ChatItem = memo(function ChatItem({ item, onOpenLink }: ChatItemProps) {
           {item.text}
         </div>
       );
+    case 'interrupted':
+      return (
+        <div className="chat-item chat-interrupted" role="status">
+          {INTERRUPTED_TEXT}
+        </div>
+      );
   }
 });
 
 export function ChatPane({ name, content, active, debug, actions }: PaneProps<ChatContent>) {
-  const [transcript, dispatch] = useReducer(transcriptReducer, EMPTY_TRANSCRIPT);
+  // A saved chat comes back as it was. Nothing here starts a run.
+  const [transcript, dispatch] = useReducer(transcriptReducer, content.history, fromHistory);
   const [agent, setAgent] = useState<AgentId>(() => toAgentId(content.agent));
   const [mode, setMode] = useState<ModeId>(content.mode ?? DEFAULT_MODE);
   const [draft, setDraft] = useState('');
@@ -154,6 +164,11 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
   activeRef.current = active;
   const actionsRef = useRef<PaneActions>(actions);
   actionsRef.current = actions;
+  const contentRef = useRef(content);
+  contentRef.current = content;
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+  const saveTimerRef = useRef<number | null>(null);
 
   const running = transcript.status === 'running';
   const directory = content.directory;
@@ -284,7 +299,7 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
     agentRef.current = next;
     setAgent(next);
     startNewChat();
-    actions.replaceContent({ ...content, agent: next });
+    actions.replaceContent({ ...content, agent: next, history: undefined });
   }
 
   function onModeChange(event: ChangeEvent<HTMLSelectElement>) {
@@ -374,10 +389,37 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
     }
   }, [draft]);
 
+  /** Puts the conversation in the pane's content, which the workspace saves. */
+  const saveHistory = useCallback(() => {
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const history = toHistory(transcriptRef.current);
+    if (!sameHistory(history, contentRef.current.history)) {
+      actionsRef.current.replaceContent({ ...contentRef.current, history });
+    }
+  }, []);
+
+  // A run's start and end are saved at once, so a quit just after either is
+  // remembered. While a run streams, its text is saved now and then.
+  useEffect(() => {
+    const midRun = transcript.status === 'running' && content.history?.running === true;
+    if (!midRun) {
+      saveHistory();
+      return;
+    }
+    saveTimerRef.current ??= window.setTimeout(saveHistory, HISTORY_SAVE_MS);
+  }, [transcript, content.history, saveHistory]);
+
   // A run must not outlive its pane.
   useEffect(() => {
     return () => {
       cancelRunRef.current();
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -417,6 +459,11 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
           <p className="chat-empty">
             Ask {ADAPTERS[agent].label} something. It runs in {directory ?? '~'}. Mode:{' '}
             {MODE_LABELS[mode]}.
+          </p>
+        ) : null}
+        {transcript.truncated ? (
+          <p className="chat-truncated">
+            Earlier messages were not kept. A saved chat holds only its newest part.
           </p>
         ) : null}
         {transcript.items.map((item) => (

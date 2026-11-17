@@ -194,6 +194,19 @@
   white-space: pre-wrap;
 }
 
+.chat-interrupted {
+  padding: 6px 10px;
+  color: #e0b956;
+  border: 1px solid #854d0e;
+  border-radius: 6px;
+}
+
+.chat-truncated {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .chat-error {
   padding: 6px 10px;
   color: #ffb4ab;

@@ -43,13 +43,21 @@ export interface ErrorItem extends ItemBase {
   text: string;
 }
 
-export type TranscriptItem = UserItem | AssistantItem | ToolItem | NoteItem | ErrorItem;
+/** A run that was still going when the pane went away. It was not restarted. */
+export interface InterruptedItem extends ItemBase {
+  kind: 'interrupted';
+}
+
+export type TranscriptItem =
+  UserItem | AssistantItem | ToolItem | NoteItem | ErrorItem | InterruptedItem;
 
 export interface Transcript {
   items: TranscriptItem[];
   sessionId: string | null;
   status: TranscriptStatus;
   nextKey: number;
+  /** True when a restored chat came back without its oldest items. */
+  truncated: boolean;
 }
 
 export type TranscriptAction =
@@ -69,7 +77,10 @@ export const EMPTY_TRANSCRIPT: Transcript = {
   sessionId: null,
   status: 'idle',
   nextKey: 1,
+  truncated: false,
 };
+
+export const INTERRUPTED_TEXT = 'Interrupted. This run did not finish and was not restarted.';
 
 const STDERR_TAIL_LINES = 8;
 
@@ -271,6 +282,8 @@ function itemLine(item: TranscriptItem): string {
       return `note: ${item.text}`;
     case 'error':
       return `error: ${item.text}`;
+    case 'interrupted':
+      return 'interrupted';
   }
 }
 

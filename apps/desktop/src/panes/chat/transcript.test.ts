@@ -29,7 +29,13 @@ function lines(state: Transcript): string[] {
 
 describe('transcriptReducer', () => {
   it('starts idle and empty', () => {
-    expect(EMPTY_TRANSCRIPT).toEqual({ items: [], sessionId: null, status: 'idle', nextKey: 1 });
+    expect(EMPTY_TRANSCRIPT).toEqual({
+      items: [],
+      sessionId: null,
+      status: 'idle',
+      nextKey: 1,
+      truncated: false,
+    });
   });
 
   it('adds the message and starts running on send', () => {
