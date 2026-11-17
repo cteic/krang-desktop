@@ -171,7 +171,8 @@
 }
 
 .chat-tool,
-.chat-note {
+.chat-note,
+.chat-cost {
   font:
     12px/1.4 'SF Mono',
     Menlo,
@@ -192,6 +193,19 @@
 
 .chat-note {
   white-space: pre-wrap;
+}
+
+.chat-interrupted {
+  padding: 6px 10px;
+  color: #e0b956;
+  border: 1px solid #854d0e;
+  border-radius: 6px;
+}
+
+.chat-truncated {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
 }
 
 .chat-error {

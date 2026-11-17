@@ -29,7 +29,14 @@ function lines(state: Transcript): string[] {
 
 describe('transcriptReducer', () => {
   it('starts idle and empty', () => {
-    expect(EMPTY_TRANSCRIPT).toEqual({ items: [], sessionId: null, status: 'idle', nextKey: 1 });
+    expect(EMPTY_TRANSCRIPT).toEqual({
+      items: [],
+      sessionId: null,
+      status: 'idle',
+      nextKey: 1,
+      truncated: false,
+      openRun: null,
+    });
   });
 
   it('adds the message and starts running on send', () => {
@@ -135,7 +142,13 @@ describe('transcriptReducer', () => {
       send('two'),
       ev({ type: 'text', text: 'Yes' }),
     ]);
-    expect(lines(state)).toEqual(['you: one', 'agent: Yes', 'you: two', 'agent: Yes']);
+    expect(lines(state)).toEqual([
+      'you: one',
+      'agent: Yes',
+      'cost: unknown',
+      'you: two',
+      'agent: Yes',
+    ]);
   });
 
   it('adds tool notes, and a second event for the same call fills in the first', () => {
@@ -170,7 +183,7 @@ describe('transcriptReducer', () => {
     expect(done.items[1]).toMatchObject({ streaming: false });
     const exited = run([{ type: 'exit', exitCode: 0, stderr: 'a warning' }], done);
     expect(exited.status).toBe('idle');
-    expect(lines(exited)).toEqual(['you: hi', 'agent: Hello']);
+    expect(lines(exited)).toEqual(['you: hi', 'agent: Hello', 'cost: $0.0100']);
   });
 
   it('goes idle on a clean exit even without a done event', () => {
@@ -192,14 +205,14 @@ describe('transcriptReducer', () => {
       { type: 'exit', exitCode: 1, stderr: '' },
     ]);
     expect(state.status).toBe('error');
-    expect(lines(state)).toEqual(['you: hi', 'error: no quota']);
+    expect(lines(state)).toEqual(['you: hi', 'error: no quota', 'cost: unknown']);
   });
 
   it('shows the last lines of stderr on a non-zero exit', () => {
     const stderr = Array.from({ length: 12 }, (_, at) => `line ${String(at + 1)}`).join('\n');
     const state = run([send('hi'), { type: 'exit', exitCode: 2, stderr: `${stderr}\n\n` }]);
     expect(state.status).toBe('error');
-    const last = state.items.at(-1);
+    const last = state.items.findLast((item) => item.kind === 'error');
     expect(last).toMatchObject({ kind: 'error' });
     expect(last?.kind === 'error' ? last.text.split('\n') : []).toEqual([
       'The agent exited with code 2',
@@ -218,10 +231,12 @@ describe('transcriptReducer', () => {
     expect(lines(run([send('hi'), { type: 'exit', exitCode: 3, stderr: '' }]))).toEqual([
       'you: hi',
       'error: The agent exited with code 3',
+      'cost: unknown',
     ]);
     expect(lines(run([send('hi'), { type: 'exit', exitCode: null, stderr: '' }]))).toEqual([
       'you: hi',
       'error: The agent was stopped by a signal',
+      'cost: unknown',
     ]);
   });
 
@@ -231,21 +246,25 @@ describe('transcriptReducer', () => {
       { type: 'start-failed', message: 'codex was not found. Is it installed?' },
     ]);
     expect(state.status).toBe('error');
-    expect(lines(state)).toEqual(['you: hi', 'error: codex was not found. Is it installed?']);
+    expect(lines(state)).toEqual([
+      'you: hi',
+      'error: codex was not found. Is it installed?',
+      'cost: unknown',
+    ]);
   });
 
   it('marks the message being written as stopped, not as an error', () => {
     const state = run([send('hi'), ev({ type: 'text-delta', text: 'Half' }), { type: 'stop' }]);
     expect(state.status).toBe('idle');
     expect(state.items[1]).toMatchObject({ kind: 'assistant', stopped: true, streaming: false });
-    expect(lines(state)).toEqual(['you: hi', 'agent: Half [stopped]']);
+    expect(lines(state)).toEqual(['you: hi', 'agent: Half [stopped]', 'cost: unknown']);
     expect(state.items.some((item) => item.kind === 'error')).toBe(false);
   });
 
   it('adds a stopped marker when nothing was written yet', () => {
     const state = run([send('hi'), { type: 'stop' }]);
     expect(state.status).toBe('idle');
-    expect(lines(state)).toEqual(['you: hi', 'agent:  [stopped]']);
+    expect(lines(state)).toEqual(['you: hi', 'agent:  [stopped]', 'cost: unknown']);
   });
 
   it('keeps the session id across turns, errors and stops', () => {
@@ -299,6 +318,80 @@ describe('stderrTail', () => {
     expect(stderrTail('a\n\nb  \n')).toBe('a\nb');
     expect(stderrTail('')).toBe('');
     expect(stderrTail('1\n2\n3\n4\n5\n6\n7\n8\n9\n10').split('\n')).toHaveLength(8);
+  });
+});
+
+describe('the cost of a run', () => {
+  const EXIT: TranscriptAction = { type: 'exit', exitCode: 0, stderr: '' };
+
+  it('is kept in the transcript when the agent reports it', () => {
+    const state = run([
+      send('hi'),
+      ev({ type: 'text', text: 'Hello' }),
+      ev({ type: 'done', costUsd: 0.0421 }),
+      EXIT,
+    ]);
+    expect(state.items.at(-1)).toMatchObject({ kind: 'cost', costUsd: 0.0421 });
+    expect(lines(state)).toEqual(['you: hi', 'agent: Hello', 'cost: $0.0421']);
+  });
+
+  it('is unknown when the agent reports none', () => {
+    const state = run([
+      send('hi'),
+      ev({ type: 'text', text: 'Hello' }),
+      ev({ type: 'done', costUsd: null }),
+      EXIT,
+    ]);
+    expect(state.items.at(-1)).toMatchObject({ kind: 'cost', costUsd: null });
+    expect(lines(state)).toEqual(['you: hi', 'agent: Hello', 'cost: unknown']);
+  });
+
+  it('is kept for a run that failed after spending', () => {
+    const state = run([
+      send('hi'),
+      ev({ type: 'cost', costUsd: 0.5 }),
+      ev({ type: 'error', message: 'error_max_turns' }),
+      { type: 'exit', exitCode: 1, stderr: '' },
+    ]);
+    expect(lines(state)).toEqual(['you: hi', 'error: error_max_turns', 'cost: $0.5000']);
+  });
+
+  it('is written once per run, each with its own figure', () => {
+    const state = run([
+      send('one'),
+      ev({ type: 'done', costUsd: 0.01 }),
+      EXIT,
+      send('two'),
+      ev({ type: 'done', costUsd: null }),
+      EXIT,
+      send('three'),
+      ev({ type: 'done', costUsd: 0.03 }),
+      EXIT,
+    ]);
+    expect(lines(state)).toEqual([
+      'you: one',
+      'cost: $0.0100',
+      'you: two',
+      'cost: unknown',
+      'you: three',
+      'cost: $0.0300',
+    ]);
+  });
+
+  it('closes a run that reported an error and had not exited when the next began', () => {
+    const state = run([send('one'), ev({ type: 'error', message: 'no quota' }), send('two')]);
+    expect(lines(state)).toEqual(['you: one', 'error: no quota', 'cost: unknown', 'you: two']);
+    expect(new Set(state.items.map((item) => item.key)).size).toBe(state.items.length);
+  });
+
+  it('is not written while the run is still going', () => {
+    const state = run([send('hi'), ev({ type: 'done', costUsd: 0.01 })]);
+    expect(state.items.some((item) => item.kind === 'cost')).toBe(false);
+  });
+
+  it('ignores a cost reported when no run is open', () => {
+    const state = run([send('hi'), EXIT, ev({ type: 'done', costUsd: 9 })]);
+    expect(lines(state)).toEqual(['you: hi', 'cost: unknown']);
   });
 });
 

@@ -14,6 +14,8 @@ export type AgentEvent =
   /** An output line that could not be read, kept as it came. */
   | { type: 'note'; text: string }
   | { type: 'done'; costUsd: number | null }
+  /** What a run cost, from a run that ends without `done`. */
+  | { type: 'cost'; costUsd: number }
   | { type: 'error'; message: string };
 
 const SUMMARY_LIMIT = 120;
