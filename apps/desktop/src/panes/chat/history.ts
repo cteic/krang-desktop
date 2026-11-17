@@ -34,6 +34,8 @@ function toSavedItem(item: TranscriptItem): ChatHistoryItem {
       return { kind: 'error', text: item.text };
     case 'interrupted':
       return { kind: 'interrupted' };
+    case 'cost':
+      return { kind: 'cost', costUsd: item.costUsd };
   }
 }
 
@@ -42,6 +44,7 @@ function sizeOf(item: ChatHistoryItem): number {
     case 'tool':
       return item.name.length + item.summary.length;
     case 'interrupted':
+    case 'cost':
       return 0;
     default:
       return item.text.length;
@@ -50,7 +53,7 @@ function sizeOf(item: ChatHistoryItem): number {
 
 /** The item with its text cut to `limit` characters. A tool call is short. */
 function cut(item: ChatHistoryItem, limit: number): ChatHistoryItem | null {
-  if (item.kind === 'tool' || item.kind === 'interrupted') {
+  if (item.kind === 'tool' || item.kind === 'interrupted' || item.kind === 'cost') {
     return null;
   }
   return { ...item, text: `${item.text.slice(0, limit - 1)}…` };
@@ -103,14 +106,17 @@ function toTranscriptItem(item: ChatHistoryItem, key: number): TranscriptItem {
 /**
  * The transcript a saved chat opens with. Nothing is running when a pane
  * opens, so a run that was in progress when the chat was saved is marked as
- * interrupted. It is never started again from here.
+ * interrupted. It is never started again from here, and what it cost is not
+ * known.
  */
 export function fromHistory(history: ChatHistory | undefined): Transcript {
   if (history === undefined) {
     return EMPTY_TRANSCRIPT;
   }
   const { kept, truncated } = newestThatFit(history.items);
-  const saved: ChatHistoryItem[] = history.running ? [...kept, { kind: 'interrupted' }] : kept;
+  const saved: ChatHistoryItem[] = history.running
+    ? [...kept, { kind: 'interrupted' }, { kind: 'cost', costUsd: null }]
+    : kept;
   const items = saved.map((item, index) => toTranscriptItem(item, index + 1));
   const sessionId =
     history.sessionId !== null && SESSION_ID.test(history.sessionId) ? history.sessionId : null;
@@ -120,6 +126,7 @@ export function fromHistory(history: ChatHistory | undefined): Transcript {
     status: 'idle',
     nextKey: items.length + 1,
     truncated: truncated || history.truncated,
+    openRun: null,
   };
 }
 

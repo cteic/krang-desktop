@@ -171,7 +171,8 @@
 }
 
 .chat-tool,
-.chat-note {
+.chat-note,
+.chat-cost {
   font:
     12px/1.4 'SF Mono',
     Menlo,

@@ -184,6 +184,16 @@ describe('parseClaudeLine', () => {
     ]);
   });
 
+  it('reads what a failed result cost', () => {
+    const line =
+      '{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s-2","total_cost_usd":0.25}';
+    expect(parseClaudeLine(line)).toEqual([
+      { type: 'session', id: 's-2' },
+      { type: 'cost', costUsd: 0.25 },
+      { type: 'error', message: 'error_max_turns' },
+    ]);
+  });
+
   it('names the subtype when a failed result says nothing else', () => {
     expect(parseClaudeLine('{"type":"result","subtype":"error_max_turns"}')).toEqual([
       { type: 'error', message: 'error_max_turns' },

@@ -41,6 +41,8 @@ export type ChatHistoryItem =
   | { kind: 'tool'; name: string; summary: string }
   | { kind: 'note'; text: string }
   | { kind: 'error'; text: string }
+  /** What one run cost in US dollars. Null when the agent reported no cost. */
+  | { kind: 'cost'; costUsd: number | null }
   /** A run that was still going when the pane went away. It was not restarted. */
   | { kind: 'interrupted' };
 

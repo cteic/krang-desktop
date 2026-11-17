@@ -19,6 +19,7 @@ const chatHistoryItemSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('tool'), name: z.string(), summary: z.string() }),
   z.object({ kind: z.literal('note'), text: z.string() }),
   z.object({ kind: z.literal('error'), text: z.string() }),
+  z.object({ kind: z.literal('cost'), costUsd: z.number().nonnegative().nullable() }),
   z.object({ kind: z.literal('interrupted') }),
 ]);
 

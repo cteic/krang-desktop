@@ -29,6 +29,7 @@ import { DEFAULT_MODE, MODE_IDS, MODE_LABELS, type ModeId, isModeId } from './mo
 import {
   INTERRUPTED_TEXT,
   type TranscriptItem,
+  costText,
   transcriptReducer,
   transcriptText,
 } from './transcript';
@@ -130,6 +131,8 @@ const ChatItem = memo(function ChatItem({ item, onOpenLink }: ChatItemProps) {
           {item.text}
         </div>
       );
+    case 'cost':
+      return <div className="chat-item chat-cost">Cost: {costText(item.costUsd)}</div>;
     case 'interrupted':
       return (
         <div className="chat-item chat-interrupted" role="status">

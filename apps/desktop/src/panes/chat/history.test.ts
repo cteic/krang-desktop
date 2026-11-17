@@ -53,10 +53,11 @@ describe('toHistory', () => {
   it('keeps the session id and every kind of item', () => {
     const saved = toHistory(run(FINISHED));
     expect(saved).toMatchObject({ sessionId: 's-1', running: false, truncated: false });
-    expect(saved?.items.slice(0, 3)).toEqual([
+    expect(saved?.items).toEqual([
       { kind: 'user', text: 'hi' },
       { kind: 'tool', name: 'Read', summary: 'a.ts' },
       { kind: 'assistant', text: 'Hello', stopped: false },
+      { kind: 'cost', costUsd: null },
     ]);
   });
 
@@ -132,7 +133,8 @@ describe('fromHistory', () => {
     const after = fromHistory(toHistory(before));
 
     expect(after.status).toBe('idle');
-    expect(lines(after).slice(0, 3)).toEqual(['you: hi', 'agent: Hel', 'interrupted']);
+    expect(lines(after)).toEqual(['you: hi', 'agent: Hel', 'interrupted', 'cost: unknown']);
+    expect(after.openRun).toBeNull();
     expect(after.items.some((item) => item.kind === 'assistant' && item.streaming)).toBe(false);
   });
 
@@ -177,6 +179,25 @@ describe('fromHistory', () => {
       expect(fromHistory(history([], { sessionId })).sessionId).toBe(sessionId);
     },
   );
+});
+
+describe('the cost of a run in a saved chat', () => {
+  it('comes back as it was reported, run by run', () => {
+    const before = run([
+      { type: 'send', text: 'one' },
+      { type: 'event', event: { type: 'done', costUsd: 0.0421 } },
+      { type: 'exit', exitCode: 0, stderr: '' },
+      { type: 'send', text: 'two' },
+      { type: 'event', event: { type: 'done', costUsd: null } },
+      { type: 'exit', exitCode: 0, stderr: '' },
+    ]);
+    expect(lines(fromHistory(toHistory(before)))).toEqual([
+      'you: one',
+      'cost: $0.0421',
+      'you: two',
+      'cost: unknown',
+    ]);
+  });
 });
 
 describe('sameHistory', () => {

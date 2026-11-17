@@ -256,6 +256,8 @@ describe('a chat pane history', () => {
       { kind: 'assistant', text: 'Hel', stopped: false },
       { kind: 'note', text: 'odd line' },
       { kind: 'error', text: 'no quota' },
+      { kind: 'cost', costUsd: 0.0421 },
+      { kind: 'cost', costUsd: null },
       { kind: 'interrupted' },
     ],
   } as const;
@@ -293,6 +295,13 @@ describe('a chat pane history', () => {
   it('is refused when an item is of a kind it does not know', () => {
     const text = withHistory((saved) => saved.replace('"kind":"note"', '"kind":"command"'));
     expect(parseWorkspace(text)).toBeNull();
+  });
+
+  it('is refused when a cost is not a sum of money', () => {
+    const negative = withHistory((saved) => saved.replace('"costUsd":0.0421', '"costUsd":-1'));
+    const words = withHistory((saved) => saved.replace('"costUsd":0.0421', '"costUsd":"free"'));
+    expect(parseWorkspace(negative)).toBeNull();
+    expect(parseWorkspace(words)).toBeNull();
   });
 
   it('is refused when the session id is not text', () => {

@@ -48,8 +48,15 @@ export interface InterruptedItem extends ItemBase {
   kind: 'interrupted';
 }
 
+/** What one run cost. It closes the run: nothing of that run comes after it. */
+export interface CostItem extends ItemBase {
+  kind: 'cost';
+  /** In US dollars. Null when the agent reported no cost. */
+  costUsd: number | null;
+}
+
 export type TranscriptItem =
-  UserItem | AssistantItem | ToolItem | NoteItem | ErrorItem | InterruptedItem;
+  UserItem | AssistantItem | ToolItem | NoteItem | ErrorItem | InterruptedItem | CostItem;
 
 export interface Transcript {
   items: TranscriptItem[];
@@ -58,6 +65,8 @@ export interface Transcript {
   nextKey: number;
   /** True when a restored chat came back without its oldest items. */
   truncated: boolean;
+  /** The run whose cost line is not written yet. Null between runs. */
+  openRun: { costUsd: number | null } | null;
 }
 
 export type TranscriptAction =
@@ -78,6 +87,7 @@ export const EMPTY_TRANSCRIPT: Transcript = {
   status: 'idle',
   nextKey: 1,
   truncated: false,
+  openRun: null,
 };
 
 export const INTERRUPTED_TEXT = 'Interrupted. This run did not finish and was not restarted.';
@@ -99,6 +109,29 @@ function append(state: Transcript, item: TranscriptItem): Transcript {
 
 function replaceAt(state: Transcript, index: number, item: TranscriptItem): Transcript {
   return { ...state, items: state.items.map((old, at) => (at === index ? item : old)) };
+}
+
+/** What a cost line says. A run that reported no cost says so. */
+export function costText(costUsd: number | null): string {
+  return costUsd === null ? 'unknown' : `$${costUsd.toFixed(4)}`;
+}
+
+/** Ends the open run with its cost line. Every run gets exactly one. */
+function closeRun(state: Transcript): Transcript {
+  if (state.openRun === null) {
+    return state;
+  }
+  return append(
+    { ...state, openRun: null },
+    { key: state.nextKey, kind: 'cost', costUsd: state.openRun.costUsd },
+  );
+}
+
+function recordCost(state: Transcript, costUsd: number | null): Transcript {
+  if (state.openRun === null || costUsd === null) {
+    return state;
+  }
+  return { ...state, openRun: { costUsd } };
 }
 
 /** Where the current turn begins: just after the person's last message. */
@@ -210,7 +243,9 @@ function applyEvent(state: Transcript, event: AgentEvent): Transcript {
       return append(settle(state), { key: state.nextKey, kind: 'note', text: event.text });
     case 'done':
       // The turn is written. The run itself is over when the process exits.
-      return settle(state);
+      return recordCost(settle(state), event.costUsd);
+    case 'cost':
+      return recordCost(state, event.costUsd);
     case 'error':
       return applyError(state, event.message);
   }
@@ -252,19 +287,22 @@ function applyStop(state: Transcript): Transcript {
 
 export function transcriptReducer(state: Transcript, action: TranscriptAction): Transcript {
   switch (action.type) {
-    case 'send':
+    case 'send': {
+      // A run that reported an error may not have exited yet. It is over now.
+      const closed = closeRun(settle(state));
       return append(
-        { ...settle(state), status: 'running' },
-        { key: state.nextKey, kind: 'user', text: action.text },
+        { ...closed, status: 'running', openRun: { costUsd: null } },
+        { key: closed.nextKey, kind: 'user', text: action.text },
       );
+    }
     case 'event':
       return applyEvent(state, action.event);
     case 'exit':
-      return applyExit(state, action.exitCode, action.stderr);
+      return closeRun(applyExit(state, action.exitCode, action.stderr));
     case 'start-failed':
-      return applyError(state, action.message);
+      return closeRun(applyError(state, action.message));
     case 'stop':
-      return applyStop(state);
+      return closeRun(applyStop(state));
     case 'reset':
       return EMPTY_TRANSCRIPT;
   }
@@ -284,6 +322,8 @@ function itemLine(item: TranscriptItem): string {
       return `error: ${item.text}`;
     case 'interrupted':
       return 'interrupted';
+    case 'cost':
+      return `cost: ${costText(item.costUsd)}`;
   }
 }
 

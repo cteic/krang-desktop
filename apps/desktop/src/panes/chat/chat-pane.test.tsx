@@ -670,6 +670,63 @@ describe('ChatPane', () => {
   });
 });
 
+describe('ChatPane run cost', () => {
+  it('shows what a Claude Code run reported it cost', () => {
+    renderPane();
+    sendMessage('hi');
+    const run = lastRun();
+    feed(run, {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Hi',
+      session_id: 's-1',
+      total_cost_usd: 0.0421,
+    });
+    expect(texts('.chat-cost')).toEqual([]);
+    exit(run);
+    expect(texts('.chat-cost')).toEqual(['Cost: $0.0421']);
+  });
+
+  it('shows the cost as unknown for Codex, which reports none', () => {
+    renderPane({ content: { type: 'chat', agent: 'codex', directory: '/work/demo' } });
+    sendMessage('hi');
+    const run = lastRun();
+    feed(
+      run,
+      { type: 'thread.started', thread_id: 'th-9' },
+      { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'Done.' } },
+      { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } },
+    );
+    exit(run);
+    expect(texts('.chat-cost')).toEqual(['Cost: unknown']);
+  });
+
+  it('shows the cost as unknown for a run that failed before reporting one', () => {
+    renderPane();
+    sendMessage('hi');
+    exit(lastRun(), 1, 'Error: not logged in\n');
+    expect(texts('.chat-cost')).toEqual(['Cost: unknown']);
+  });
+
+  it("keeps each run's cost through a quit and a reopen", () => {
+    const { actions } = renderPane();
+    sendMessage('one');
+    const first = lastRun();
+    feed(first, { type: 'result', subtype: 'success', session_id: 's-1', total_cost_usd: 0.01 });
+    exit(first);
+    sendMessage('two');
+    const second = lastRun();
+    feed(second, { type: 'result', subtype: 'success', session_id: 's-1' });
+    exit(second);
+    const saved = lastSaved(actions);
+
+    cleanup();
+    renderPane({ content: afterReopen(saved) });
+    expect(texts('.chat-cost')).toEqual(['Cost: $0.0100', 'Cost: unknown']);
+  });
+});
+
 describe('ChatPane saved chat', () => {
   it('restores the transcript and the session after a quit and a reopen', () => {
     const { actions } = renderPane();
@@ -734,6 +791,7 @@ describe('ChatPane saved chat', () => {
       'Interrupted. This run did not finish and was not restarted.',
     ]);
     expect(texts('.chat-assistant')).toEqual(['Hel']);
+    expect(texts('.chat-cost')).toEqual(['Cost: unknown']);
     expect(runs()).toEqual([]);
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
     expect(screen.queryByText('Working…')).toBeNull();
