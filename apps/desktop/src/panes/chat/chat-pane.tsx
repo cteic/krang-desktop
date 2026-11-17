@@ -17,7 +17,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { z } from 'zod';
 
-import type { ChatContent } from '../../workspace/model';
+import type { Badge, ChatContent } from '../../workspace/model';
 import { useDebugSnapshot } from '../debug-snapshot';
 import { homeDirectory } from '../editor/fs-api';
 import type { PaneActions, PaneProps } from '../pane-props';
@@ -42,6 +42,8 @@ const REMARK_PLUGINS = [remarkGfm];
 // How close to the bottom still counts as "following the newest content".
 const FOLLOW_SLACK_PX = 24;
 const COMPOSER_MAX_PX = 132;
+const DONE_BADGE: Badge = { text: 'done', color: null };
+const FAILED_BADGE: Badge = { text: 'failed', color: '#ff7b72' };
 
 function report(error: unknown) {
   console.error('[chat-pane]', error);
@@ -202,12 +204,17 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
     dispatch({ type: 'send', text });
     setDraft('');
 
+    // An agent can report an error and still exit with code 0.
+    let reportedError = false;
     const onLine = new Channel<string>();
     onLine.onmessage = (line) => {
       if (runIdRef.current !== id) {
         return;
       }
       for (const event of adapter.parseLine(line)) {
+        if (event.type === 'error') {
+          reportedError = true;
+        }
         dispatch({ type: 'event', event });
       }
     };
@@ -224,8 +231,9 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
         exitCode: exit.success ? exit.data.exitCode : null,
         stderr: exit.success ? exit.data.stderr : '',
       });
+      const failed = !exit.success || exit.data.exitCode !== 0 || reportedError;
       if (!activeRef.current) {
-        actionsRef.current.setBadge({ text: 'done', color: null });
+        actionsRef.current.setBadge(failed ? FAILED_BADGE : DONE_BADGE);
       }
     };
 
@@ -241,6 +249,9 @@ export function ChatPane({ name, content, active, debug, actions }: PaneProps<Ch
       if (runIdRef.current === id) {
         runIdRef.current = null;
         dispatch({ type: 'start-failed', message: errorText(error) });
+        if (!activeRef.current) {
+          actionsRef.current.setBadge(FAILED_BADGE);
+        }
       }
     });
   }

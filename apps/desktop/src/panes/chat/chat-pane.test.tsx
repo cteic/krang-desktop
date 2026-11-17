@@ -539,6 +539,46 @@ describe('ChatPane', () => {
     expect(actions.setBadge).toHaveBeenLastCalledWith(null);
   });
 
+  it('badges a background run that exits with an error as failed, not done', () => {
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    exit(lastRun(), 1, 'Error: not logged in\n');
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+    expect(actions.setBadge).not.toHaveBeenCalledWith({ text: 'done', color: null });
+  });
+
+  it('badges a background run that a signal ended as failed', () => {
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    exit(lastRun(), null);
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+    expect(actions.setBadge).not.toHaveBeenCalledWith({ text: 'done', color: null });
+  });
+
+  it('badges a background run that reports an error and exits with code 0 as failed', () => {
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    const run = lastRun();
+    feed(run, { type: 'result', subtype: 'error_during_execution', is_error: true });
+    exit(run);
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+    expect(actions.setBadge).not.toHaveBeenCalledWith({ text: 'done', color: null });
+  });
+
+  it('badges a background run that could not start as failed', async () => {
+    tauri.invoke.mockImplementation((command: string) =>
+      command === 'agent_run'
+        ? Promise.reject(new Error('claude is not installed'))
+        : Promise.resolve(),
+    );
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+  });
+
   it('does not badge a run that finishes while the pane is active', () => {
     const { actions } = renderPane({ active: true });
     sendMessage('hi');
