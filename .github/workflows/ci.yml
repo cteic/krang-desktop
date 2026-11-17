@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: cteic/foundry/.github/workflows/checks.yml@1f324a05218985ac647967993faba59e39e29102
+    with:
+      node-version: '24'
+      format-command: pnpm format:check
+      lint-command: pnpm lint
+      typecheck-command: pnpm typecheck
+      test-command: pnpm test
+      build-command: pnpm build
+      rust: true
+      rust-working-directory: apps/desktop/src-tauri
+      rust-prepare-command: mkdir -p ../dist
