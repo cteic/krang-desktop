@@ -2,16 +2,18 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, center, column, text};
-use iced::{Element, Length};
+use iced::widget::{button, center, column, container, text};
+use iced::{Element, Length, Padding};
 
+use crate::style::{self, Mode};
 use crate::term::events::Sender;
+use crate::term::palette::Scheme;
 use crate::term::session::{GridSize, Session, Spawn};
 use crate::term::view::TerminalView;
 
 use super::Message;
 
-pub const FONT_SIZE: f32 = 13.0;
+pub const FONT_SIZE: f32 = style::size::MONO;
 
 pub struct TerminalPane {
     pub session: Option<Session>,
@@ -27,6 +29,7 @@ impl TerminalPane {
         size: GridSize,
         sender: &Sender,
         commands: &[String],
+        mode: Mode,
     ) -> Self {
         let directory = directory.filter(|dir| dir.is_dir());
         let spawned = Session::spawn(
@@ -34,6 +37,7 @@ impl TerminalPane {
                 id,
                 directory: directory.as_deref(),
                 size,
+                scheme: Scheme::of(mode),
             },
             sender.clone(),
         );
@@ -61,15 +65,31 @@ impl TerminalPane {
             .or_else(|| self.start_directory.clone())
     }
 
-    pub fn view(&self, id: u64, focused: bool) -> Element<'_, Message> {
+    /// What the shell is called: `zsh` for `/bin/zsh`.
+    pub fn shell_name() -> String {
+        std::env::var("SHELL")
+            .ok()
+            .and_then(|shell| shell.rsplit('/').next().map(str::to_string))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| String::from("shell"))
+    }
+
+    pub fn view(&self, id: u64, focused: bool, mode: Mode) -> Element<'_, Message> {
+        let colors = &mode.tokens().terminal;
         match &self.session {
-            Some(session) => TerminalView::new(
+            Some(session) => container(TerminalView::new(
                 session.snapshot(),
                 session.size(),
                 focused,
                 FONT_SIZE,
+                if focused {
+                    colors.background
+                } else {
+                    colors.background_idle
+                },
                 move |input| Message::Terminal(id, input),
-            )
+            ))
+            .padding(Padding::from([style::space::L, style::space::XL]))
             .into(),
             None => center(
                 column![
@@ -77,10 +97,16 @@ impl TerminalPane {
                         self.error
                             .clone()
                             .unwrap_or_else(|| String::from("The shell has exited."))
-                    ),
-                    button("Start a new shell").on_press(Message::RestartTerminal(id)),
+                    )
+                    .size(style::size::BODY)
+                    .style(style::muted),
+                    button(text("Start a new shell").size(style::size::BODY))
+                        .padding(Padding::from([style::space::M, style::space::XL]))
+                        .style(style::secondary)
+                        .on_press(Message::RestartTerminal(id)),
                 ]
-                .spacing(12),
+                .spacing(style::space::XL)
+                .align_x(iced::Alignment::Center),
             )
             .width(Length::Fill)
             .height(Length::Fill)

@@ -113,6 +113,19 @@ pub fn label(command: Command) -> &'static str {
         .map_or("", |(_, label)| label)
 }
 
+/// The shortcut that runs a command without the palette, where it has one.
+pub fn keys(command: Command) -> Option<&'static str> {
+    match command {
+        Command::Add(NewPane::Terminal, false) => Some("Cmd+D"),
+        Command::Add(NewPane::Terminal, true) => Some("Cmd+Shift+D"),
+        Command::NewTab(NewPane::Terminal) => Some("Cmd+T"),
+        Command::ClosePane => Some("Cmd+W"),
+        Command::CloseTab => Some("Cmd+Shift+W"),
+        Command::Magnify => Some("Cmd+Shift+Enter"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +139,27 @@ mod tests {
         assert_eq!(palette.chosen(), Some(Command::Add(NewPane::Web, true)));
         palette.step(-1);
         assert!(palette.chosen().is_some());
+    }
+
+    #[test]
+    fn the_keys_shown_are_the_ones_the_window_listens_for() {
+        use crate::app::shortcuts::{self, Action};
+        use iced::keyboard::{Key, Modifiers};
+
+        let pressed = |key: &str, shift: bool| {
+            let modifiers = if shift {
+                Modifiers::LOGO | Modifiers::SHIFT
+            } else {
+                Modifiers::LOGO
+            };
+            shortcuts::action(&Key::Character(key.into()), modifiers)
+        };
+        assert_eq!(keys(Command::Add(NewPane::Terminal, false)), Some("Cmd+D"));
+        assert_eq!(pressed("d", false), Some(Action::SplitRight));
+        assert_eq!(pressed("d", true), Some(Action::SplitDown));
+        assert_eq!(pressed("t", false), Some(Action::NewTab));
+        assert_eq!(pressed("w", false), Some(Action::ClosePane));
+        assert_eq!(pressed("w", true), Some(Action::CloseTab));
+        assert_eq!(keys(Command::Add(NewPane::Web, false)), None);
     }
 }
