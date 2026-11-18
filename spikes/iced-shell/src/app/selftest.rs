@@ -11,6 +11,12 @@
 //! | `editor`            | Opens `KRANG_SELFTEST_NOTE`, types, searches the vault    |
 //! | `terminal-latency`  | Types into the first terminal and times the echo         |
 //! | `web`               | Waits for the first web pane to load                      |
+//! | `showcase`          | Fills the chat pane, then holds; for screenshots          |
+//!
+//! `showcase` sends two messages to the first chat pane, the second one
+//! failing, so a transcript with a tool step, code, a cost and an error is
+//! on screen. `KRANG_SELFTEST_SHOW=palette` then opens the command palette
+//! and `KRANG_SELFTEST_SHOW=switcher` the first editor's quick switcher.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -20,7 +26,9 @@ use iced::widget::text_editor::{Action, Edit};
 
 use crate::web::host::WebEvent;
 
+use super::chat::ChatMessage;
 use super::editor::EditorMessage;
+use super::shortcuts::Action as Shortcut;
 use super::terminal::TerminalPane;
 use super::{App, Body, Message, Pane};
 
@@ -41,6 +49,7 @@ pub enum Plan {
     Editor,
     TerminalLatency,
     Web,
+    Showcase,
 }
 
 impl Plan {
@@ -53,6 +62,7 @@ impl Plan {
             "editor" => Plan::Editor,
             "terminal-latency" => Plan::TerminalLatency,
             "web" => Plan::Web,
+            "showcase" => Plan::Showcase,
             _ => return None,
         })
     }
@@ -64,6 +74,7 @@ pub enum Step {
     Ping(u32),
     Type(u32),
     TerminalType(u32),
+    Show(u32),
     Finish,
 }
 
@@ -276,6 +287,11 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
         (Plan::Hold | Plan::Web, Step::Begin) => {
             after(Duration::from_secs(seconds()), Step::Finish)
         }
+        (Plan::Showcase, Step::Begin) => Task::batch([
+            after(Duration::from_millis(200), Step::Show(0)),
+            after(Duration::from_secs(seconds()), Step::Finish),
+        ]),
+        (Plan::Showcase, Step::Show(number)) => showcase(app, number),
         (Plan::Flood, Step::Begin) => {
             report("flood_seconds", seconds());
             Task::batch([
@@ -401,6 +417,50 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             ])
         }
         (_, Step::Finish) => finish(app),
+        _ => Task::none(),
+    }
+}
+
+/// What the showcase says to the agent. The second message holds the word
+/// the fake agent fails on.
+const SHOWCASE_PROMPTS: [&str; 2] = [
+    "Why does the import drop rows with a blank date?",
+    "Run the linter and report the first error.",
+];
+
+fn showcase(app: &mut App, number: u32) -> Task<Message> {
+    let prompt = SHOWCASE_PROMPTS.get(number as usize);
+    let chat = find_pane(app, |pane| matches!(pane.body, Body::Chat(_)));
+    if let (Some(prompt), Some(id)) = (prompt, chat) {
+        let paste = Action::Edit(Edit::Paste(std::sync::Arc::new((*prompt).to_string())));
+        return Task::batch([
+            Task::done(Message::Chat(id, ChatMessage::Draft(paste))),
+            Task::done(Message::Chat(id, ChatMessage::Send)),
+            after(Duration::from_millis(2500), Step::Show(number + 1)),
+        ]);
+    }
+    if number as usize > SHOWCASE_PROMPTS.len() {
+        return Task::none();
+    }
+    match std::env::var("KRANG_SELFTEST_SHOW").as_deref() {
+        Ok("palette") => Task::done(Message::Shortcut(Shortcut::Palette)),
+        Ok("switcher") => {
+            let editor = find_pane(app, |pane| matches!(pane.body, Body::Editor(_)));
+            let pane = editor.and_then(|id| {
+                app.tab()
+                    .grid
+                    .iter()
+                    .find(|(_, known)| **known == id)
+                    .map(|(pane, _)| *pane)
+            });
+            match pane {
+                Some(pane) => {
+                    app.tab_mut().focus = Some(pane);
+                    Task::done(Message::Shortcut(Shortcut::QuickSwitcher))
+                }
+                None => Task::none(),
+            }
+        }
         _ => Task::none(),
     }
 }
