@@ -144,7 +144,7 @@ impl App {
         let (run_sender, run_receiver) = unbounded_channel();
         let (web_sender, web_receiver) = unbounded_channel();
         let state_dir = store::state_dir();
-        let persist = options.layouts.is_empty() && options.selftest.is_none();
+        let persist = options.layouts.is_empty();
         let default_vault = std::env::var_os("KRANG_VAULT")
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
@@ -757,10 +757,11 @@ impl App {
             }
             Message::Run(event) => {
                 let pane = event.pane;
-                if let Some(Pane { body: Body::Chat(chat), .. }) = self.panes.get_mut(&pane)
-                    && chat.receive(event)
-                {
-                    self.save();
+                if let Some(Pane { body: Body::Chat(chat), .. }) = self.panes.get_mut(&pane) {
+                    if chat.receive(event) {
+                        self.save();
+                    }
+                    return iced::widget::operation::snap_to_end(ChatPane::transcript_id(pane));
                 }
             }
             Message::Chat(id, message) => return self.chat(id, message),

@@ -51,6 +51,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Probe<'_, Message> {
         if reported.0 != Some(bounds) {
             reported.0 = Some(bounds);
             shell.publish((self.on_bounds)(bounds));
+            // A message published while iced redraws waits for the next
+            // event; asking for another frame makes that event come now.
+            shell.request_redraw();
         }
     }
 

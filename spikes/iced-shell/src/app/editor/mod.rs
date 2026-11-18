@@ -536,7 +536,7 @@ impl EditorPane {
         };
         let tabs = row![tab("Files", Sidebar::Files), tab("Search", Sidebar::Search), tab("Tags", Sidebar::Tags)].spacing(2);
         let Some(index) = index else {
-            return column![tabs, text("Opening the vault…").size(12)].spacing(6).padding(6).width(220).into();
+            return column![tabs, text("Opening the vault…").size(12)].spacing(6).padding(6).width(190).into();
         };
         let body: Element<'_, Message> = match self.sidebar {
             Sidebar::Files => {
@@ -597,7 +597,7 @@ impl EditorPane {
                 scrollable(tags).height(Length::Fill).into()
             }
         };
-        column![tabs, text(format!("{} notes", index.len())).size(11).style(text::secondary), body].spacing(4).padding(6).width(220).into()
+        column![tabs, text(format!("{} notes", index.len())).size(11).style(text::secondary), body].spacing(4).padding(6).width(190).into()
     }
 
     fn properties_view(&self, id: u64) -> Option<Element<'_, Message>> {
@@ -627,17 +627,22 @@ impl EditorPane {
     }
 
     fn backlinks_view(&self, id: u64, index: Option<&Index>) -> Element<'_, Message> {
-        let mut list = column![text("Backlinks").size(12)].spacing(4);
+        let mut list = row![text("Backlinks").size(12).style(text::secondary)].spacing(6).align_y(iced::Alignment::Center);
         if let (Some(index), Some(path)) = (index, &self.path) {
             let backlinks = index.backlinks(path);
             if backlinks.is_empty() {
-                list = list.push(text("No notes link here.").size(11).style(text::secondary));
+                list = list.push(text("none").size(12).style(text::secondary));
             }
-            for note in backlinks.into_iter().take(200) {
-                list = list.push(button(text(note.name.clone()).size(12)).style(button::text).on_press(Message::Editor(id, EditorMessage::Open(note.path.clone()))));
+            for note in backlinks.into_iter().take(100) {
+                list = list.push(
+                    button(text(note.name.clone()).size(12))
+                        .padding([1, 6])
+                        .style(button::secondary)
+                        .on_press(Message::Editor(id, EditorMessage::Open(note.path.clone()))),
+                );
             }
         }
-        scrollable(list.padding(6)).width(200).height(Length::Fill).into()
+        scrollable(list.padding([4, 8])).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(4).scroller_width(4))).width(Length::Fill).into()
     }
 
     pub fn view(&self, id: u64, index: Option<&Index>) -> Element<'_, Message> {
@@ -731,7 +736,6 @@ impl EditorPane {
             mode_button("Preview", EditorMode::Preview, self.mode, id),
             space::horizontal(),
             text(self.error.clone().unwrap_or_default()).size(12).style(text::danger),
-            text(self.path.clone().unwrap_or_default()).size(12).style(text::secondary),
         ]
         .spacing(4)
         .padding([3, 6])
@@ -742,7 +746,7 @@ impl EditorPane {
             EditorMode::Preview => preview.into(),
             EditorMode::Split => row![editor_column.width(Length::FillPortion(1)), preview.width(Length::FillPortion(1))].into(),
         };
-        let body = row![self.sidebar_view(id, index), column![modes, main].width(Length::Fill), self.backlinks_view(id, index)];
+        let body = row![self.sidebar_view(id, index), column![modes, main, self.backlinks_view(id, index)].width(Length::Fill)];
 
         let mut layers = stack![body];
         if let Some(switcher) = &self.switcher {
