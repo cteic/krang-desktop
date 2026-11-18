@@ -14,6 +14,7 @@
 //! | `showcase`          | Fills the chat pane, then holds; for screenshots          |
 //! | `chat-scroll`       | Fills a chat past its pane and reports where it is scrolled |
 //! | `tabs`              | Names a tab, moves it, saves it as a layout, prints the tabs |
+//! | `files`             | Opens `KRANG_SELFTEST_DIR` in a files pane and times it   |
 //!
 //! `showcase` sends two messages to the first chat pane, the second one
 //! failing, so a transcript with a tool step, code, a cost and an error is
@@ -31,6 +32,15 @@
 //! first `Planning` through the same messages a double click and typing
 //! send, moves it one place right, saves it as a layout, prints the names
 //! again and holds. `KRANG_SELFTEST_SHOW=rename` leaves the name field open.
+//!
+//! `files` first prints the folder and open folders of any files pane that
+//! came back from the saved workspace. It then opens `KRANG_SELFTEST_DIR`
+//! in a new tab and prints how long the listing took, how long the rows
+//! took, and the time from a Page Down to the frame that shows it, sixty
+//! times over. `KRANG_SELFTEST_OPEN` is a comma-separated list of paths
+//! under the folder to click in turn, a folder before what is in it; the
+//! panes of the tab are printed afterwards. `KRANG_SELFTEST_SHOW=restored`
+//! opens nothing new.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -40,8 +50,11 @@ use iced::widget::text_editor::{Action, Edit};
 
 use crate::web::host::WebEvent;
 
+use crate::shell::layout::{PaneKind, PaneSpec, TabSpec, Tree};
+
 use super::chat::{ChatMessage, ChatPane};
 use super::editor::EditorMessage;
+use super::files::{FilesMessage, Nav};
 use super::palette::{Command, NewPane};
 use super::scroll::{Locate, Place};
 use super::shortcuts::Action as Shortcut;
@@ -68,6 +81,7 @@ pub enum Plan {
     Showcase,
     ChatScroll,
     Tabs,
+    Files,
 }
 
 impl Plan {
@@ -83,6 +97,7 @@ impl Plan {
             "showcase" => Plan::Showcase,
             "chat-scroll" => Plan::ChatScroll,
             "tabs" => Plan::Tabs,
+            "files" => Plan::Files,
             _ => return None,
         })
     }
@@ -161,6 +176,8 @@ pub struct SelfTest {
     echo_times: Vec<Duration>,
     typed: Option<(Instant, usize)>,
     edit_times: Vec<Duration>,
+    nav_times: Vec<Duration>,
+    files_started: Option<Instant>,
     vault_ready: bool,
     web_started: Instant,
 }
@@ -179,6 +196,8 @@ impl SelfTest {
             echo_times: Vec::new(),
             typed: None,
             edit_times: Vec::new(),
+            nav_times: Vec::new(),
+            files_started: None,
             vault_ready: false,
             web_started: Instant::now(),
         }
@@ -313,6 +332,8 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             after(Duration::from_secs(seconds()), Step::Finish),
         ]),
         (Plan::Showcase, Step::Show(number)) => showcase(app, number),
+        (Plan::Files, Step::Begin) => files(app, 0),
+        (Plan::Files, Step::Show(number)) => files(app, number),
         (Plan::Tabs, Step::Begin) => tabs(app, 0),
         (Plan::Tabs, Step::Show(number)) => tabs(app, number),
         (Plan::ChatScroll, Step::Begin) => chat_scroll(app, 0),
@@ -498,6 +519,173 @@ fn showcase(app: &mut App, number: u32) -> Task<Message> {
             }
         }
         _ => Task::none(),
+    }
+}
+
+fn first_files(app: &App) -> Option<u64> {
+    find_pane(app, |pane| matches!(pane.body, Body::Files(_)))
+}
+
+/// The files pane the test opened: the newest one.
+fn last_files(app: &App) -> Option<u64> {
+    app.panes
+        .iter()
+        .filter(|(_, pane)| matches!(pane.body, Body::Files(_)))
+        .map(|(id, _)| *id)
+        .max()
+}
+
+/// What each pane of the shown tab is, and what it has open.
+fn report_panes(app: &App, name: &str) {
+    let tab = app.tab();
+    let panes: Vec<String> = super::leaf_ids(&tab.grid, tab.grid.layout())
+        .into_iter()
+        .filter_map(|id| app.panes.get(&id))
+        .map(|pane| match &pane.body {
+            Body::Terminal(_) => String::from("terminal"),
+            Body::Chat(_) => String::from("chat"),
+            Body::Files(files) => format!("files:{}", files.selected().unwrap_or("")),
+            Body::Editor(editor) => format!("editor:{}", editor.path.as_deref().unwrap_or("")),
+            Body::Web(web) => format!(
+                "web:{}",
+                web.url.rsplit('/').next().unwrap_or(web.url.as_str())
+            ),
+        })
+        .collect();
+    report(name, panes.join(" | "));
+}
+
+const FILES_PAGES: u32 = 60;
+
+fn files(app: &mut App, number: u32) -> Task<Message> {
+    let next = |delay: u64| after(Duration::from_millis(delay), Step::Show(number + 1));
+    let again = |delay: u64| after(Duration::from_millis(delay), Step::Show(number));
+    let restored = std::env::var("KRANG_SELFTEST_SHOW").as_deref() == Ok("restored");
+    if number == 0 {
+        if let Some(Pane {
+            body: Body::Files(files),
+            ..
+        }) = first_files(app).and_then(|id| app.panes.get(&id))
+        {
+            report("files_restored_root", files.tree.root().display());
+            report("files_restored_open", files.tree.expanded().join(","));
+            report("files_restored_hidden", files.tree.show_hidden());
+        }
+        if restored {
+            return after(Duration::from_millis(800), Step::Show(1));
+        }
+        let directory = std::env::var("KRANG_SELFTEST_DIR").unwrap_or_default();
+        let spec = TabSpec {
+            title: String::from("files"),
+            named: false,
+            tree: Tree::Pane(PaneSpec {
+                title: None,
+                kind: PaneKind::Files {
+                    directory: Some(directory),
+                    expanded: Vec::new(),
+                    hidden: false,
+                },
+            }),
+            focus: Some(0),
+            maximized: false,
+        };
+        let (tab, load) = app.build_tab(spec);
+        app.tabs.push(tab);
+        app.active = app.tabs.len() - 1;
+        if let Some(selftest) = app.selftest.as_mut() {
+            selftest.files_started = Some(Instant::now());
+        }
+        return Task::batch([load, app.show_tab(), next(1)]);
+    }
+    let Some(id) = last_files(app) else {
+        return Task::done(Message::SelfTest(Step::Finish));
+    };
+    let Some(Pane {
+        body: Body::Files(pane),
+        ..
+    }) = app.panes.get(&id)
+    else {
+        return Task::none();
+    };
+    if restored {
+        report("files_restored_rows", pane.tree.len());
+        return Task::done(Message::SelfTest(Step::Finish));
+    }
+    let pages = 2..2 + FILES_PAGES;
+    match number {
+        1 if !pane.tree.is_ready() => again(1),
+        1 => {
+            report("files_rows", pane.tree.len());
+            report("files_list_ms", format!("{:.2}", millis(pane.timings.list)));
+            report("files_rows_ms", format!("{:.3}", millis(pane.timings.rows)));
+            if let Some(selftest) = app.selftest.as_mut()
+                && let Some(started) = selftest.files_started
+            {
+                report(
+                    "files_open_to_listed_ms",
+                    format!("{:.1}", millis(started.elapsed())),
+                );
+                selftest.probe = Some(Probe {
+                    since: started,
+                    frames: 0,
+                });
+            }
+            next(500)
+        }
+        step if pages.contains(&step) => {
+            if step == pages.start
+                && let Some(selftest) = app.selftest.as_mut()
+            {
+                if let Some(first) = selftest.key_times.first().copied() {
+                    report("files_open_to_frame_ms", format!("{:.1}", millis(first)));
+                }
+                selftest.key_times.clear();
+            }
+            let started = Instant::now();
+            let task = app.files_nav(id, Nav::PageDown);
+            if let Some(selftest) = app.selftest.as_mut() {
+                selftest.nav_times.push(started.elapsed());
+                selftest.probe = Some(Probe {
+                    since: started,
+                    frames: 0,
+                });
+            }
+            Task::batch([task, next(40)])
+        }
+        step => {
+            let opens: Vec<String> = std::env::var("KRANG_SELFTEST_OPEN")
+                .map(|list| {
+                    list.split(',')
+                        .filter(|path| !path.is_empty())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let index = (step - pages.end) as usize;
+            if index == 0 {
+                if let Some(selftest) = app.selftest.as_mut() {
+                    report_summary("files_page_update", &mut selftest.nav_times);
+                    report_summary("files_page_to_frame", &mut selftest.key_times);
+                }
+                report("files_selected", pane.selected().unwrap_or(""));
+            }
+            match opens.get(index) {
+                Some(path) => match pane.tree.position(path) {
+                    Some(row) => Task::batch([
+                        Task::done(Message::Files(id, FilesMessage::Press(row))),
+                        next(400),
+                    ]),
+                    None => {
+                        report("files_not_found", path);
+                        next(1)
+                    }
+                },
+                None => {
+                    report_panes(app, "files_tab_panes");
+                    after(Duration::from_secs(seconds()), Step::Finish)
+                }
+            }
+        }
     }
 }
 

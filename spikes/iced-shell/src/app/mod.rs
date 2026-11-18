@@ -4,6 +4,7 @@
 mod chat;
 mod editor;
 mod feed;
+mod files;
 mod palette;
 mod probe;
 mod scroll;
@@ -25,6 +26,7 @@ use iced::{Element, Length, Padding, Size, Subscription, Task, Theme, keyboard, 
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::chat::runner::RunEvent;
+use crate::files::kind::{Kind, Opens};
 use crate::shell::layout::{
     self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, WORKSPACE_VERSION, Workspace,
 };
@@ -40,6 +42,7 @@ use crate::web::host::{self, ParentWindow, WebEvent, WebHost};
 use chat::{ChatMessage, ChatPane};
 use editor::{EditorMessage, EditorPane, PreviewTarget};
 use feed::Feed;
+use files::{Effect, FilesMessage, FilesPane, Nav};
 use palette::{Command, NewPane, Palette};
 use shortcuts::Action;
 use terminal::TerminalPane;
@@ -67,6 +70,9 @@ pub enum Message {
     Web(u64, WebMessage),
     WebPump,
     Editor(u64, EditorMessage),
+    Files(u64, FilesMessage),
+    /// A key that moves through a list, for the pane that has the keyboard.
+    Nav(Nav),
     VaultOpened(PathBuf, std::sync::Arc<std::sync::Mutex<Option<Index>>>),
     /// A status line control: the action runs on that pane, focused first.
     PaneAction(u64, Action),
@@ -101,6 +107,7 @@ enum Body {
     Editor(Box<EditorPane>),
     Web(WebPane),
     Chat(ChatPane),
+    Files(FilesPane),
 }
 
 struct Pane {
@@ -319,6 +326,16 @@ impl App {
                 mode: EditorMode::Edit,
             },
             NewPane::Web => PaneKind::Web { url: String::new() },
+            NewPane::Files => PaneKind::Files {
+                directory: Some(
+                    directory
+                        .unwrap_or_else(|| self.default_vault.clone())
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                expanded: Vec::new(),
+                hidden: false,
+            },
             NewPane::Chat => PaneKind::Chat {
                 agent: crate::chat::Agent::Claude,
                 directory: directory.map(|dir| dir.to_string_lossy().into_owned()),
@@ -335,6 +352,7 @@ impl App {
             Body::Terminal(pane) => pane.working_directory(),
             Body::Editor(pane) => Some(pane.root.clone()),
             Body::Chat(pane) => pane.directory.as_deref().map(layout::expand_home),
+            Body::Files(pane) => Some(pane.tree.root().to_path_buf()),
             Body::Web(_) => None,
         }
     }
@@ -359,26 +377,23 @@ impl App {
                 ))
             }
             PaneKind::Editor { vault, path, mode } => {
-                let path = path.map(|path| layout::expand_home(&path));
-                let root = vault
-                    .map(|vault| layout::expand_home(&vault))
-                    .or_else(|| path.as_deref().and_then(vault_root_for))
+                let (body, open) = self.editor_body(vault, path, mode);
+                task = open;
+                body
+            }
+            PaneKind::Files {
+                directory,
+                expanded,
+                hidden,
+            } => {
+                let root = directory
+                    .as_deref()
+                    .map(layout::expand_home)
                     .unwrap_or_else(|| self.default_vault.clone());
                 let root = std::fs::canonicalize(&root).unwrap_or(root);
-                let mut pane = EditorPane::new(root.clone(), mode);
-                if let Some(relative) = path
-                    .and_then(|path| std::fs::canonicalize(&path).ok())
-                    .and_then(|path| crate::vault::index::relative(&root, &path))
-                {
-                    task = pane.open(&relative);
-                }
-                if let Some(Some(index)) = self.vaults.get(&root) {
-                    pane.sync_tree(index);
-                } else if !self.vaults.contains_key(&root) {
-                    self.vaults.insert(root.clone(), None);
-                    task = Task::batch([task, open_vault(root)]);
-                }
-                Body::Editor(Box::new(pane))
+                let (pane, load) = FilesPane::new(id, root, hidden, expanded);
+                task = load;
+                Body::Files(pane)
             }
             PaneKind::Web { url } => Body::Web(WebPane::new(&url)),
             PaneKind::Chat {
@@ -397,6 +412,37 @@ impl App {
             },
         );
         (id, task)
+    }
+
+    /// An editor on a vault, with a note open when one is named. The vault
+    /// is the one given, or the one the note is in, or the default.
+    fn editor_body(
+        &mut self,
+        vault: Option<String>,
+        path: Option<String>,
+        mode: EditorMode,
+    ) -> (Body, Task<Message>) {
+        let mut task = Task::none();
+        let path = path.map(|path| layout::expand_home(&path));
+        let root = vault
+            .map(|vault| layout::expand_home(&vault))
+            .or_else(|| path.as_deref().and_then(vault_root_for))
+            .unwrap_or_else(|| self.default_vault.clone());
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let mut pane = EditorPane::new(root.clone(), mode);
+        if let Some(relative) = path
+            .and_then(|path| std::fs::canonicalize(&path).ok())
+            .and_then(|path| crate::vault::index::relative(&root, &path))
+        {
+            task = pane.open(&relative);
+        }
+        if let Some(Some(index)) = self.vaults.get(&root) {
+            pane.sync_tree(index);
+        } else if !self.vaults.contains_key(&root) {
+            self.vaults.insert(root.clone(), None);
+            task = Task::batch([task, open_vault(root)]);
+        }
+        (Body::Editor(Box::new(pane)), task)
     }
 
     fn build_tab(&mut self, spec: TabSpec) -> (Tab, Task<Message>) {
@@ -472,6 +518,11 @@ impl App {
             },
             Body::Web(web) => PaneKind::Web {
                 url: web.url.clone(),
+            },
+            Body::Files(files) => PaneKind::Files {
+                directory: Some(files.tree.root().to_string_lossy().into_owned()),
+                expanded: files.tree.expanded(),
+                hidden: files.tree.show_hidden(),
             },
             Body::Chat(chat) => PaneKind::Chat {
                 agent: chat.agent,
@@ -596,6 +647,7 @@ impl App {
                 .filter(|title| !title.is_empty())
                 .unwrap_or_else(|| String::from("web")),
             Body::Chat(chat) => format!("chat · {}", chat.agent.label()),
+            Body::Files(files) => files.title(),
         })
     }
 
@@ -664,32 +716,210 @@ impl App {
 
     fn focus(&mut self, pane: pane_grid::Pane) -> Task<Message> {
         self.tab_mut().focus = Some(pane);
-        self.focus_task()
+        Task::batch([self.refresh_files(), self.focus_task()])
+    }
+
+    /// Where a pane is: its tab, and its place in that tab's grid.
+    fn locate(&self, id: u64) -> Option<(usize, pane_grid::Pane)> {
+        self.tabs.iter().enumerate().find_map(|(index, tab)| {
+            tab.grid
+                .iter()
+                .find(|(_, known)| **known == id)
+                .map(|(pane, _)| (index, *pane))
+        })
+    }
+
+    /// Gives a pane the keyboard within its tab. The tab is not brought to
+    /// the front: a pane in a hidden tab has the keyboard when it is shown.
+    fn focus_id(&mut self, id: u64) -> Task<Message> {
+        match self.locate(id) {
+            Some((tab, pane)) if tab == self.active => self.focus(pane),
+            Some((tab, pane)) => {
+                self.tabs[tab].focus = Some(pane);
+                Task::none()
+            }
+            None => Task::none(),
+        }
+    }
+
+    /// The files pane with the keyboard reads its folder again. There is no
+    /// watcher, so this is how it catches up when the person comes back.
+    fn refresh_files(&mut self) -> Task<Message> {
+        let Some(id) = self.focused_id() else {
+            return Task::none();
+        };
+        match self.panes.get_mut(&id).map(|pane| &mut pane.body) {
+            Some(Body::Files(files)) => files.refresh(id),
+            _ => Task::none(),
+        }
+    }
+
+    fn files_effect(&mut self, id: u64, effect: Option<Effect>) -> Task<Message> {
+        match effect {
+            Some(Effect::Open(path)) => self.open_file(id, path),
+            Some(Effect::Changed) => {
+                self.save();
+                Task::none()
+            }
+            None => Task::none(),
+        }
+    }
+
+    fn files(&mut self, id: u64, message: FilesMessage) -> Task<Message> {
+        let Some(Pane {
+            body: Body::Files(files),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
+        let (task, effect) = files.update(id, message);
+        Task::batch([task, self.files_effect(id, effect)])
+    }
+
+    fn files_nav(&mut self, id: u64, nav: Nav) -> Task<Message> {
+        let Some(Pane {
+            body: Body::Files(files),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
+        let (task, effect) = files.nav(id, nav);
+        Task::batch([task, self.files_effect(id, effect)])
+    }
+
+    /// Opens a file chosen in a files pane, in the pane for its type: a web
+    /// page in a web pane, anything else in an editor. A pane of that kind
+    /// in the same tab is used again; otherwise one opens beside the files.
+    fn open_file(&mut self, from: u64, path: PathBuf) -> Task<Message> {
+        let Some((tab, _)) = self.locate(from) else {
+            return Task::none();
+        };
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ids = leaf_ids(&self.tabs[tab].grid, self.tabs[tab].grid.layout());
+        let address = path.to_string_lossy().into_owned();
+        match Kind::of(&name).opens() {
+            Opens::Web => {
+                let web = ids.into_iter().find(|id| {
+                    matches!(
+                        self.panes.get(id).map(|pane| &pane.body),
+                        Some(Body::Web(_))
+                    )
+                });
+                match web {
+                    Some(id) => Task::batch([
+                        self.web_message(id, WebMessage::Address(address)),
+                        self.web_message(id, WebMessage::Go),
+                        self.focus_id(id),
+                    ]),
+                    None => self.split_beside(
+                        from,
+                        PaneSpec {
+                            title: None,
+                            kind: PaneKind::Web { url: address },
+                        },
+                        false,
+                    ),
+                }
+            }
+            Opens::Editor => {
+                let editor = ids.into_iter().find(|id| {
+                    matches!(
+                        self.panes.get(id).map(|pane| &pane.body),
+                        Some(Body::Editor(_))
+                    )
+                });
+                match editor {
+                    Some(id) => Task::batch([self.show_in_editor(id, &path), self.focus_id(id)]),
+                    None => self.split_beside(
+                        from,
+                        PaneSpec {
+                            title: None,
+                            kind: PaneKind::Editor {
+                                vault: None,
+                                path: Some(address),
+                                mode: EditorMode::Edit,
+                            },
+                        },
+                        false,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Opens a file in an editor pane that is already there. A file outside
+    /// the editor's vault moves the editor to the file's own folder.
+    fn show_in_editor(&mut self, id: u64, path: &std::path::Path) -> Task<Message> {
+        let Some(Pane {
+            body: Body::Editor(editor),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
+        let inside = std::fs::canonicalize(path)
+            .ok()
+            .and_then(|path| crate::vault::index::relative(&editor.root, &path));
+        if let Some(relative) = inside {
+            return self.editor(id, EditorMessage::Open(relative));
+        }
+        let (root, mode) = (editor.root.clone(), editor.mode);
+        let saved = if editor.dirty {
+            editor.save_now()
+        } else {
+            None
+        };
+        self.store_saved(&root, saved);
+        let (body, task) = self.editor_body(None, Some(path.to_string_lossy().into_owned()), mode);
+        if let Some(pane) = self.panes.get_mut(&id) {
+            pane.body = body;
+        }
+        self.save();
+        task
     }
 
     fn split(&mut self, kind: NewPane, down: bool) -> Task<Message> {
-        let Some(target) = self
-            .tab()
-            .focus
-            .or_else(|| self.tab().grid.iter().next().map(|(pane, _)| *pane))
+        let Some(beside) = self
+            .focused_id()
+            .or_else(|| self.tab().grid.iter().next().map(|(_, id)| *id))
         else {
             return Task::none();
         };
         let spec = self.new_pane_spec(kind);
+        self.split_beside(beside, spec, down)
+    }
+
+    /// Opens a pane to the right of another, or below it, and gives it the
+    /// keyboard within its tab.
+    fn split_beside(&mut self, beside: u64, spec: PaneSpec, down: bool) -> Task<Message> {
+        let Some((tab, target)) = self.locate(beside) else {
+            return Task::none();
+        };
         let (id, task) = self.create_pane(spec);
         let split_axis = if down {
             pane_grid::Axis::Horizontal
         } else {
             pane_grid::Axis::Vertical
         };
-        if self.tab().grid.maximized().is_some() {
-            self.tab_mut().grid.restore();
+        let grid = &mut self.tabs[tab].grid;
+        if grid.maximized().is_some() {
+            grid.restore();
         }
-        let Some((pane, _)) = self.tab_mut().grid.split(split_axis, target, id) else {
-            self.panes.remove(&id);
+        let Some((pane, _)) = grid.split(split_axis, target, id) else {
+            self.drop_pane(id);
             return task;
         };
-        let focus = self.focus(pane);
+        self.tabs[tab].focus = Some(pane);
+        let focus = if tab == self.active {
+            self.focus_task()
+        } else {
+            Task::none()
+        };
         self.save();
         Task::batch([task, focus])
     }
@@ -733,7 +963,7 @@ impl App {
                         self.store_saved(&editor.root.clone(), editor.save_now());
                     }
                 }
-                Body::Terminal(_) => {}
+                Body::Terminal(_) | Body::Files(_) => {}
             }
         }
     }
@@ -861,7 +1091,11 @@ impl App {
     }
 
     fn store_saved(&mut self, root: &PathBuf, saved: Option<(String, String)>) {
-        if let (Some((path, text)), Some(Some(index))) = (saved, self.vaults.get_mut(root)) {
+        // The editor also opens files that are not notes, as plain text.
+        // Only a note belongs in the vault's index.
+        if let (Some((path, text)), Some(Some(index))) = (saved, self.vaults.get_mut(root))
+            && path.ends_with(".md")
+        {
             index.update(&path, text);
         }
     }
@@ -954,6 +1188,12 @@ impl App {
             Action::Reload => {
                 if let Some(id) = self.focused_id() {
                     self.web.reload(id);
+                }
+                return self.refresh_files();
+            }
+            Action::ToggleHidden => {
+                if let Some(id) = self.focused_id() {
+                    return self.files(id, FilesMessage::ToggleHidden);
                 }
             }
             Action::Undo | Action::Redo => {
@@ -1156,6 +1396,15 @@ impl App {
             Message::Web(id, message) => return self.web_message(id, message),
             Message::WebPump => host::pump(),
             Message::Editor(id, message) => return self.editor(id, message),
+            Message::Files(id, message) => return self.files(id, message),
+            Message::Nav(nav) => {
+                if self.palette.is_none()
+                    && self.renaming.is_none()
+                    && let Some(id) = self.focused_id()
+                {
+                    return self.files_nav(id, nav);
+                }
+            }
             Message::VaultOpened(root, slot) => {
                 let index = slot.lock().ok().and_then(|mut slot| slot.take());
                 if let Some(index) = index {
@@ -1272,6 +1521,8 @@ impl App {
                     Some(Command::ClosePane) => self.shortcut(Action::ClosePane),
                     Some(Command::CloseTab) => self.shortcut(Action::CloseTab),
                     Some(Command::Magnify) => self.shortcut(Action::Magnify),
+                    Some(Command::RefreshFiles) => self.refresh_files(),
+                    Some(Command::ToggleHidden) => self.shortcut(Action::ToggleHidden),
                     Some(Command::RenameTab) => self.start_rename(self.active),
                     Some(Command::MoveTabLeft) => self.move_tab(-1),
                     Some(Command::MoveTabRight) => self.move_tab(1),
@@ -1289,6 +1540,10 @@ impl App {
                     )
                 {
                     return self.editor(id, EditorMessage::SwitcherMove(by));
+                } else if self.renaming.is_none()
+                    && let Some(id) = self.focused_id()
+                {
+                    return self.files_nav(id, if by < 0 { Nav::Up } else { Nav::Down });
                 }
             }
             Message::Frame(at) => {
@@ -1545,7 +1800,7 @@ impl App {
             Subscription::run_with(self.term_feed.clone(), feed::stream).map(Message::Term),
             Subscription::run_with(self.run_feed.clone(), feed::stream).map(Message::Run),
             Subscription::run_with(self.web_feed.clone(), feed::stream).map(Message::WebEvent),
-            iced::event::listen_with(|event, _status, _window| match event {
+            iced::event::listen_with(|event, status, _window| match event {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
                     ..
@@ -1554,6 +1809,18 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
                     ..
                 }) => Some(Message::Step(1)),
+                // The keys that move through a list, when no field took
+                // them and no modifier makes them a shortcut.
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(named),
+                    modifiers,
+                    ..
+                }) if status == iced::event::Status::Ignored
+                    && modifiers.is_empty()
+                    && shortcuts::nav(named).is_some() =>
+                {
+                    shortcuts::nav(named).map(Message::Nav)
+                }
                 iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                     shortcuts::action(&key, modifiers).map(Message::Shortcut)
                 }
@@ -1632,6 +1899,11 @@ impl App {
                     .filter(|title| !title.is_empty())
                     .unwrap_or_else(|| web.address.clone()),
                 String::from(if web.loading { "Loading" } else { "" }),
+            ),
+            Body::Files(files) => (
+                "Files",
+                style::tilde(files.tree.root()),
+                files.status_note(),
             ),
             Body::Chat(chat) => (
                 "Chat",
@@ -1883,6 +2155,7 @@ impl App {
                 ),
                 Some(Body::Web(web)) => web.view(id),
                 Some(Body::Chat(chat)) => chat.view(id, self.mode, focused),
+                Some(Body::Files(files)) => files.view(id),
                 None => Space::new().into(),
             };
             let (kind, context, note) = self.pane_status(id);

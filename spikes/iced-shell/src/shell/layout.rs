@@ -47,6 +47,15 @@ pub enum PaneKind {
     Web {
         url: String,
     },
+    Files {
+        #[serde(default)]
+        directory: Option<String>,
+        /// Open folders, as paths under the directory.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        expanded: Vec<String>,
+        #[serde(default)]
+        hidden: bool,
+    },
     Chat {
         #[serde(default)]
         agent: Agent,
@@ -155,9 +164,14 @@ fn pane_kind(id: &str, table: &toml::Table) -> Result<PaneKind, String> {
                 _ => EditorMode::Edit,
             },
         },
-        // This shell has no separate file list or graph: both open the
-        // folder as a vault in the editor, whose tree lists its files.
-        "files" | "graph" => PaneKind::Editor {
+        "files" => PaneKind::Files {
+            directory: text(table, "directory"),
+            expanded: Vec::new(),
+            hidden: table.get("hidden").and_then(toml::Value::as_bool) == Some(true),
+        },
+        // This shell has no graph pane: the folder opens as a vault in the
+        // editor, whose tree lists its notes.
+        "graph" => PaneKind::Editor {
             vault: text(table, "directory"),
             path: None,
             mode: EditorMode::Edit,
@@ -346,6 +360,10 @@ fn leaf_table(spec: &PaneSpec) -> toml::Table {
             set("type", Some("web"));
             set("url", Some(url));
         }
+        PaneKind::Files { directory, .. } => {
+            set("type", Some("files"));
+            set("directory", directory.as_deref());
+        }
         PaneKind::Chat {
             agent,
             directory,
@@ -369,6 +387,9 @@ fn leaf_table(spec: &PaneSpec) -> toml::Table {
                 }),
             );
         }
+    }
+    if let PaneKind::Files { hidden: true, .. } = &spec.kind {
+        table.insert(String::from("hidden"), toml::Value::Boolean(true));
     }
     if let PaneKind::Terminal { commands, .. } = &spec.kind
         && !commands.is_empty()
@@ -457,8 +478,8 @@ impl Writer {
 /// Writes one tab as a layout file that [`parse_layout`] reads back.
 ///
 /// A layout describes where panes go and what they open, so what a pane has
-/// done since is left out: a chat's transcript and trust, and whether a pane
-/// is magnified.
+/// done since is left out: a chat's transcript and trust, the folders open
+/// in a files pane, and whether a pane is magnified.
 pub fn write_layout(tab: &TabSpec) -> Result<String, String> {
     let mut writer = Writer {
         panes: Vec::new(),
@@ -495,6 +516,13 @@ pub fn as_layout(tab: &TabSpec) -> TabSpec {
                         mode: *mode,
                         trusted: false,
                         transcript: Transcript::default(),
+                    },
+                    PaneKind::Files {
+                        directory, hidden, ..
+                    } => PaneKind::Files {
+                        directory: directory.clone(),
+                        expanded: Vec::new(),
+                        hidden: *hidden,
                     },
                     other => other.clone(),
                 },
@@ -606,7 +634,7 @@ mode = "edit"
     }
 
     #[test]
-    fn a_pane_with_no_type_is_a_terminal_and_files_open_a_vault() {
+    fn a_pane_with_no_type_is_a_terminal_and_a_graph_opens_a_vault() {
         let tab = parse_layout("[[panes]]\nid = \"a\"\n").map(|tab| tab.tree);
         assert!(matches!(
             tab,
@@ -615,12 +643,25 @@ mode = "edit"
                 ..
             }))
         ));
-        let tab = parse_layout("[[panes]]\nid = \"a\"\ntype = \"files\"\ndirectory = \"/v\"\n")
+        let tab = parse_layout("[[panes]]\nid = \"a\"\ntype = \"graph\"\ndirectory = \"/v\"\n")
             .map(|tab| tab.tree);
         assert!(matches!(
             tab,
             Ok(Tree::Pane(PaneSpec {
                 kind: PaneKind::Editor { vault: Some(_), .. },
+                ..
+            }))
+        ));
+        let tab = parse_layout("[[panes]]\nid = \"a\"\ntype = \"files\"\ndirectory = \"/v\"\n")
+            .map(|tab| tab.tree);
+        assert!(matches!(
+            tab,
+            Ok(Tree::Pane(PaneSpec {
+                kind: PaneKind::Files {
+                    directory: Some(_),
+                    hidden: false,
+                    ..
+                },
                 ..
             }))
         ));
@@ -680,12 +721,24 @@ mode = "edit"
                     b: Box::new(Tree::Split {
                         axis: Axis::Vertical,
                         ratio: 0.25,
-                        a: Box::new(leaf(
-                            None,
-                            PaneKind::Web {
-                                url: String::from("http://localhost:3000/"),
-                            },
-                        )),
+                        a: Box::new(Tree::Split {
+                            axis: Axis::Horizontal,
+                            ratio: 0.5,
+                            a: Box::new(leaf(
+                                None,
+                                PaneKind::Web {
+                                    url: String::from("http://localhost:3000/"),
+                                },
+                            )),
+                            b: Box::new(leaf(
+                                None,
+                                PaneKind::Files {
+                                    directory: Some(String::from("~/src/project")),
+                                    expanded: vec![String::from("src")],
+                                    hidden: true,
+                                },
+                            )),
+                        }),
                         b: Box::new(leaf(
                             None,
                             PaneKind::Chat {
