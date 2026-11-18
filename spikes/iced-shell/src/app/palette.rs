@@ -8,6 +8,7 @@ pub enum NewPane {
     Editor,
     Web,
     Chat,
+    Files,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,9 +18,15 @@ pub enum Command {
     ClosePane,
     CloseTab,
     Magnify,
+    RefreshFiles,
+    ToggleHidden,
+    RenameTab,
+    MoveTabLeft,
+    MoveTabRight,
+    SaveLayout,
 }
 
-pub const COMMANDS: [(Command, &str); 13] = [
+pub const COMMANDS: [(Command, &str); 22] = [
     (
         Command::Add(NewPane::Terminal, false),
         "Add a terminal pane on the right",
@@ -37,6 +44,10 @@ pub const COMMANDS: [(Command, &str); 13] = [
         "Add a chat pane on the right",
     ),
     (
+        Command::Add(NewPane::Files, false),
+        "Add a files pane on the right",
+    ),
+    (
         Command::Add(NewPane::Terminal, true),
         "Add a terminal pane below",
     ),
@@ -46,6 +57,7 @@ pub const COMMANDS: [(Command, &str); 13] = [
     ),
     (Command::Add(NewPane::Web, true), "Add a web pane below"),
     (Command::Add(NewPane::Chat, true), "Add a chat pane below"),
+    (Command::Add(NewPane::Files, true), "Add a files pane below"),
     (
         Command::NewTab(NewPane::Terminal),
         "New tab with a terminal",
@@ -54,9 +66,16 @@ pub const COMMANDS: [(Command, &str); 13] = [
         Command::NewTab(NewPane::Editor),
         "New tab with a Markdown editor",
     ),
+    (Command::NewTab(NewPane::Files), "New tab with files"),
     (Command::ClosePane, "Close the pane"),
     (Command::CloseTab, "Close the tab"),
     (Command::Magnify, "Magnify the pane, or restore it"),
+    (Command::RefreshFiles, "Files: read the folder again"),
+    (Command::ToggleHidden, "Files: show or hide hidden files"),
+    (Command::RenameTab, "Rename the tab"),
+    (Command::MoveTabLeft, "Move the tab left"),
+    (Command::MoveTabRight, "Move the tab right"),
+    (Command::SaveLayout, "Save the tab as a layout"),
 ];
 
 pub struct Palette {
@@ -122,6 +141,8 @@ pub fn keys(command: Command) -> Option<&'static str> {
         Command::ClosePane => Some("Cmd+W"),
         Command::CloseTab => Some("Cmd+Shift+W"),
         Command::Magnify => Some("Cmd+Shift+Enter"),
+        Command::RefreshFiles => Some("Cmd+R"),
+        Command::ToggleHidden => Some("Cmd+Shift+."),
         _ => None,
     }
 }

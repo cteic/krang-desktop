@@ -12,11 +12,41 @@
 //! | `terminal-latency`  | Types into the first terminal and times the echo         |
 //! | `web`               | Waits for the first web pane to load                      |
 //! | `showcase`          | Fills the chat pane, then holds; for screenshots          |
+//! | `chat-scroll`       | Fills a chat past its pane and reports where it is scrolled |
+//! | `tabs`              | Names a tab, moves it, saves it as a layout, prints the tabs |
+//! | `files`             | Opens `KRANG_SELFTEST_DIR` in a files pane and times it   |
+//!
+//! `KRANG_SELFTEST_SHOT=<file.bmp>` writes what the window has drawn to a
+//! picture just before any scenario finishes. The app draws it itself, so
+//! it works with the screen locked, where `screencapture` does not. Native
+//! web views are not in it: they are drawn by the system, over the window.
 //!
 //! `showcase` sends two messages to the first chat pane, the second one
 //! failing, so a transcript with a tool step, code, a cost and an error is
 //! on screen. `KRANG_SELFTEST_SHOW=palette` then opens the command palette
 //! and `KRANG_SELFTEST_SHOW=switcher` the first editor's quick switcher.
+//!
+//! `chat-scroll` opens a chat in a new tab, sends it messages until the
+//! transcript is taller than the pane, and prints how much of it is out of
+//! sight below the view: while a reply streams, and after it stops. Zero
+//! means the newest line is showing. `KRANG_SELFTEST_SHOW=restored` sends
+//! nothing and measures the chat that came back from the saved workspace.
+//!
+//! `tabs` prints the tab names as they are at the start, so a second run on
+//! the same state shows what was restored. It then adds two tabs, names the
+//! first `Planning` through the same messages a double click and typing
+//! send, moves it one place right, saves it as a layout, prints the names
+//! again and holds. `KRANG_SELFTEST_SHOW=rename` leaves the name field open.
+//!
+//! `files` first prints the folder and open folders of any files pane that
+//! came back from the saved workspace. It then opens `KRANG_SELFTEST_DIR`
+//! in a new tab, or with no folder named uses the files pane that is
+//! there, and prints how long the listing took, how long the rows
+//! took, and the time from a Page Down to the frame that shows it, sixty
+//! times over. `KRANG_SELFTEST_OPEN` is a comma-separated list of paths
+//! under the folder to click in turn, a folder before what is in it; the
+//! panes of the tab are printed afterwards. `KRANG_SELFTEST_SHOW=restored`
+//! opens nothing new.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -26,8 +56,13 @@ use iced::widget::text_editor::{Action, Edit};
 
 use crate::web::host::WebEvent;
 
-use super::chat::ChatMessage;
+use crate::shell::layout::{PaneKind, PaneSpec, TabSpec, Tree};
+
+use super::chat::{ChatMessage, ChatPane};
 use super::editor::EditorMessage;
+use super::files::{FilesMessage, Nav};
+use super::palette::{Command, NewPane};
+use super::scroll::{Locate, Place};
 use super::shortcuts::Action as Shortcut;
 use super::terminal::TerminalPane;
 use super::{App, Body, Message, Pane};
@@ -50,6 +85,9 @@ pub enum Plan {
     TerminalLatency,
     Web,
     Showcase,
+    ChatScroll,
+    Tabs,
+    Files,
 }
 
 impl Plan {
@@ -63,6 +101,9 @@ impl Plan {
             "terminal-latency" => Plan::TerminalLatency,
             "web" => Plan::Web,
             "showcase" => Plan::Showcase,
+            "chat-scroll" => Plan::ChatScroll,
+            "tabs" => Plan::Tabs,
+            "files" => Plan::Files,
             _ => return None,
         })
     }
@@ -75,6 +116,8 @@ pub enum Step {
     Type(u32),
     TerminalType(u32),
     Show(u32),
+    Measured(&'static str, Place),
+    Shot(iced::window::Screenshot),
     Finish,
 }
 
@@ -140,6 +183,9 @@ pub struct SelfTest {
     echo_times: Vec<Duration>,
     typed: Option<(Instant, usize)>,
     edit_times: Vec<Duration>,
+    nav_times: Vec<Duration>,
+    files_started: Option<Instant>,
+    shot_taken: bool,
     vault_ready: bool,
     web_started: Instant,
 }
@@ -158,6 +204,9 @@ impl SelfTest {
             echo_times: Vec::new(),
             typed: None,
             edit_times: Vec::new(),
+            nav_times: Vec::new(),
+            files_started: None,
+            shot_taken: false,
             vault_ready: false,
             web_started: Instant::now(),
         }
@@ -292,6 +341,23 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             after(Duration::from_secs(seconds()), Step::Finish),
         ]),
         (Plan::Showcase, Step::Show(number)) => showcase(app, number),
+        (Plan::Files, Step::Begin) => files(app, 0),
+        (Plan::Files, Step::Show(number)) => files(app, number),
+        (Plan::Tabs, Step::Begin) => tabs(app, 0),
+        (Plan::Tabs, Step::Show(number)) => tabs(app, number),
+        (Plan::ChatScroll, Step::Begin) => chat_scroll(app, 0),
+        (Plan::ChatScroll, Step::Show(number)) => chat_scroll(app, number),
+        (Plan::ChatScroll, Step::Measured(name, place)) => {
+            report(
+                &format!("chat_scroll_{name}_below_px"),
+                format!("{:.0}", place.below),
+            );
+            report(
+                &format!("chat_scroll_{name}_hidden_px"),
+                format!("{:.0}", place.hidden),
+            );
+            Task::none()
+        }
         (Plan::Flood, Step::Begin) => {
             report("flood_seconds", seconds());
             Task::batch([
@@ -416,7 +482,31 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
                 after(Duration::from_millis(40), Step::Type(number + 1)),
             ])
         }
-        (_, Step::Finish) => finish(app),
+        (_, Step::Shot(shot)) => {
+            if let Some(file) = std::env::var_os("KRANG_SELFTEST_SHOT") {
+                match std::fs::write(&file, bitmap(&shot)) {
+                    Ok(()) => report(
+                        "screenshot",
+                        format!("{}x{}", shot.size.width, shot.size.height),
+                    ),
+                    Err(error) => eprintln!("krang-shell: could not write the picture: {error}"),
+                }
+            }
+            finish(app)
+        }
+        (_, Step::Finish) => {
+            let wanted = std::env::var_os("KRANG_SELFTEST_SHOT").is_some();
+            let taken = app
+                .selftest
+                .as_mut()
+                .is_none_or(|selftest| std::mem::replace(&mut selftest.shot_taken, true));
+            match app.window {
+                Some(window) if wanted && !taken => {
+                    iced::window::screenshot(window).map(|shot| Message::SelfTest(Step::Shot(shot)))
+                }
+                _ => finish(app),
+            }
+        }
         _ => Task::none(),
     }
 }
@@ -465,6 +555,321 @@ fn showcase(app: &mut App, number: u32) -> Task<Message> {
     }
 }
 
+fn first_files(app: &App) -> Option<u64> {
+    find_pane(app, |pane| matches!(pane.body, Body::Files(_)))
+}
+
+/// The files pane the test opened: the newest one.
+fn last_files(app: &App) -> Option<u64> {
+    app.panes
+        .iter()
+        .filter(|(_, pane)| matches!(pane.body, Body::Files(_)))
+        .map(|(id, _)| *id)
+        .max()
+}
+
+/// What each pane of the shown tab is, and what it has open.
+fn report_panes(app: &App, name: &str) {
+    let tab = app.tab();
+    let panes: Vec<String> = super::leaf_ids(&tab.grid, tab.grid.layout())
+        .into_iter()
+        .filter_map(|id| app.panes.get(&id))
+        .map(|pane| match &pane.body {
+            Body::Terminal(_) => String::from("terminal"),
+            Body::Chat(_) => String::from("chat"),
+            Body::Files(files) => format!("files:{}", files.selected().unwrap_or("")),
+            Body::Editor(editor) => format!("editor:{}", editor.path.as_deref().unwrap_or("")),
+            Body::Web(web) => format!(
+                "web:{}",
+                web.url.rsplit('/').next().unwrap_or(web.url.as_str())
+            ),
+        })
+        .collect();
+    report(name, panes.join(" | "));
+}
+
+const FILES_PAGES: u32 = 60;
+
+fn files(app: &mut App, number: u32) -> Task<Message> {
+    let next = |delay: u64| after(Duration::from_millis(delay), Step::Show(number + 1));
+    let again = |delay: u64| after(Duration::from_millis(delay), Step::Show(number));
+    let restored = std::env::var("KRANG_SELFTEST_SHOW").as_deref() == Ok("restored");
+    if number == 0 {
+        if let Some(Pane {
+            body: Body::Files(files),
+            ..
+        }) = first_files(app).and_then(|id| app.panes.get(&id))
+        {
+            report("files_restored_root", files.tree.root().display());
+            report("files_restored_open", files.tree.expanded().join(","));
+            report("files_restored_hidden", files.tree.show_hidden());
+        }
+        if restored {
+            return after(Duration::from_millis(800), Step::Show(1));
+        }
+        if let Some(selftest) = app.selftest.as_mut() {
+            selftest.files_started = Some(Instant::now());
+        }
+        // With no folder named, the test drives the files pane that is
+        // already there, such as one from a layout.
+        let Ok(directory) = std::env::var("KRANG_SELFTEST_DIR") else {
+            return next(1);
+        };
+        let spec = TabSpec {
+            title: String::from("files"),
+            named: false,
+            tree: Tree::Pane(PaneSpec {
+                title: None,
+                kind: PaneKind::Files {
+                    directory: Some(directory),
+                    expanded: Vec::new(),
+                    hidden: false,
+                },
+            }),
+            focus: Some(0),
+            maximized: false,
+        };
+        let (tab, load) = app.build_tab(spec);
+        app.tabs.push(tab);
+        app.active = app.tabs.len() - 1;
+        return Task::batch([load, app.show_tab(), next(1)]);
+    }
+    let Some(id) = last_files(app) else {
+        return Task::done(Message::SelfTest(Step::Finish));
+    };
+    let Some(Pane {
+        body: Body::Files(pane),
+        ..
+    }) = app.panes.get(&id)
+    else {
+        return Task::none();
+    };
+    if restored {
+        report("files_restored_rows", pane.tree.len());
+        return Task::done(Message::SelfTest(Step::Finish));
+    }
+    let pages = 2..2 + FILES_PAGES;
+    match number {
+        1 if !pane.tree.is_ready() => again(1),
+        1 => {
+            report("files_rows", pane.tree.len());
+            report("files_list_ms", format!("{:.2}", millis(pane.timings.list)));
+            report("files_rows_ms", format!("{:.3}", millis(pane.timings.rows)));
+            if let Some(selftest) = app.selftest.as_mut()
+                && let Some(started) = selftest.files_started
+            {
+                report(
+                    "files_open_to_listed_ms",
+                    format!("{:.1}", millis(started.elapsed())),
+                );
+                selftest.probe = Some(Probe {
+                    since: started,
+                    frames: 0,
+                });
+            }
+            next(500)
+        }
+        step if pages.contains(&step) => {
+            if step == pages.start
+                && let Some(selftest) = app.selftest.as_mut()
+            {
+                if let Some(first) = selftest.key_times.first().copied() {
+                    report("files_open_to_frame_ms", format!("{:.1}", millis(first)));
+                }
+                selftest.key_times.clear();
+            }
+            let started = Instant::now();
+            let task = app.files_nav(id, Nav::PageDown);
+            if let Some(selftest) = app.selftest.as_mut() {
+                selftest.nav_times.push(started.elapsed());
+                selftest.probe = Some(Probe {
+                    since: started,
+                    frames: 0,
+                });
+            }
+            Task::batch([task, next(40)])
+        }
+        step => {
+            let opens: Vec<String> = std::env::var("KRANG_SELFTEST_OPEN")
+                .map(|list| {
+                    list.split(',')
+                        .filter(|path| !path.is_empty())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let index = (step - pages.end) as usize;
+            if index == 0 {
+                if let Some(selftest) = app.selftest.as_mut() {
+                    report_summary("files_page_update", &mut selftest.nav_times);
+                    report_summary("files_page_to_frame", &mut selftest.key_times);
+                }
+                report("files_selected", pane.selected().unwrap_or(""));
+            }
+            match opens.get(index) {
+                Some(path) => match pane.tree.position(path) {
+                    Some(row) => Task::batch([
+                        Task::done(Message::Files(id, FilesMessage::Press(row))),
+                        next(400),
+                    ]),
+                    None => {
+                        report("files_not_found", path);
+                        next(1)
+                    }
+                },
+                None => {
+                    report_panes(app, "files_tab_panes");
+                    after(Duration::from_secs(seconds()), Step::Finish)
+                }
+            }
+        }
+    }
+}
+
+fn report_tabs(app: &App, name: &str) {
+    let names: Vec<String> = app.tabs.iter().map(|tab| app.tab_name(tab)).collect();
+    report(name, names.join(" | "));
+    report(&format!("{name}_active"), app.active);
+}
+
+fn tabs(app: &mut App, number: u32) -> Task<Message> {
+    let next = |delay: u64| after(Duration::from_millis(delay), Step::Show(number + 1));
+    let show = std::env::var("KRANG_SELFTEST_SHOW").ok();
+    match number {
+        0 => {
+            report_tabs(app, "tabs_at_start");
+            Task::batch([
+                app.new_tab(NewPane::Editor),
+                app.new_tab(NewPane::Terminal),
+                next(300),
+            ])
+        }
+        1 => Task::batch([
+            Task::done(Message::TabPressed(0)),
+            Task::done(Message::TabReleased),
+            Task::done(Message::RenameTab(0)),
+            Task::done(Message::RenameDraft(String::from("Planning"))),
+            next(300),
+        ]),
+        2 if show.as_deref() == Some("rename") => {
+            after(Duration::from_secs(seconds()), Step::Finish)
+        }
+        2 => Task::batch([Task::done(Message::RenameDone), next(300)]),
+        3 => Task::batch([
+            Task::done(Message::PaletteRun(Some(Command::MoveTabRight))),
+            next(300),
+        ]),
+        4 => Task::batch([
+            Task::done(Message::PaletteRun(Some(Command::SaveLayout))),
+            next(300),
+        ]),
+        5 => {
+            report_tabs(app, "tabs_at_end");
+            if let Some((_, notice)) = &app.notice {
+                report("tabs_notice", notice);
+            }
+            after(Duration::from_secs(seconds()), Step::Finish)
+        }
+        _ => Task::none(),
+    }
+}
+
+fn first_chat(app: &App) -> Option<u64> {
+    find_pane(app, |pane| matches!(pane.body, Body::Chat(_)))
+}
+
+fn say(id: u64, prompt: &str) -> Task<Message> {
+    let paste = Action::Edit(Edit::Paste(std::sync::Arc::new(prompt.to_string())));
+    Task::batch([
+        Task::done(Message::Chat(id, ChatMessage::Draft(paste))),
+        Task::done(Message::Chat(id, ChatMessage::Send)),
+    ])
+}
+
+/// Reads where the first chat's transcript is scrolled to.
+fn measure(app: &App, name: &'static str) -> Task<Message> {
+    let Some(id) = first_chat(app) else {
+        return Task::none();
+    };
+    iced::advanced::widget::operate(Locate::new(ChatPane::transcript_id(id)))
+        .map(move |place| Message::SelfTest(Step::Measured(name, place)))
+}
+
+/// How many short replies fill a chat past a pane of the default window.
+const CHAT_SCROLL_REPLIES: u32 = 4;
+
+fn chat_scroll(app: &mut App, number: u32) -> Task<Message> {
+    let next = |delay: u64| after(Duration::from_millis(delay), Step::Show(number + 1));
+    if std::env::var("KRANG_SELFTEST_SHOW").as_deref() == Ok("restored") {
+        return match number {
+            0 => Task::batch([measure(app, "restored"), next(500)]),
+            _ => Task::done(Message::SelfTest(Step::Finish)),
+        };
+    }
+    if number == 0 {
+        return Task::batch([app.new_tab(NewPane::Chat), next(300)]);
+    }
+    let Some(id) = first_chat(app) else {
+        return Task::done(Message::SelfTest(Step::Finish));
+    };
+    let streaming = CHAT_SCROLL_REPLIES + 1;
+    match number - 1 {
+        sent if sent < CHAT_SCROLL_REPLIES => Task::batch([
+            say(
+                id,
+                &format!("Question {}: what does the import do?", sent + 1),
+            ),
+            next(1200),
+        ]),
+        // The fake agent streams a reply to this for ten seconds.
+        sent if sent == CHAT_SCROLL_REPLIES => {
+            Task::batch([say(id, "Take it slow and explain."), next(3000)])
+        }
+        step if step == streaming => Task::batch([measure(app, "streaming"), next(200)]),
+        step if step == streaming + 1 => {
+            Task::batch([Task::done(Message::Chat(id, ChatMessage::Stop)), next(500)])
+        }
+        step if step == streaming + 2 => Task::batch([measure(app, "settled"), next(300)]),
+        _ => Task::done(Message::SelfTest(Step::Finish)),
+    }
+}
+
+/// A screenshot as an uncompressed BMP file: 24 bits a pixel, rows from
+/// the bottom up, each padded to four bytes. No picture library is needed
+/// to write it, and `sips` turns it into a PNG.
+fn bitmap(shot: &iced::window::Screenshot) -> Vec<u8> {
+    let (width, height) = (shot.size.width as usize, shot.size.height as usize);
+    let row = (width * 3).div_ceil(4) * 4;
+    let pixels = row * height;
+    let mut file = Vec::with_capacity(54 + pixels);
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&(54 + pixels as u32).to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&54_u32.to_le_bytes());
+    file.extend_from_slice(&40_u32.to_le_bytes());
+    file.extend_from_slice(&(width as i32).to_le_bytes());
+    file.extend_from_slice(&(height as i32).to_le_bytes());
+    file.extend_from_slice(&1_u16.to_le_bytes());
+    file.extend_from_slice(&24_u16.to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&(pixels as u32).to_le_bytes());
+    // 72 dots an inch, and no colour table.
+    file.extend_from_slice(&2835_u32.to_le_bytes());
+    file.extend_from_slice(&2835_u32.to_le_bytes());
+    file.extend_from_slice(&[0; 8]);
+    for line in (0..height).rev() {
+        let start = line * width * 4;
+        let Some(rgba) = shot.rgba.get(start..start + width * 4) else {
+            break;
+        };
+        for [red, green, blue, _] in rgba.as_chunks::<4>().0 {
+            file.extend_from_slice(&[*blue, *green, *red]);
+        }
+        file.resize(file.len() + row - width * 3, 0);
+    }
+    file
+}
+
 fn finish(app: &mut App) -> Task<Message> {
     let Some(selftest) = app.selftest.as_mut() else {
         return iced::exit();
@@ -509,6 +914,9 @@ fn finish(app: &mut App) -> Task<Message> {
         _ => {}
     }
     app.save();
+    if let Some(tool) = &app.tool {
+        tool.close();
+    }
     iced::exit()
 }
 
@@ -525,5 +933,26 @@ mod tests {
             (51.0, 99.0, 100.0)
         );
         assert_eq!(summary(&mut []), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_screenshot_becomes_a_bitmap_with_rows_from_the_bottom() {
+        // Three pixels wide, so each row of nine bytes is padded to twelve.
+        let shot = iced::window::Screenshot::new(
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, // red, green, blue
+                1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255,
+            ],
+            iced::Size::new(3, 2),
+            1.0,
+        );
+        let file = bitmap(&shot);
+        assert_eq!(file.len(), 54 + 24);
+        assert_eq!(&file[..2], b"BM");
+        assert_eq!(file[18..22], 3_i32.to_le_bytes());
+        assert_eq!(file[22..26], 2_i32.to_le_bytes());
+        // The last row comes first, as blue, green, red.
+        assert_eq!(file[54..66], [3, 2, 1, 6, 5, 4, 9, 8, 7, 0, 0, 0]);
+        assert_eq!(file[66..78], [0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 0, 0]);
     }
 }

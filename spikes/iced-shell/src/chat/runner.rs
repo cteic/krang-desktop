@@ -89,6 +89,12 @@ pub fn start(
     command
         .args(args)
         .env("PATH", &path)
+        // An agent is not a pane: it must not drive the app as one, even
+        // when the app itself was started from inside a pane.
+        .env_remove(crate::kd::protocol::ENV_SOCKET)
+        .env_remove(crate::kd::protocol::ENV_PANE)
+        .env_remove(crate::kd::protocol::ENV_TOKEN)
+        .env_remove(crate::kd::protocol::ENV_CLI)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -4,11 +4,14 @@
 mod chat;
 mod editor;
 mod feed;
+mod files;
 mod palette;
 mod probe;
+mod scroll;
 pub mod selftest;
 mod shortcuts;
 mod terminal;
+mod tool;
 mod web;
 
 use std::collections::HashMap;
@@ -24,10 +27,12 @@ use iced::{Element, Length, Padding, Size, Subscription, Task, Theme, keyboard, 
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::chat::runner::RunEvent;
+use crate::files::kind::{Kind, Opens};
+use crate::kd::protocol::{self as kd, Response};
 use crate::shell::layout::{
     self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, WORKSPACE_VERSION, Workspace,
 };
-use crate::shell::store;
+use crate::shell::{store, tabs};
 use crate::style::{self, Icon, Mode, measure, size, space};
 use crate::term::events::{self, TermEvent};
 use crate::term::palette::Scheme;
@@ -39,9 +44,11 @@ use crate::web::host::{self, ParentWindow, WebEvent, WebHost};
 use chat::{ChatMessage, ChatPane};
 use editor::{EditorMessage, EditorPane, PreviewTarget};
 use feed::Feed;
+use files::{Effect, FilesMessage, FilesPane, Nav};
 use palette::{Command, NewPane, Palette};
 use shortcuts::Action;
 use terminal::TerminalPane;
+use tool::{Tool, ToolCall};
 use web::{WebMessage, WebPane};
 
 #[derive(Debug, Clone, Default)]
@@ -66,6 +73,11 @@ pub enum Message {
     Web(u64, WebMessage),
     WebPump,
     Editor(u64, EditorMessage),
+    Files(u64, FilesMessage),
+    /// A key that moves through a list, for the pane that has the keyboard.
+    Nav(Nav),
+    /// A request from `kd` in a terminal pane.
+    Tool(ToolCall),
     VaultOpened(PathBuf, std::sync::Arc<std::sync::Mutex<Option<Index>>>),
     /// A status line control: the action runs on that pane, focused first.
     PaneAction(u64, Action),
@@ -78,6 +90,15 @@ pub enum Message {
     ClosePane(u64),
     SelectTab(usize),
     CloseTab(usize),
+    /// The pointer went down on a tab: it is shown, and held for a drag.
+    TabPressed(usize),
+    TabEntered(usize),
+    TabExited(usize),
+    TabReleased,
+    RenameTab(usize),
+    RenameDraft(String),
+    RenameDone,
+    NoticeExpired(u64),
     PaletteQuery(String),
     PaletteRun(Option<Command>),
     /// Up or down in whichever list is open: the palette or the quick switcher.
@@ -91,6 +112,7 @@ enum Body {
     Editor(Box<EditorPane>),
     Web(WebPane),
     Chat(ChatPane),
+    Files(FilesPane),
 }
 
 struct Pane {
@@ -100,6 +122,8 @@ struct Pane {
 
 struct Tab {
     title: String,
+    /// The person named the tab, so it no longer shows its pane's title.
+    named: bool,
     grid: pane_grid::State<u64>,
     focus: Option<pane_grid::Pane>,
 }
@@ -115,6 +139,9 @@ pub struct App {
     term_feed: Feed<TermEvent>,
     run_feed: Feed<RunEvent>,
     web_feed: Feed<WebEvent>,
+    tool_feed: Feed<ToolCall>,
+    /// The `kd` socket, when it could be opened.
+    tool: Option<Tool>,
     web: WebHost,
     vaults: HashMap<PathBuf, Option<Index>>,
     palette: Option<Palette>,
@@ -128,9 +155,20 @@ pub struct App {
     theme: Theme,
     /// The window's width, which decides where the tabs go.
     width: f32,
+    /// The tab whose name is being typed, and the name so far.
+    renaming: Option<(usize, String)>,
+    /// The tab the pointer holds, which follows the pointer over the others.
+    tab_drag: Option<usize>,
+    tab_hover: Option<usize>,
+    /// A line that says what a command just did, and which one it is.
+    notice: Option<(u64, String)>,
+    notices: u64,
 }
 
 const PALETTE_INPUT: &str = "palette-input";
+const RENAME_INPUT: &str = "tab-name-input";
+/// How long a notice stays up.
+const NOTICE_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 const NOWHERE: &str = "no-widget";
 
 /// The window's size at start: `KRANG_WINDOW_SIZE`, written `1280x800`, or
@@ -184,7 +222,15 @@ impl App {
         let (term_sender, term_receiver) = events::queue();
         let (run_sender, run_receiver) = unbounded_channel();
         let (web_sender, web_receiver) = unbounded_channel();
+        let (tool_sender, tool_receiver) = unbounded_channel();
         let state_dir = store::state_dir();
+        let tool = match Tool::start(state_dir.as_deref(), tool_sender) {
+            Ok(tool) => Some(tool),
+            Err(error) => {
+                eprintln!("krang-shell: kd is off, the socket could not open: {error}");
+                None
+            }
+        };
         let persist = options.layouts.is_empty();
         let default_vault = std::env::var_os("KRANG_VAULT")
             .map(PathBuf::from)
@@ -202,6 +248,8 @@ impl App {
             term_feed: Feed::new("terminals", term_receiver),
             run_feed: Feed::new("runs", run_receiver),
             web_feed: Feed::new("web", web_receiver),
+            tool_feed: Feed::new("kd", tool_receiver),
+            tool,
             web: WebHost::new(web_sender),
             vaults: HashMap::new(),
             palette: None,
@@ -213,6 +261,11 @@ impl App {
             theme_setting,
             theme: Mode::choose(theme_setting, iced::theme::Mode::None).theme(),
             width: window_size().0,
+            renaming: None,
+            tab_drag: None,
+            tab_hover: None,
+            notice: None,
+            notices: 0,
         };
 
         let mut tasks = vec![window::oldest().and_then(|id| {
@@ -226,6 +279,7 @@ impl App {
         let mut specs: Vec<TabSpec> = Vec::new();
         let mut active = 0;
         for path in &options.layouts {
+            let path = &store::resolve_layout(app.state_dir.as_deref(), path);
             match std::fs::read_to_string(path)
                 .map_err(|error| error.to_string())
                 .and_then(|source| layout::parse_layout(&source))
@@ -269,6 +323,7 @@ impl App {
     fn new_tab_spec(&self, kind: NewPane) -> TabSpec {
         TabSpec {
             title: String::from("shell"),
+            named: false,
             tree: Tree::Pane(self.new_pane_spec(kind)),
             focus: Some(0),
             maximized: false,
@@ -289,6 +344,16 @@ impl App {
                 mode: EditorMode::Edit,
             },
             NewPane::Web => PaneKind::Web { url: String::new() },
+            NewPane::Files => PaneKind::Files {
+                directory: Some(
+                    directory
+                        .unwrap_or_else(|| self.default_vault.clone())
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                expanded: Vec::new(),
+                hidden: false,
+            },
             NewPane::Chat => PaneKind::Chat {
                 agent: crate::chat::Agent::Claude,
                 directory: directory.map(|dir| dir.to_string_lossy().into_owned()),
@@ -305,6 +370,7 @@ impl App {
             Body::Terminal(pane) => pane.working_directory(),
             Body::Editor(pane) => Some(pane.root.clone()),
             Body::Chat(pane) => pane.directory.as_deref().map(layout::expand_home),
+            Body::Files(pane) => Some(pane.tree.root().to_path_buf()),
             Body::Web(_) => None,
         }
     }
@@ -326,29 +392,27 @@ impl App {
                     &self.term_sender,
                     &commands,
                     self.mode,
+                    self.tool_env(id),
                 ))
             }
             PaneKind::Editor { vault, path, mode } => {
-                let path = path.map(|path| layout::expand_home(&path));
-                let root = vault
-                    .map(|vault| layout::expand_home(&vault))
-                    .or_else(|| path.as_deref().and_then(vault_root_for))
+                let (body, open) = self.editor_body(vault, path, mode);
+                task = open;
+                body
+            }
+            PaneKind::Files {
+                directory,
+                expanded,
+                hidden,
+            } => {
+                let root = directory
+                    .as_deref()
+                    .map(layout::expand_home)
                     .unwrap_or_else(|| self.default_vault.clone());
                 let root = std::fs::canonicalize(&root).unwrap_or(root);
-                let mut pane = EditorPane::new(root.clone(), mode);
-                if let Some(relative) = path
-                    .and_then(|path| std::fs::canonicalize(&path).ok())
-                    .and_then(|path| crate::vault::index::relative(&root, &path))
-                {
-                    task = pane.open(&relative);
-                }
-                if let Some(Some(index)) = self.vaults.get(&root) {
-                    pane.sync_tree(index);
-                } else if !self.vaults.contains_key(&root) {
-                    self.vaults.insert(root.clone(), None);
-                    task = Task::batch([task, open_vault(root)]);
-                }
-                Body::Editor(Box::new(pane))
+                let (pane, load) = FilesPane::new(id, root, hidden, expanded);
+                task = load;
+                Body::Files(pane)
             }
             PaneKind::Web { url } => Body::Web(WebPane::new(&url)),
             PaneKind::Chat {
@@ -369,6 +433,37 @@ impl App {
         (id, task)
     }
 
+    /// An editor on a vault, with a note open when one is named. The vault
+    /// is the one given, or the one the note is in, or the default.
+    fn editor_body(
+        &mut self,
+        vault: Option<String>,
+        path: Option<String>,
+        mode: EditorMode,
+    ) -> (Body, Task<Message>) {
+        let mut task = Task::none();
+        let path = path.map(|path| layout::expand_home(&path));
+        let root = vault
+            .map(|vault| layout::expand_home(&vault))
+            .or_else(|| path.as_deref().and_then(vault_root_for))
+            .unwrap_or_else(|| self.default_vault.clone());
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let mut pane = EditorPane::new(root.clone(), mode);
+        if let Some(relative) = path
+            .and_then(|path| std::fs::canonicalize(&path).ok())
+            .and_then(|path| crate::vault::index::relative(&root, &path))
+        {
+            task = pane.open(&relative);
+        }
+        if let Some(Some(index)) = self.vaults.get(&root) {
+            pane.sync_tree(index);
+        } else if !self.vaults.contains_key(&root) {
+            self.vaults.insert(root.clone(), None);
+            task = Task::batch([task, open_vault(root)]);
+        }
+        (Body::Editor(Box::new(pane)), task)
+    }
+
     fn build_tab(&mut self, spec: TabSpec) -> (Tab, Task<Message>) {
         let mut tasks = Vec::new();
         let mut leaves = Vec::new();
@@ -384,6 +479,7 @@ impl App {
             .map(|(pane, _)| *pane);
         let mut tab = Tab {
             title: spec.title,
+            named: spec.named,
             grid,
             focus,
         };
@@ -442,6 +538,11 @@ impl App {
             Body::Web(web) => PaneKind::Web {
                 url: web.url.clone(),
             },
+            Body::Files(files) => PaneKind::Files {
+                directory: Some(files.tree.root().to_string_lossy().into_owned()),
+                expanded: files.tree.expanded(),
+                hidden: files.tree.show_hidden(),
+            },
             Body::Chat(chat) => PaneKind::Chat {
                 agent: chat.agent,
                 directory: chat.directory.clone(),
@@ -491,6 +592,7 @@ impl App {
                     .and_then(|id| leaves.iter().position(|leaf| leaf == id));
                 Some(TabSpec {
                     title: tab.title.clone(),
+                    named: tab.named,
                     tree,
                     focus,
                     maximized: tab.grid.maximized().is_some(),
@@ -564,6 +666,7 @@ impl App {
                 .filter(|title| !title.is_empty())
                 .unwrap_or_else(|| String::from("web")),
             Body::Chat(chat) => format!("chat · {}", chat.agent.label()),
+            Body::Files(files) => files.title(),
         })
     }
 
@@ -632,32 +735,222 @@ impl App {
 
     fn focus(&mut self, pane: pane_grid::Pane) -> Task<Message> {
         self.tab_mut().focus = Some(pane);
-        self.focus_task()
+        Task::batch([self.refresh_files(), self.focus_task()])
+    }
+
+    /// Where a pane is: its tab, and its place in that tab's grid.
+    fn locate(&self, id: u64) -> Option<(usize, pane_grid::Pane)> {
+        self.tabs.iter().enumerate().find_map(|(index, tab)| {
+            tab.grid
+                .iter()
+                .find(|(_, known)| **known == id)
+                .map(|(pane, _)| (index, *pane))
+        })
+    }
+
+    /// Gives a pane the keyboard within its tab. The tab is not brought to
+    /// the front: a pane in a hidden tab has the keyboard when it is shown.
+    fn focus_id(&mut self, id: u64) -> Task<Message> {
+        match self.locate(id) {
+            Some((tab, pane)) if tab == self.active => self.focus(pane),
+            Some((tab, pane)) => {
+                self.tabs[tab].focus = Some(pane);
+                Task::none()
+            }
+            None => Task::none(),
+        }
+    }
+
+    /// The files pane with the keyboard reads its folder again. There is no
+    /// watcher, so this is how it catches up when the person comes back.
+    fn refresh_files(&mut self) -> Task<Message> {
+        let Some(id) = self.focused_id() else {
+            return Task::none();
+        };
+        match self.panes.get_mut(&id).map(|pane| &mut pane.body) {
+            Some(Body::Files(files)) => files.refresh(id),
+            _ => Task::none(),
+        }
+    }
+
+    fn files_effect(&mut self, id: u64, effect: Option<Effect>) -> Task<Message> {
+        match effect {
+            Some(Effect::Open(path)) => self.open_file(id, path),
+            Some(Effect::Changed) => {
+                self.save();
+                Task::none()
+            }
+            None => Task::none(),
+        }
+    }
+
+    fn files(&mut self, id: u64, message: FilesMessage) -> Task<Message> {
+        let Some(Pane {
+            body: Body::Files(files),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
+        let (task, effect) = files.update(id, message);
+        Task::batch([task, self.files_effect(id, effect)])
+    }
+
+    fn files_nav(&mut self, id: u64, nav: Nav) -> Task<Message> {
+        let Some(Pane {
+            body: Body::Files(files),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
+        let (task, effect) = files.nav(id, nav);
+        Task::batch([task, self.files_effect(id, effect)])
+    }
+
+    /// Opens a file chosen in a files pane, in the pane for its type: a web
+    /// page in a web pane, anything else in an editor. A pane of that kind
+    /// in the same tab is used again; otherwise one opens beside the files.
+    fn open_file(&mut self, from: u64, path: PathBuf) -> Task<Message> {
+        let Some((tab, _)) = self.locate(from) else {
+            return Task::none();
+        };
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ids = leaf_ids(&self.tabs[tab].grid, self.tabs[tab].grid.layout());
+        let address = path.to_string_lossy().into_owned();
+        match Kind::of(&name).opens() {
+            Opens::Web => {
+                let web = ids.into_iter().find(|id| {
+                    matches!(
+                        self.panes.get(id).map(|pane| &pane.body),
+                        Some(Body::Web(_))
+                    )
+                });
+                match web {
+                    Some(id) => Task::batch([
+                        self.web_message(id, WebMessage::Address(address)),
+                        self.web_message(id, WebMessage::Go),
+                        self.focus_id(id),
+                    ]),
+                    None => self.split_beside(
+                        from,
+                        PaneSpec {
+                            title: None,
+                            kind: PaneKind::Web { url: address },
+                        },
+                        false,
+                        true,
+                    ),
+                }
+            }
+            Opens::Editor => {
+                let editor = ids.into_iter().find(|id| {
+                    matches!(
+                        self.panes.get(id).map(|pane| &pane.body),
+                        Some(Body::Editor(_))
+                    )
+                });
+                match editor {
+                    Some(id) => Task::batch([self.show_in_editor(id, &path), self.focus_id(id)]),
+                    None => self.split_beside(
+                        from,
+                        PaneSpec {
+                            title: None,
+                            kind: PaneKind::Editor {
+                                vault: None,
+                                path: Some(address),
+                                mode: EditorMode::Edit,
+                            },
+                        },
+                        false,
+                        true,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Opens a file in an editor pane that is already there. A file outside
+    /// the editor's vault moves the editor to the file's own folder.
+    fn show_in_editor(&mut self, id: u64, path: &std::path::Path) -> Task<Message> {
+        let Some(Pane {
+            body: Body::Editor(editor),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
+        let inside = std::fs::canonicalize(path)
+            .ok()
+            .and_then(|path| crate::vault::index::relative(&editor.root, &path));
+        if let Some(relative) = inside {
+            return self.editor(id, EditorMessage::Open(relative));
+        }
+        let (root, mode) = (editor.root.clone(), editor.mode);
+        let saved = if editor.dirty {
+            editor.save_now()
+        } else {
+            None
+        };
+        self.store_saved(&root, saved);
+        let (body, task) = self.editor_body(None, Some(path.to_string_lossy().into_owned()), mode);
+        if let Some(pane) = self.panes.get_mut(&id) {
+            pane.body = body;
+        }
+        self.save();
+        task
     }
 
     fn split(&mut self, kind: NewPane, down: bool) -> Task<Message> {
-        let Some(target) = self
-            .tab()
-            .focus
-            .or_else(|| self.tab().grid.iter().next().map(|(pane, _)| *pane))
+        let Some(beside) = self
+            .focused_id()
+            .or_else(|| self.tab().grid.iter().next().map(|(_, id)| *id))
         else {
             return Task::none();
         };
         let spec = self.new_pane_spec(kind);
+        self.split_beside(beside, spec, down, true)
+    }
+
+    /// Opens a pane to the right of another, or below it. `take_focus`
+    /// gives it the keyboard within its tab.
+    fn split_beside(
+        &mut self,
+        beside: u64,
+        spec: PaneSpec,
+        down: bool,
+        take_focus: bool,
+    ) -> Task<Message> {
+        let Some((tab, target)) = self.locate(beside) else {
+            return Task::none();
+        };
         let (id, task) = self.create_pane(spec);
         let split_axis = if down {
             pane_grid::Axis::Horizontal
         } else {
             pane_grid::Axis::Vertical
         };
-        if self.tab().grid.maximized().is_some() {
-            self.tab_mut().grid.restore();
+        let grid = &mut self.tabs[tab].grid;
+        if grid.maximized().is_some() {
+            grid.restore();
         }
-        let Some((pane, _)) = self.tab_mut().grid.split(split_axis, target, id) else {
-            self.panes.remove(&id);
+        let Some((pane, _)) = grid.split(split_axis, target, id) else {
+            self.drop_pane(id);
             return task;
         };
-        let focus = self.focus(pane);
+        let focus = if take_focus {
+            self.tabs[tab].focus = Some(pane);
+            if tab == self.active {
+                self.focus_task()
+            } else {
+                Task::none()
+            }
+        } else {
+            Task::none()
+        };
         self.save();
         Task::batch([task, focus])
     }
@@ -701,9 +994,158 @@ impl App {
                         self.store_saved(&editor.root.clone(), editor.save_now());
                     }
                 }
-                Body::Terminal(_) => {}
+                Body::Terminal(_) => {
+                    if let Some(tool) = &self.tool {
+                        tool.revoke(id);
+                    }
+                }
+                Body::Files(_) => {}
             }
         }
+    }
+
+    /// What a terminal pane's shell needs for `kd` to reach this window as
+    /// that pane. Empty when the socket could not be opened.
+    fn tool_env(&self, id: u64) -> Vec<(String, String)> {
+        self.tool
+            .as_ref()
+            .map_or_else(Vec::new, |tool| tool.env(id))
+    }
+
+    /// The window's tabs and panes, as `kd panes` prints them.
+    fn panes_info(&self) -> kd::Panes {
+        let tabs = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let focus = tab.focus.and_then(|pane| tab.grid.get(pane)).copied();
+                let panes = leaf_ids(&tab.grid, tab.grid.layout())
+                    .into_iter()
+                    .filter_map(|id| {
+                        let kind = match self.panes.get(&id)?.body {
+                            Body::Terminal(_) => "terminal",
+                            Body::Editor(_) => "editor",
+                            Body::Web(_) => "web",
+                            Body::Chat(_) => "chat",
+                            Body::Files(_) => "files",
+                        };
+                        Some(kd::PaneInfo {
+                            id: kd::pane_name(id),
+                            title: self.pane_title(id).unwrap_or_default(),
+                            kind: String::from(kind),
+                            focused: index == self.active && focus == Some(id),
+                        })
+                    })
+                    .collect();
+                kd::TabInfo {
+                    title: self.tab_name(tab),
+                    active: index == self.active,
+                    panes,
+                }
+            })
+            .collect();
+        kd::Panes { tabs }
+    }
+
+    /// Does what `kd` asked. The request has already shown its pane's
+    /// secret; what it names is checked again here, because the app must
+    /// not trust the tool's own checks.
+    fn run_tool(&mut self, pane: u64, command: kd::Command) -> (Response, Task<Message>) {
+        if self.locate(pane).is_none() {
+            return (Response::err("the calling pane has closed"), Task::none());
+        }
+        let is_dir = |path: &str| std::path::Path::new(path).is_dir();
+        let (kind, down) = match command {
+            kd::Command::Title { text } => {
+                if let Some(pane) = self.panes.get_mut(&pane) {
+                    pane.title = text.filter(|text| !text.trim().is_empty());
+                }
+                self.save();
+                return (Response::done(), Task::none());
+            }
+            kd::Command::Panes => {
+                let response = serde_json::to_value(self.panes_info())
+                    .map_or_else(|error| Response::err(error.to_string()), Response::data);
+                return (response, Task::none());
+            }
+            kd::Command::View { path, down } => {
+                let kind = if is_dir(&path) {
+                    PaneKind::Files {
+                        directory: Some(path),
+                        expanded: Vec::new(),
+                        hidden: false,
+                    }
+                } else if std::path::Path::new(&path).is_file() {
+                    PaneKind::Editor {
+                        vault: None,
+                        path: Some(path),
+                        mode: EditorMode::Edit,
+                    }
+                } else {
+                    return (
+                        Response::err(format!("{path} is not a file or a folder")),
+                        Task::none(),
+                    );
+                };
+                (kind, down)
+            }
+            kd::Command::Web { target, down } => {
+                let reachable = target.contains("://") || std::path::Path::new(&target).is_file();
+                if !reachable || crate::web::address::resolve(&target).is_none() {
+                    return (
+                        Response::err(format!("{target} is not a URL or a file")),
+                        Task::none(),
+                    );
+                }
+                (PaneKind::Web { url: target }, down)
+            }
+            kd::Command::Term {
+                directory,
+                command,
+                down,
+            } => {
+                if let Some(directory) = directory.as_deref().filter(|path| !is_dir(path)) {
+                    return (
+                        Response::err(format!("{directory} is not a directory")),
+                        Task::none(),
+                    );
+                }
+                (
+                    PaneKind::Terminal {
+                        directory,
+                        commands: command.into_iter().collect(),
+                    },
+                    down,
+                )
+            }
+            kd::Command::Chat {
+                agent,
+                directory,
+                down,
+            } => {
+                if let Some(directory) = directory.as_deref().filter(|path| !is_dir(path)) {
+                    return (
+                        Response::err(format!("{directory} is not a directory")),
+                        Task::none(),
+                    );
+                }
+                (
+                    PaneKind::Chat {
+                        agent,
+                        directory,
+                        mode: crate::chat::Mode::ReadOnly,
+                        trusted: false,
+                        transcript: Default::default(),
+                    },
+                    down,
+                )
+            }
+        };
+        // The new pane does not take the keyboard: the person may be
+        // typing in the terminal that asked for it.
+        let task = self.split_beside(pane, PaneSpec { title: None, kind }, down, false);
+        (Response::done(), task)
     }
 
     fn close_tab(&mut self, index: usize) -> Task<Message> {
@@ -738,6 +1180,79 @@ impl App {
         Task::batch([task, self.show_tab()])
     }
 
+    /// Starts typing a tab's name in place, with the name it shows now.
+    fn start_rename(&mut self, index: usize) -> Task<Message> {
+        let Some(tab) = self.tabs.get(index) else {
+            return Task::none();
+        };
+        self.tab_drag = None;
+        self.renaming = Some((index, self.tab_name(tab)));
+        Task::batch([
+            iced::widget::operation::focus(RENAME_INPUT),
+            iced::widget::operation::select_all(RENAME_INPUT),
+        ])
+    }
+
+    /// Takes the typed name. An empty name gives the tab back to its panes:
+    /// it shows the focused pane's title again.
+    fn finish_rename(&mut self) {
+        let Some((index, name)) = self.renaming.take() else {
+            return;
+        };
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        let name = name.trim();
+        tab.named = !name.is_empty();
+        if tab.named {
+            tab.title = name.to_string();
+        }
+        self.save();
+    }
+
+    fn move_tab(&mut self, by: i32) -> Task<Message> {
+        if let Some(target) = tabs::neighbour(self.tabs.len(), self.active, by) {
+            self.active = tabs::reorder(&mut self.tabs, self.active, self.active, target);
+            self.save();
+        }
+        self.focus_task()
+    }
+
+    /// Writes the shown tab to the layouts folder, where `--layout <name>`
+    /// finds it.
+    fn save_layout(&mut self) -> Task<Message> {
+        let saved = self
+            .workspace()
+            .tabs
+            .into_iter()
+            .nth(self.active)
+            .ok_or_else(|| String::from("the tab has no panes"))
+            .and_then(|mut tab| {
+                tab.title = self.tab_name(self.tab());
+                let text = layout::write_layout(&tab)?;
+                let dir = self
+                    .state_dir
+                    .as_deref()
+                    .ok_or_else(|| String::from("there is no folder to save in"))?;
+                store::save_layout(dir, &tab.title, &text).map_err(|error| error.to_string())
+            });
+        let said = match saved {
+            Ok(file) => format!("Saved the layout to {}", style::tilde(&file)),
+            Err(error) => format!("Could not save the layout: {error}"),
+        };
+        Task::batch([self.say(said), self.focus_task()])
+    }
+
+    /// Shows a line about what just happened, for a few seconds.
+    fn say(&mut self, notice: String) -> Task<Message> {
+        self.notices += 1;
+        let number = self.notices;
+        self.notice = Some((number, notice));
+        Task::perform(tokio::time::sleep(NOTICE_FOR), move |()| {
+            Message::NoticeExpired(number)
+        })
+    }
+
     fn cycle_pane(&mut self, by: i32) -> Task<Message> {
         let tab = self.tab();
         let order = leaf_panes(tab.grid.layout());
@@ -756,7 +1271,11 @@ impl App {
     }
 
     fn store_saved(&mut self, root: &PathBuf, saved: Option<(String, String)>) {
-        if let (Some((path, text)), Some(Some(index))) = (saved, self.vaults.get_mut(root)) {
+        // The editor also opens files that are not notes, as plain text.
+        // Only a note belongs in the vault's index.
+        if let (Some((path, text)), Some(Some(index))) = (saved, self.vaults.get_mut(root))
+            && path.ends_with(".md")
+        {
             index.update(&path, text);
         }
     }
@@ -782,6 +1301,9 @@ impl App {
     fn shortcut(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::Escape => {
+                if self.renaming.take().is_some() {
+                    return self.focus_task();
+                }
                 if self.palette.take().is_some() {
                     self.sync_web();
                     return self.focus_task();
@@ -846,6 +1368,12 @@ impl App {
             Action::Reload => {
                 if let Some(id) = self.focused_id() {
                     self.web.reload(id);
+                }
+                return self.refresh_files();
+            }
+            Action::ToggleHidden => {
+                if let Some(id) = self.focused_id() {
+                    return self.files(id, FilesMessage::ToggleHidden);
                 }
             }
             Action::Undo | Action::Redo => {
@@ -971,6 +1499,9 @@ impl App {
             }
             Message::CloseRequested(id) => {
                 self.save();
+                if let Some(tool) = &self.tool {
+                    tool.close();
+                }
                 for id in self.panes.keys().copied().collect::<Vec<_>>() {
                     self.drop_pane(id);
                 }
@@ -1013,6 +1544,7 @@ impl App {
             Message::Terminal(id, input) => return self.terminal_input(id, input),
             Message::RestartTerminal(id) => {
                 let size = default_size();
+                let env = self.tool_env(id);
                 if let Some(Pane {
                     body: Body::Terminal(terminal),
                     ..
@@ -1025,6 +1557,7 @@ impl App {
                         &self.term_sender,
                         &[],
                         self.mode,
+                        env,
                     );
                 }
             }
@@ -1035,10 +1568,12 @@ impl App {
                     ..
                 }) = self.panes.get_mut(&pane)
                 {
+                    // The transcript is anchored to its newest line, so it
+                    // follows a reply as it streams unless the reader has
+                    // scrolled back.
                     if chat.receive(event) {
                         self.save();
                     }
-                    return iced::widget::operation::snap_to_end(ChatPane::transcript_id(pane));
                 }
             }
             Message::Chat(id, message) => return self.chat(id, message),
@@ -1046,6 +1581,21 @@ impl App {
             Message::Web(id, message) => return self.web_message(id, message),
             Message::WebPump => host::pump(),
             Message::Editor(id, message) => return self.editor(id, message),
+            Message::Files(id, message) => return self.files(id, message),
+            Message::Tool(call) => {
+                let (response, task) =
+                    self.run_tool(call.request.pane, call.request.command.clone());
+                call.answer(response);
+                return task;
+            }
+            Message::Nav(nav) => {
+                if self.palette.is_none()
+                    && self.renaming.is_none()
+                    && let Some(id) = self.focused_id()
+                {
+                    return self.files_nav(id, nav);
+                }
+            }
             Message::VaultOpened(root, slot) => {
                 let index = slot.lock().ok().and_then(|mut slot| slot.take());
                 if let Some(index) = index {
@@ -1071,6 +1621,7 @@ impl App {
             Message::SystemTheme(system) => self.set_mode(Mode::choose(self.theme_setting, system)),
             Message::Resized(size) => self.width = size.width,
             Message::PaneClicked(pane) => {
+                self.finish_rename();
                 if self.tab().focus != Some(pane) {
                     return self.focus(pane);
                 }
@@ -1091,7 +1642,60 @@ impl App {
                     return self.show_tab();
                 }
             }
-            Message::CloseTab(index) => return self.close_tab(index),
+            Message::CloseTab(index) => {
+                self.renaming = None;
+                return self.close_tab(index);
+            }
+            Message::TabPressed(index) => {
+                if self.renaming.as_ref().is_some_and(|(tab, _)| *tab == index) {
+                    return Task::none();
+                }
+                self.finish_rename();
+                if index < self.tabs.len() {
+                    self.tab_drag = Some(index);
+                    self.active = index;
+                    return self.show_tab();
+                }
+            }
+            Message::TabEntered(index) => {
+                self.tab_hover = Some(index);
+                if let Some(held) = self.tab_drag
+                    && held != index
+                    && index < self.tabs.len()
+                {
+                    self.active = tabs::reorder(&mut self.tabs, self.active, held, index);
+                    self.tab_drag = Some(index);
+                }
+            }
+            Message::TabExited(index) => {
+                if self.tab_hover == Some(index) {
+                    self.tab_hover = None;
+                }
+            }
+            Message::TabReleased => {
+                if self.tab_drag.take().is_some() {
+                    self.save();
+                }
+            }
+            Message::RenameTab(index) => return self.start_rename(index),
+            Message::RenameDraft(draft) => {
+                if let Some((_, name)) = self.renaming.as_mut() {
+                    *name = draft;
+                }
+            }
+            Message::RenameDone => {
+                self.finish_rename();
+                return self.focus_task();
+            }
+            Message::NoticeExpired(number) => {
+                if self
+                    .notice
+                    .as_ref()
+                    .is_some_and(|(known, _)| *known == number)
+                {
+                    self.notice = None;
+                }
+            }
             Message::PaletteQuery(query) => {
                 if let Some(palette) = self.palette.as_mut() {
                     palette.query = query;
@@ -1108,6 +1712,12 @@ impl App {
                     Some(Command::ClosePane) => self.shortcut(Action::ClosePane),
                     Some(Command::CloseTab) => self.shortcut(Action::CloseTab),
                     Some(Command::Magnify) => self.shortcut(Action::Magnify),
+                    Some(Command::RefreshFiles) => self.refresh_files(),
+                    Some(Command::ToggleHidden) => self.shortcut(Action::ToggleHidden),
+                    Some(Command::RenameTab) => self.start_rename(self.active),
+                    Some(Command::MoveTabLeft) => self.move_tab(-1),
+                    Some(Command::MoveTabRight) => self.move_tab(1),
+                    Some(Command::SaveLayout) => self.save_layout(),
                     None => self.focus_task(),
                 };
             }
@@ -1121,6 +1731,10 @@ impl App {
                     )
                 {
                     return self.editor(id, EditorMessage::SwitcherMove(by));
+                } else if self.renaming.is_none()
+                    && let Some(id) = self.focused_id()
+                {
+                    return self.files_nav(id, if by < 0 { Nav::Up } else { Nav::Down });
                 }
             }
             Message::Frame(at) => {
@@ -1202,7 +1816,9 @@ impl App {
                 self.next_id += 1;
                 chat.send(id, run, &self.run_sender);
                 self.save();
-                return iced::widget::operation::snap_to_end(ChatPane::transcript_id(id));
+                return iced::advanced::widget::operate(scroll::to_newest(
+                    ChatPane::transcript_id(id),
+                ));
             }
             ChatMessage::Stop => {
                 chat.stop();
@@ -1375,7 +1991,8 @@ impl App {
             Subscription::run_with(self.term_feed.clone(), feed::stream).map(Message::Term),
             Subscription::run_with(self.run_feed.clone(), feed::stream).map(Message::Run),
             Subscription::run_with(self.web_feed.clone(), feed::stream).map(Message::WebEvent),
-            iced::event::listen_with(|event, _status, _window| match event {
+            Subscription::run_with(self.tool_feed.clone(), feed::stream).map(Message::Tool),
+            iced::event::listen_with(|event, status, _window| match event {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
                     ..
@@ -1384,6 +2001,18 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
                     ..
                 }) => Some(Message::Step(1)),
+                // The keys that move through a list, when no field took
+                // them and no modifier makes them a shortcut.
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(named),
+                    modifiers,
+                    ..
+                }) if status == iced::event::Status::Ignored
+                    && modifiers.is_empty()
+                    && shortcuts::nav(named).is_some() =>
+                {
+                    shortcuts::nav(named).map(Message::Nav)
+                }
                 iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                     shortcuts::action(&key, modifiers).map(Message::Shortcut)
                 }
@@ -1394,6 +2023,19 @@ impl App {
         ];
         if self.theme_setting.is_none() {
             subscriptions.push(iced::system::theme_changes().map(Message::SystemTheme));
+        }
+        if self.tab_drag.is_some() {
+            // The pointer may come up anywhere, so the window listens for
+            // it, and only while a tab is held.
+            subscriptions.push(iced::event::listen_with(|event, _status, _window| {
+                matches!(
+                    event,
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left
+                    ))
+                )
+                .then_some(Message::TabReleased)
+            }));
         }
         if cfg!(target_os = "linux") && !self.web.is_empty() {
             // WebKitGTK only: see `host::pump`. macOS needs no timer.
@@ -1450,6 +2092,11 @@ impl App {
                     .unwrap_or_else(|| web.address.clone()),
                 String::from(if web.loading { "Loading" } else { "" }),
             ),
+            Body::Files(files) => (
+                "Files",
+                style::tilde(files.tree.root()),
+                files.status_note(),
+            ),
             Body::Chat(chat) => (
                 "Chat",
                 format!(
@@ -1471,15 +2118,20 @@ impl App {
         )
     }
 
-    fn tab_label(&self, tab: &Tab) -> String {
-        let focus_title = tab
-            .focus
+    /// A tab's name: the one the person gave it, or else the title of the
+    /// pane that has the keyboard.
+    fn tab_name(&self, tab: &Tab) -> String {
+        if tab.named {
+            return tab.title.clone();
+        }
+        tab.focus
             .and_then(|pane| tab.grid.get(pane))
-            .and_then(|id| self.pane_title(*id));
-        style::clip_end(
-            &focus_title.unwrap_or_else(|| tab.title.clone()),
-            measure::TAB_TITLE_CHARS,
-        )
+            .and_then(|id| self.pane_title(*id))
+            .unwrap_or_else(|| tab.title.clone())
+    }
+
+    fn tab_label(&self, tab: &Tab) -> String {
+        style::clip_end(&self.tab_name(tab), measure::TAB_TITLE_CHARS)
     }
 
     /// The panes of the shown tab, listed under it in the rail.
@@ -1534,10 +2186,46 @@ impl App {
             })
             .style(style::inherit)
             .wrapping(text::Wrapping::None);
-        let select = button(label)
-            .padding(Padding::from([space::S, space::L]))
-            .style(style::tab(selected))
-            .on_press(Message::SelectTab(index));
+        let renaming = self
+            .renaming
+            .as_ref()
+            .filter(|(tab, _)| *tab == index)
+            .map(|(_, draft)| draft);
+        let select: Element<'_, Message> = match renaming {
+            Some(draft) => text_input("Tab name", draft)
+                .id(RENAME_INPUT)
+                .size(size::BODY)
+                .padding(Padding::from([space::S, space::L]))
+                .style(style::input)
+                .on_input(Message::RenameDraft)
+                .on_submit(Message::RenameDone)
+                .width(if fill {
+                    Length::Fill
+                } else {
+                    Length::Fixed(measure::TAB_NAME)
+                })
+                .into(),
+            None => {
+                let state = if self.tab_drag == Some(index) {
+                    style::Held::Dragged
+                } else if self.tab_hover == Some(index) {
+                    style::Held::Hovered
+                } else {
+                    style::Held::Idle
+                };
+                mouse_area(
+                    container(label)
+                        .padding(Padding::from([space::S, space::L]))
+                        .width(if fill { Length::Fill } else { Length::Shrink })
+                        .style(style::tab_surface(selected, state)),
+                )
+                .on_press(Message::TabPressed(index))
+                .on_double_click(Message::RenameTab(index))
+                .on_enter(Message::TabEntered(index))
+                .on_exit(Message::TabExited(index))
+                .into()
+            }
+        };
         let close = button(
             container(style::close_mark())
                 .center_x(Length::Fill)
@@ -1548,17 +2236,10 @@ impl App {
         .padding(space::NONE)
         .style(style::quiet)
         .on_press(Message::CloseTab(index));
-        row![
-            if fill {
-                select.width(Length::Fill)
-            } else {
-                select
-            },
-            close
-        ]
-        .spacing(space::XXS)
-        .align_y(iced::Alignment::Center)
-        .into()
+        row![select, close]
+            .spacing(space::XXS)
+            .align_y(iced::Alignment::Center)
+            .into()
     }
 
     fn add_pane_button(&self, with_keys: bool) -> Element<'_, Message> {
@@ -1603,6 +2284,7 @@ impl App {
                 .direction(style::scroll_direction())
                 .style(style::scrollbar)
                 .height(Length::Fill),
+            self.notice_line(),
             container(self.add_pane_button(true)).width(Length::Fill),
         ]
         .spacing(space::L)
@@ -1613,6 +2295,17 @@ impl App {
         )
         .width(measure::RAIL)
         .into()
+    }
+
+    /// What a command just did, or nothing.
+    fn notice_line(&self) -> Element<'_, Message> {
+        match &self.notice {
+            Some((_, notice)) => text(notice.clone())
+                .size(size::META)
+                .style(style::muted)
+                .into(),
+            None => Space::new().into(),
+        }
     }
 
     /// The tabs across the top of a narrow window.
@@ -1638,8 +2331,11 @@ impl App {
         let tab = self.tab();
         let focus = tab.focus;
         let magnified = tab.grid.maximized().is_some();
+        // While a tab's name is typed no pane has the keyboard, so the
+        // letters do not also reach a terminal.
+        let typing_elsewhere = self.renaming.is_some();
         PaneGrid::new(&tab.grid, move |pane, id, _maximized| {
-            let focused = focus == Some(pane);
+            let focused = focus == Some(pane) && !typing_elsewhere;
             let id = *id;
             let body: Element<'_, Message> = match self.panes.get(&id).map(|pane| &pane.body) {
                 Some(Body::Terminal(terminal)) => terminal.view(id, focused, self.mode),
@@ -1651,6 +2347,7 @@ impl App {
                 ),
                 Some(Body::Web(web)) => web.view(id),
                 Some(Body::Chat(chat)) => chat.view(id, self.mode, focused),
+                Some(Body::Files(files)) => files.view(id),
                 None => Space::new().into(),
             };
             let (kind, context, note) = self.pane_status(id);
@@ -1762,7 +2459,12 @@ impl App {
                 Padding::from([space::L, space::L]).left(space::NONE)
             });
         let body: Element<'_, Message> = if narrow {
-            column![self.tab_bar(), grid].into()
+            column![
+                self.tab_bar(),
+                container(self.notice_line()).padding(Padding::from([space::NONE, space::L])),
+                grid
+            ]
+            .into()
         } else {
             row![self.rail(), grid].into()
         };

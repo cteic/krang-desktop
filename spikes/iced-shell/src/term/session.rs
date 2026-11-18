@@ -46,6 +46,8 @@ pub struct Spawn<'a> {
     pub directory: Option<&'a Path>,
     pub size: GridSize,
     pub scheme: Scheme,
+    /// More for the shell's environment, over what every terminal gets.
+    pub env: Vec<(String, String)>,
 }
 
 pub struct Session {
@@ -78,11 +80,12 @@ impl Session {
         // A login shell, so an app opened from the Dock still gets the PATH
         // the person's profile sets up.
         let (program, args) = (login_shell(), vec![String::from("-l")]);
-        let env = HashMap::from([
+        let mut env = HashMap::from([
             (String::from("TERM"), String::from("xterm-256color")),
             (String::from("COLORTERM"), String::from("truecolor")),
             (String::from("TERM_PROGRAM"), String::from("krang-shell")),
         ]);
+        env.extend(spawn.env);
         let options = tty::Options {
             shell: Some(tty::Shell::new(program, args)),
             working_directory: spawn.directory.map(Path::to_path_buf),

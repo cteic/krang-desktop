@@ -109,6 +109,8 @@ pub struct EditorPane {
     tree_height: f32,
     /// Bytes of the open note, kept so a large note is not measured each frame.
     size: usize,
+    /// The language the open file is highlighted as: `md` for a note.
+    syntax: String,
 }
 
 fn note_text(content: &text_editor::Content) -> String {
@@ -143,6 +145,7 @@ impl EditorPane {
             tree_offset: 0.0,
             tree_height: 600.0,
             size: 0,
+            syntax: String::from("md"),
         }
     }
 
@@ -203,6 +206,7 @@ impl EditorPane {
         match std::fs::read_to_string(self.absolute(path)) {
             Ok(text) => {
                 self.size = text.len();
+                self.syntax = crate::files::kind::syntax(path);
                 self.front = frontmatter::parse(&text);
                 self.drafts.clear();
                 self.content = text_editor::Content::with_text(&text);
@@ -929,7 +933,7 @@ impl EditorPane {
             .wrapping(text::Wrapping::WordOrGlyph)
             .style(style::page)
             .highlight_with::<iced::highlighter::Highlighter>(
-                style::source_settings(mode),
+                style::source_settings(mode, &self.syntax),
                 style::source,
             )
             .on_action(move |action| message(EditorMessage::Action(action)))

@@ -38,6 +38,8 @@ pub mod size {
     pub const MONO: f32 = 13.0;
     /// A glyph that stands in for an icon.
     pub const GLYPH: f32 = 14.0;
+    /// The tag for a file's kind, small beside the name it marks.
+    pub const TAG: f32 = 11.0;
 }
 
 /// Line heights, as a multiple of the text size.
@@ -108,6 +110,11 @@ pub mod measure {
     pub const SPLIT_GRIP: f32 = 3.0;
     /// How far from a divider a drag may start.
     pub const SPLIT_LEEWAY: f32 = 10.0;
+    /// The marker in front of a name in the files pane: an arrow for a
+    /// folder, a short tag for a file's kind.
+    pub const FILE_MARK: f32 = 26.0;
+    /// The letter at the end of a row that says what git has seen change.
+    pub const CHANGE_MARK: f32 = 12.0;
     /// One level of indent in the file tree.
     pub const INDENT: f32 = 18.0;
     pub const SIDEBAR: f32 = 184.0;
@@ -120,6 +127,8 @@ pub mod measure {
     /// How far from the top of the window an overlay panel opens.
     pub const OVERLAY_TOP: f32 = 96.0;
     pub const COMPOSER_MAX: f32 = 160.0;
+    /// The field a tab's name is typed in, in the bar of a narrow window.
+    pub const TAB_NAME: f32 = 180.0;
     /// The soft shadow: how far it falls and how far it spreads.
     pub const SHADOW_DROP: f32 = 6.0;
     pub const SHADOW_BLUR: f32 = 24.0;
