@@ -308,17 +308,20 @@ For one engineer who knows the current app, after this spike:
 
 macOS first, since it is the target:
 
-1. Everything on macOS that the CI job does not run: the app opening a
-   window, Metal rendering speed, WKWebView as a child view (creation,
+1. Everything on macOS that the CI job does not run. The job
+   ([run 44290828520](https://github.com/cteic/krang-desktop/actions/runs/44290828520))
+   passed `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+   all tests, the release build and the bundle on macos-latest (arm64), and
+   the self-test opened a window and drew a first frame there
+   (`first_frame_ms 2943.5`, a first launch on a CI runner, so not a speed
+   figure). Still unverified: rendering speed on a real Mac, WKWebView as a child view (creation,
    position, z-order, focus, Cmd+C/V in a page), `KRANG_QUIET=1`,
    `proc_pidinfo` for terminal directories, Cmd+C/Cmd+V in the terminal,
    and every number in the benchmark table.
-2. Whether the self-test can open a window on the macOS runner; the job
-   tries and does not fail the build if it cannot.
-3. The `omp`, Claude and Codex CLIs inside the terminal (not installed here).
-4. The real Claude and Codex CLIs in the chat pane; only the fake agent ran.
-5. Clicking in mouse-reporting programs, wheel scrollback, link opening in a
+2. The `omp`, Claude and Codex CLIs inside the terminal (not installed here).
+3. The real Claude and Codex CLIs in the chat pane; only the fake agent ran.
+4. Clicking in mouse-reporting programs, wheel scrollback, link opening in a
    browser, italic and underline on screen.
-6. The web pane drawing a page on any platform.
-7. Pane drag and drop, quick switcher, find, and following a wikilink to a
+5. The web pane drawing a page on any platform.
+6. Pane drag and drop, quick switcher, find, and following a wikilink to a
    missing note, which are built and compile but were not driven by a test.
