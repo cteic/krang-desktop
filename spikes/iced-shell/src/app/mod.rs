@@ -11,6 +11,7 @@ mod scroll;
 pub mod selftest;
 mod shortcuts;
 mod terminal;
+mod tool;
 mod web;
 
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::chat::runner::RunEvent;
 use crate::files::kind::{Kind, Opens};
+use crate::kd::protocol::{self as kd, Response};
 use crate::shell::layout::{
     self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, WORKSPACE_VERSION, Workspace,
 };
@@ -46,6 +48,7 @@ use files::{Effect, FilesMessage, FilesPane, Nav};
 use palette::{Command, NewPane, Palette};
 use shortcuts::Action;
 use terminal::TerminalPane;
+use tool::{Tool, ToolCall};
 use web::{WebMessage, WebPane};
 
 #[derive(Debug, Clone, Default)]
@@ -73,6 +76,8 @@ pub enum Message {
     Files(u64, FilesMessage),
     /// A key that moves through a list, for the pane that has the keyboard.
     Nav(Nav),
+    /// A request from `kd` in a terminal pane.
+    Tool(ToolCall),
     VaultOpened(PathBuf, std::sync::Arc<std::sync::Mutex<Option<Index>>>),
     /// A status line control: the action runs on that pane, focused first.
     PaneAction(u64, Action),
@@ -134,6 +139,9 @@ pub struct App {
     term_feed: Feed<TermEvent>,
     run_feed: Feed<RunEvent>,
     web_feed: Feed<WebEvent>,
+    tool_feed: Feed<ToolCall>,
+    /// The `kd` socket, when it could be opened.
+    tool: Option<Tool>,
     web: WebHost,
     vaults: HashMap<PathBuf, Option<Index>>,
     palette: Option<Palette>,
@@ -214,7 +222,15 @@ impl App {
         let (term_sender, term_receiver) = events::queue();
         let (run_sender, run_receiver) = unbounded_channel();
         let (web_sender, web_receiver) = unbounded_channel();
+        let (tool_sender, tool_receiver) = unbounded_channel();
         let state_dir = store::state_dir();
+        let tool = match Tool::start(state_dir.as_deref(), tool_sender) {
+            Ok(tool) => Some(tool),
+            Err(error) => {
+                eprintln!("krang-shell: kd is off, the socket could not open: {error}");
+                None
+            }
+        };
         let persist = options.layouts.is_empty();
         let default_vault = std::env::var_os("KRANG_VAULT")
             .map(PathBuf::from)
@@ -232,6 +248,8 @@ impl App {
             term_feed: Feed::new("terminals", term_receiver),
             run_feed: Feed::new("runs", run_receiver),
             web_feed: Feed::new("web", web_receiver),
+            tool_feed: Feed::new("kd", tool_receiver),
+            tool,
             web: WebHost::new(web_sender),
             vaults: HashMap::new(),
             palette: None,
@@ -374,6 +392,7 @@ impl App {
                     &self.term_sender,
                     &commands,
                     self.mode,
+                    self.tool_env(id),
                 ))
             }
             PaneKind::Editor { vault, path, mode } => {
@@ -823,6 +842,7 @@ impl App {
                             kind: PaneKind::Web { url: address },
                         },
                         false,
+                        true,
                     ),
                 }
             }
@@ -846,6 +866,7 @@ impl App {
                             },
                         },
                         false,
+                        true,
                     ),
                 }
             }
@@ -891,12 +912,18 @@ impl App {
             return Task::none();
         };
         let spec = self.new_pane_spec(kind);
-        self.split_beside(beside, spec, down)
+        self.split_beside(beside, spec, down, true)
     }
 
-    /// Opens a pane to the right of another, or below it, and gives it the
-    /// keyboard within its tab.
-    fn split_beside(&mut self, beside: u64, spec: PaneSpec, down: bool) -> Task<Message> {
+    /// Opens a pane to the right of another, or below it. `take_focus`
+    /// gives it the keyboard within its tab.
+    fn split_beside(
+        &mut self,
+        beside: u64,
+        spec: PaneSpec,
+        down: bool,
+        take_focus: bool,
+    ) -> Task<Message> {
         let Some((tab, target)) = self.locate(beside) else {
             return Task::none();
         };
@@ -914,9 +941,13 @@ impl App {
             self.drop_pane(id);
             return task;
         };
-        self.tabs[tab].focus = Some(pane);
-        let focus = if tab == self.active {
-            self.focus_task()
+        let focus = if take_focus {
+            self.tabs[tab].focus = Some(pane);
+            if tab == self.active {
+                self.focus_task()
+            } else {
+                Task::none()
+            }
         } else {
             Task::none()
         };
@@ -963,9 +994,158 @@ impl App {
                         self.store_saved(&editor.root.clone(), editor.save_now());
                     }
                 }
-                Body::Terminal(_) | Body::Files(_) => {}
+                Body::Terminal(_) => {
+                    if let Some(tool) = &self.tool {
+                        tool.revoke(id);
+                    }
+                }
+                Body::Files(_) => {}
             }
         }
+    }
+
+    /// What a terminal pane's shell needs for `kd` to reach this window as
+    /// that pane. Empty when the socket could not be opened.
+    fn tool_env(&self, id: u64) -> Vec<(String, String)> {
+        self.tool
+            .as_ref()
+            .map_or_else(Vec::new, |tool| tool.env(id))
+    }
+
+    /// The window's tabs and panes, as `kd panes` prints them.
+    fn panes_info(&self) -> kd::Panes {
+        let tabs = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let focus = tab.focus.and_then(|pane| tab.grid.get(pane)).copied();
+                let panes = leaf_ids(&tab.grid, tab.grid.layout())
+                    .into_iter()
+                    .filter_map(|id| {
+                        let kind = match self.panes.get(&id)?.body {
+                            Body::Terminal(_) => "terminal",
+                            Body::Editor(_) => "editor",
+                            Body::Web(_) => "web",
+                            Body::Chat(_) => "chat",
+                            Body::Files(_) => "files",
+                        };
+                        Some(kd::PaneInfo {
+                            id: kd::pane_name(id),
+                            title: self.pane_title(id).unwrap_or_default(),
+                            kind: String::from(kind),
+                            focused: index == self.active && focus == Some(id),
+                        })
+                    })
+                    .collect();
+                kd::TabInfo {
+                    title: self.tab_name(tab),
+                    active: index == self.active,
+                    panes,
+                }
+            })
+            .collect();
+        kd::Panes { tabs }
+    }
+
+    /// Does what `kd` asked. The request has already shown its pane's
+    /// secret; what it names is checked again here, because the app must
+    /// not trust the tool's own checks.
+    fn run_tool(&mut self, pane: u64, command: kd::Command) -> (Response, Task<Message>) {
+        if self.locate(pane).is_none() {
+            return (Response::err("the calling pane has closed"), Task::none());
+        }
+        let is_dir = |path: &str| std::path::Path::new(path).is_dir();
+        let (kind, down) = match command {
+            kd::Command::Title { text } => {
+                if let Some(pane) = self.panes.get_mut(&pane) {
+                    pane.title = text.filter(|text| !text.trim().is_empty());
+                }
+                self.save();
+                return (Response::done(), Task::none());
+            }
+            kd::Command::Panes => {
+                let response = serde_json::to_value(self.panes_info())
+                    .map_or_else(|error| Response::err(error.to_string()), Response::data);
+                return (response, Task::none());
+            }
+            kd::Command::View { path, down } => {
+                let kind = if is_dir(&path) {
+                    PaneKind::Files {
+                        directory: Some(path),
+                        expanded: Vec::new(),
+                        hidden: false,
+                    }
+                } else if std::path::Path::new(&path).is_file() {
+                    PaneKind::Editor {
+                        vault: None,
+                        path: Some(path),
+                        mode: EditorMode::Edit,
+                    }
+                } else {
+                    return (
+                        Response::err(format!("{path} is not a file or a folder")),
+                        Task::none(),
+                    );
+                };
+                (kind, down)
+            }
+            kd::Command::Web { target, down } => {
+                let reachable = target.contains("://") || std::path::Path::new(&target).is_file();
+                if !reachable || crate::web::address::resolve(&target).is_none() {
+                    return (
+                        Response::err(format!("{target} is not a URL or a file")),
+                        Task::none(),
+                    );
+                }
+                (PaneKind::Web { url: target }, down)
+            }
+            kd::Command::Term {
+                directory,
+                command,
+                down,
+            } => {
+                if let Some(directory) = directory.as_deref().filter(|path| !is_dir(path)) {
+                    return (
+                        Response::err(format!("{directory} is not a directory")),
+                        Task::none(),
+                    );
+                }
+                (
+                    PaneKind::Terminal {
+                        directory,
+                        commands: command.into_iter().collect(),
+                    },
+                    down,
+                )
+            }
+            kd::Command::Chat {
+                agent,
+                directory,
+                down,
+            } => {
+                if let Some(directory) = directory.as_deref().filter(|path| !is_dir(path)) {
+                    return (
+                        Response::err(format!("{directory} is not a directory")),
+                        Task::none(),
+                    );
+                }
+                (
+                    PaneKind::Chat {
+                        agent,
+                        directory,
+                        mode: crate::chat::Mode::ReadOnly,
+                        trusted: false,
+                        transcript: Default::default(),
+                    },
+                    down,
+                )
+            }
+        };
+        // The new pane does not take the keyboard: the person may be
+        // typing in the terminal that asked for it.
+        let task = self.split_beside(pane, PaneSpec { title: None, kind }, down, false);
+        (Response::done(), task)
     }
 
     fn close_tab(&mut self, index: usize) -> Task<Message> {
@@ -1319,6 +1499,9 @@ impl App {
             }
             Message::CloseRequested(id) => {
                 self.save();
+                if let Some(tool) = &self.tool {
+                    tool.close();
+                }
                 for id in self.panes.keys().copied().collect::<Vec<_>>() {
                     self.drop_pane(id);
                 }
@@ -1361,6 +1544,7 @@ impl App {
             Message::Terminal(id, input) => return self.terminal_input(id, input),
             Message::RestartTerminal(id) => {
                 let size = default_size();
+                let env = self.tool_env(id);
                 if let Some(Pane {
                     body: Body::Terminal(terminal),
                     ..
@@ -1373,6 +1557,7 @@ impl App {
                         &self.term_sender,
                         &[],
                         self.mode,
+                        env,
                     );
                 }
             }
@@ -1397,6 +1582,12 @@ impl App {
             Message::WebPump => host::pump(),
             Message::Editor(id, message) => return self.editor(id, message),
             Message::Files(id, message) => return self.files(id, message),
+            Message::Tool(call) => {
+                let (response, task) =
+                    self.run_tool(call.request.pane, call.request.command.clone());
+                call.answer(response);
+                return task;
+            }
             Message::Nav(nav) => {
                 if self.palette.is_none()
                     && self.renaming.is_none()
@@ -1800,6 +1991,7 @@ impl App {
             Subscription::run_with(self.term_feed.clone(), feed::stream).map(Message::Term),
             Subscription::run_with(self.run_feed.clone(), feed::stream).map(Message::Run),
             Subscription::run_with(self.web_feed.clone(), feed::stream).map(Message::WebEvent),
+            Subscription::run_with(self.tool_feed.clone(), feed::stream).map(Message::Tool),
             iced::event::listen_with(|event, status, _window| match event {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),

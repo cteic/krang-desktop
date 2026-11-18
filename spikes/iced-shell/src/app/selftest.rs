@@ -841,6 +841,9 @@ fn finish(app: &mut App) -> Task<Message> {
         _ => {}
     }
     app.save();
+    if let Some(tool) = &app.tool {
+        tool.close();
+    }
     iced::exit()
 }
 
