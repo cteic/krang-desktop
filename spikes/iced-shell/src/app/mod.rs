@@ -902,6 +902,9 @@ impl App {
                 self.window = Some(id);
                 if let Some(parent) = parent {
                     self.web.set_parent(parent);
+                    for id in self.panes.keys().copied().collect::<Vec<_>>() {
+                        self.place_web(id);
+                    }
                 }
             }
             Message::CloseRequested(id) => {
@@ -1223,16 +1226,35 @@ impl App {
             WebMessage::Forward => self.web.forward(id),
             WebMessage::Reload => self.web.reload(id),
             WebMessage::Bounds(bounds) => {
-                if !self.web.has(id) && self.web.is_ready() {
-                    let url = web.url.clone();
-                    if let Err(error) = self.web.create(id, &url) {
-                        web.error = Some(format!("The web view could not start: {error}"));
-                    }
-                }
-                self.web.set_bounds(id, bounds);
+                web.bounds = Some(bounds);
+                self.place_web(id);
             }
         }
         Task::none()
+    }
+
+    /// Builds a pane's web view once the window and the pane's bounds are
+    /// both known, then moves it there. The two arrive in either order.
+    fn place_web(&mut self, id: u64) {
+        let Some(Pane {
+            body: Body::Web(web),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return;
+        };
+        let Some(bounds) = web.bounds else {
+            return;
+        };
+        if !self.web.is_ready() {
+            return;
+        }
+        if !self.web.has(id)
+            && let Err(error) = self.web.create(id, &web.url)
+        {
+            web.error = Some(format!("The web view could not start: {error}"));
+        }
+        self.web.set_bounds(id, bounds);
     }
 
     fn editor(&mut self, id: u64, message: EditorMessage) -> Task<Message> {

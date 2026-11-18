@@ -26,6 +26,8 @@ pub struct WebPane {
     pub can_back: bool,
     pub can_forward: bool,
     pub error: Option<String>,
+    /// Where the page goes in the window, as last reported by the layout.
+    pub bounds: Option<Rectangle>,
 }
 
 impl WebPane {
@@ -39,6 +41,7 @@ impl WebPane {
             can_back: false,
             can_forward: false,
             error: None,
+            bounds: None,
         }
     }
 
