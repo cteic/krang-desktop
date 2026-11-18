@@ -28,7 +28,7 @@ pub enum WebEvent {
 }
 
 /// The iced window's native handles, taken once after it opens.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ParentWindow {
     window: RawWindowHandle,
     display: RawDisplayHandle,

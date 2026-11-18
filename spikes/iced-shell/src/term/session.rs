@@ -43,8 +43,6 @@ impl GridSize {
 pub struct Spawn<'a> {
     pub id: u64,
     pub directory: Option<&'a Path>,
-    /// A program to run instead of the login shell, with its arguments.
-    pub program: Option<(String, Vec<String>)>,
     pub size: GridSize,
 }
 
@@ -68,7 +66,9 @@ fn login_shell() -> String {
 
 impl Session {
     pub fn spawn(spawn: Spawn<'_>, sender: Sender) -> std::io::Result<Self> {
-        let (program, args) = spawn.program.unwrap_or_else(|| (login_shell(), vec![String::from("-l")]));
+        // A login shell, so an app opened from the Dock still gets the PATH
+        // the person's profile sets up.
+        let (program, args) = (login_shell(), vec![String::from("-l")]);
         let env = HashMap::from([
             (String::from("TERM"), String::from("xterm-256color")),
             (String::from("COLORTERM"), String::from("truecolor")),
