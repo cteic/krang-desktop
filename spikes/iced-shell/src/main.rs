@@ -5,6 +5,13 @@ use krang_shell::app::{self, Options, selftest};
 const USAGE: &str = "usage: krang-shell [--layout <file>]... [--fresh]";
 
 fn main() -> iced::Result {
+    // Started under the name `kd`, this program is the pane tool: it sends
+    // one request to the running app and exits.
+    let mut started_as = std::env::args();
+    if krang_shell::kd::cli::invoked_as_kd(started_as.next().as_deref()) {
+        let args: Vec<String> = started_as.collect();
+        std::process::exit(krang_shell::kd::cli::run(&args));
+    }
     selftest::mark_process_start();
     let mut options = Options {
         selftest: selftest::Plan::from_env(),
