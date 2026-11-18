@@ -7,6 +7,35 @@ restore, layout files) and four panes: terminal, chat, web and a Markdown
 editor over a vault. It is a spike: macOS is the target, and the results are
 in [RESULTS.md](RESULTS.md).
 
+## How it looks
+
+Tabs sit in a rail on the left, and the shown tab lists its panes. Each pane
+is a rounded surface. The focused pane is brighter, and its status line is
+filled with the accent colour.
+
+| Dark | Light |
+| ---- | ----- |
+| ![One pane of each kind, dark](docs/images/workspace-dark.png) | ![One pane of each kind, light](docs/images/workspace-light.png) |
+| ![A chat with a tool step, code, a cost and a failed run, dark](docs/images/chat-dark.png) | ![The same chat, light](docs/images/chat-light.png) |
+| ![The command palette, dark](docs/images/palette-dark.png) | ![The command palette, light](docs/images/palette-light.png) |
+
+The app follows the system's light or dark appearance and changes with it
+while running. Dark is used when the system does not say.
+`KRANG_THEME=light` or `KRANG_THEME=dark` fixes the choice.
+
+Every colour, text size, space, radius and font family is in `src/style`.
+`tokens.rs` holds the colours for both modes and `widget.rs` holds one style
+per widget role, so a different look is a change to that folder alone. The
+terminal's 16 colours come from the same tokens. Tests check that every text
+colour has at least 4.5:1 contrast on each background it is drawn on.
+
+Text is set in Helvetica Neue and Menlo, which macOS ships. The family names
+are two lists in `src/style/mod.rs`.
+
+To take these screenshots again, run the `showcase` self-test (see
+`src/app/selftest.rs`) with `KRANG_WINDOW_SIZE=1280x800`, and capture the
+window with `screencapture -l`.
+
 ## Build and run on macOS
 
 You need Rust 1.90 or later (`rustup default stable`).
@@ -91,7 +120,7 @@ Cmd is the Super key on Linux.
 | Cmd+Enter                | Editor: follow the wikilink at the cursor      |
 | Cmd+L, Cmd+R             | Web: go to the address bar, reload             |
 
-Drag a pane's title bar onto another pane to move it. Drag a divider to
+Drag a pane's status line onto another pane to move it. Drag a divider to
 resize. The same shortcuts work while a web page has the keyboard.
 
 ## Layout files
@@ -153,5 +182,6 @@ src/vault     vault index, wikilinks, tags, frontmatter, search, fuzzy match
 src/web       address handling, the localfile scheme, the web view host
 src/shell     layout files and the saved workspace
 src/app       the window, panes, palette, shortcuts and the self-test
+src/style     design tokens for dark and light, and one style per widget role
 vendor        iced_winit with the quiet-launch patch
 ```
