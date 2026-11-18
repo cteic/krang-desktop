@@ -240,6 +240,35 @@ pub fn tab(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
+/// What the pointer is doing to a surface that is not a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    Idle,
+    Hovered,
+    /// Held down and being moved.
+    Dragged,
+}
+
+/// A tab that can be dragged among the others. It looks like [`tab`], and
+/// stays lit while it is held.
+pub fn tab_surface(selected: bool, held: Held) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let tokens = tokens(theme);
+        let (ink, background) = match held {
+            Held::Dragged => (tokens.ink, Some(tokens.line)),
+            Held::Hovered => (tokens.ink, Some(tokens.recess)),
+            Held::Idle if selected => (tokens.ink, None),
+            Held::Idle => (tokens.muted, None),
+        };
+        container::Style {
+            text_color: Some(ink),
+            background: background.map(Background::Color),
+            border: border::rounded(radius::M),
+            ..container::Style::default()
+        }
+    }
+}
+
 /// A pane listed under its tab. The current one sits on paper.
 pub fn outline_item(current: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {

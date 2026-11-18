@@ -13,6 +13,7 @@
 //! | `web`               | Waits for the first web pane to load                      |
 //! | `showcase`          | Fills the chat pane, then holds; for screenshots          |
 //! | `chat-scroll`       | Fills a chat past its pane and reports where it is scrolled |
+//! | `tabs`              | Names a tab, moves it, saves it as a layout, prints the tabs |
 //!
 //! `showcase` sends two messages to the first chat pane, the second one
 //! failing, so a transcript with a tool step, code, a cost and an error is
@@ -24,6 +25,12 @@
 //! sight below the view: while a reply streams, and after it stops. Zero
 //! means the newest line is showing. `KRANG_SELFTEST_SHOW=restored` sends
 //! nothing and measures the chat that came back from the saved workspace.
+//!
+//! `tabs` prints the tab names as they are at the start, so a second run on
+//! the same state shows what was restored. It then adds two tabs, names the
+//! first `Planning` through the same messages a double click and typing
+//! send, moves it one place right, saves it as a layout, prints the names
+//! again and holds. `KRANG_SELFTEST_SHOW=rename` leaves the name field open.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -35,7 +42,7 @@ use crate::web::host::WebEvent;
 
 use super::chat::{ChatMessage, ChatPane};
 use super::editor::EditorMessage;
-use super::palette::NewPane;
+use super::palette::{Command, NewPane};
 use super::scroll::{Locate, Place};
 use super::shortcuts::Action as Shortcut;
 use super::terminal::TerminalPane;
@@ -60,6 +67,7 @@ pub enum Plan {
     Web,
     Showcase,
     ChatScroll,
+    Tabs,
 }
 
 impl Plan {
@@ -74,6 +82,7 @@ impl Plan {
             "web" => Plan::Web,
             "showcase" => Plan::Showcase,
             "chat-scroll" => Plan::ChatScroll,
+            "tabs" => Plan::Tabs,
             _ => return None,
         })
     }
@@ -304,6 +313,8 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             after(Duration::from_secs(seconds()), Step::Finish),
         ]),
         (Plan::Showcase, Step::Show(number)) => showcase(app, number),
+        (Plan::Tabs, Step::Begin) => tabs(app, 0),
+        (Plan::Tabs, Step::Show(number)) => tabs(app, number),
         (Plan::ChatScroll, Step::Begin) => chat_scroll(app, 0),
         (Plan::ChatScroll, Step::Show(number)) => chat_scroll(app, number),
         (Plan::ChatScroll, Step::Measured(name, place)) => {
@@ -485,6 +496,54 @@ fn showcase(app: &mut App, number: u32) -> Task<Message> {
                 }
                 None => Task::none(),
             }
+        }
+        _ => Task::none(),
+    }
+}
+
+fn report_tabs(app: &App, name: &str) {
+    let names: Vec<String> = app.tabs.iter().map(|tab| app.tab_name(tab)).collect();
+    report(name, names.join(" | "));
+    report(&format!("{name}_active"), app.active);
+}
+
+fn tabs(app: &mut App, number: u32) -> Task<Message> {
+    let next = |delay: u64| after(Duration::from_millis(delay), Step::Show(number + 1));
+    let show = std::env::var("KRANG_SELFTEST_SHOW").ok();
+    match number {
+        0 => {
+            report_tabs(app, "tabs_at_start");
+            Task::batch([
+                app.new_tab(NewPane::Editor),
+                app.new_tab(NewPane::Terminal),
+                next(300),
+            ])
+        }
+        1 => Task::batch([
+            Task::done(Message::TabPressed(0)),
+            Task::done(Message::TabReleased),
+            Task::done(Message::RenameTab(0)),
+            Task::done(Message::RenameDraft(String::from("Planning"))),
+            next(300),
+        ]),
+        2 if show.as_deref() == Some("rename") => {
+            after(Duration::from_secs(seconds()), Step::Finish)
+        }
+        2 => Task::batch([Task::done(Message::RenameDone), next(300)]),
+        3 => Task::batch([
+            Task::done(Message::PaletteRun(Some(Command::MoveTabRight))),
+            next(300),
+        ]),
+        4 => Task::batch([
+            Task::done(Message::PaletteRun(Some(Command::SaveLayout))),
+            next(300),
+        ]),
+        5 => {
+            report_tabs(app, "tabs_at_end");
+            if let Some((_, notice)) = &app.notice {
+                report("tabs_notice", notice);
+            }
+            after(Duration::from_secs(seconds()), Step::Finish)
         }
         _ => Task::none(),
     }

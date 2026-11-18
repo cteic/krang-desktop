@@ -120,6 +120,8 @@ pub mod measure {
     /// How far from the top of the window an overlay panel opens.
     pub const OVERLAY_TOP: f32 = 96.0;
     pub const COMPOSER_MAX: f32 = 160.0;
+    /// The field a tab's name is typed in, in the bar of a narrow window.
+    pub const TAB_NAME: f32 = 180.0;
     /// The soft shadow: how far it falls and how far it spreads.
     pub const SHADOW_DROP: f32 = 6.0;
     pub const SHADOW_BLUR: f32 = 24.0;

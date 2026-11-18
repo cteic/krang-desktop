@@ -2,3 +2,4 @@
 
 pub mod layout;
 pub mod store;
+pub mod tabs;
