@@ -70,7 +70,7 @@ unlocked, windows opened with `KRANG_QUIET=1`. One run each on 18 November
 | The same folder: open to first frame | 84 ms | from adding the pane |
 | The same folder: Page Down to frame (median / p99 / max) | 2.9 / 3.4 / 3.5 ms | 60 presses; the update itself takes 0.01 ms |
 | Idle CPU with that folder open beside a terminal | 0% | CPU time unchanged at 0.19 s over 20 s; 0 idle wake-ups in a 5 s `top` sample |
-| Warm start to first frame with the `kd` socket, median of 5 | 120.5 ms | 127.0, 123.0, 119.7, 118.2, 120.5 |
+| Warm start to first frame with the `kd` socket, median of 5 | 134.9 ms | 176.9 (the first run of a new build), 134.9, 138.4, 127.9, 121.4. Five runs an hour earlier gave a median of 120.5 |
 | Chat transcript out of sight below the view while a reply streams | 0 px, was 616 px | `KRANG_SELFTEST=chat-scroll` before and after the fix |
 
 The frame figures sit near one or two 60 Hz refresh intervals, so the
