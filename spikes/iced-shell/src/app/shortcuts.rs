@@ -28,6 +28,8 @@ pub enum Action {
     Redo,
     FocusAddress,
     Reload,
+    /// Files: show or hide hidden files, with the Finder's keys.
+    ToggleHidden,
     GoToTab(usize),
     Escape,
 }
@@ -63,11 +65,28 @@ pub fn action(key: &Key, modifiers: Modifiers) -> Option<Action> {
             ("z", true) => Action::Redo,
             ("l", false) => Action::FocusAddress,
             ("r", false) => Action::Reload,
+            ("." | ">", true) => Action::ToggleHidden,
             (digit, false) if digit.len() == 1 && ("1"..="9").contains(&digit) => {
                 Action::GoToTab(usize::from(digit.as_bytes()[0] - b'1'))
             }
             _ => return None,
         },
+        _ => return None,
+    })
+}
+
+/// The keys that move through a list. Up and Down are not here: the
+/// palette and the quick switcher take those too.
+pub fn nav(key: Named) -> Option<super::files::Nav> {
+    use super::files::Nav;
+    Some(match key {
+        Named::ArrowLeft => Nav::Left,
+        Named::ArrowRight => Nav::Right,
+        Named::Enter => Nav::Open,
+        Named::Home => Nav::First,
+        Named::End => Nav::Last,
+        Named::PageUp => Nav::PageUp,
+        Named::PageDown => Nav::PageDown,
         _ => return None,
     })
 }
