@@ -1,0 +1,34 @@
+[package]
+name = "krang-shell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "AGPL-3.0-only"
+publish = false
+description = "A native spike of the Krang Desktop shell on iced"
+
+[[bin]]
+name = "krang-shell"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14.0", features = ["tokio", "advanced", "markdown", "highlighter", "image"] }
+alacritty_terminal = "0.26.0"
+wry = "0.57.2"
+raw-window-handle = "0.6.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+regex = "1"
+open = "5"
+dirs = "6"
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[profile.release]
+debug = "line-tables-only"
+
+[patch.crates-io]
+iced_winit = { path = "vendor/iced_winit" }
