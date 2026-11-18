@@ -6,6 +6,7 @@ mod editor;
 mod feed;
 mod palette;
 mod probe;
+mod scroll;
 pub mod selftest;
 mod shortcuts;
 mod terminal;
@@ -1035,10 +1036,12 @@ impl App {
                     ..
                 }) = self.panes.get_mut(&pane)
                 {
+                    // The transcript is anchored to its newest line, so it
+                    // follows a reply as it streams unless the reader has
+                    // scrolled back.
                     if chat.receive(event) {
                         self.save();
                     }
-                    return iced::widget::operation::snap_to_end(ChatPane::transcript_id(pane));
                 }
             }
             Message::Chat(id, message) => return self.chat(id, message),
@@ -1202,7 +1205,9 @@ impl App {
                 self.next_id += 1;
                 chat.send(id, run, &self.run_sender);
                 self.save();
-                return iced::widget::operation::snap_to_end(ChatPane::transcript_id(id));
+                return iced::advanced::widget::operate(scroll::to_newest(
+                    ChatPane::transcript_id(id),
+                ));
             }
             ChatMessage::Stop => {
                 chat.stop();
