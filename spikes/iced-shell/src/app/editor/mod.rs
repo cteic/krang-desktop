@@ -10,11 +10,12 @@ use std::time::Duration;
 
 use iced::widget::text_editor::{self, Action, Binding, Cursor, Edit, Position};
 use iced::widget::{
-    button, column, container, image, markdown, row, scrollable, space, stack, text, text_input,
+    Space, button, column, container, image, markdown, row, scrollable, stack, text, text_input,
 };
-use iced::{Element, Font, Length, Task, Theme};
+use iced::{Element, Length, Padding, Task};
 
 use crate::shell::layout::EditorMode;
+use crate::style::{self, Mode, measure, size, space};
 use crate::vault::frontmatter::{self, Frontmatter, Value};
 use crate::vault::index::{Index, SearchHit};
 use crate::vault::markdown::{VAULT_SCHEME, WIKI_SCHEME, decode, preview_source};
@@ -24,7 +25,7 @@ use super::Message;
 use history::History;
 use tree::{Row, RowKind};
 
-const ROW_HEIGHT: f32 = 22.0;
+const ROW_HEIGHT: f32 = measure::ROW;
 const AUTOSAVE_AFTER: Duration = Duration::from_millis(700);
 /// Above this size the preview follows the text only when typing pauses.
 const LIVE_PREVIEW_BYTES: usize = 64 * 1024;
@@ -620,16 +621,20 @@ impl EditorPane {
         (task, saved)
     }
 
+    /// The vault's folder name, for the pane's status line.
+    pub fn title_of_vault(&self) -> String {
+        self.root.file_name().map_or_else(
+            || String::from("vault"),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
+
     fn sidebar_view(&self, id: u64, index: Option<&Index>) -> Element<'_, Message> {
         let message = move |message: EditorMessage| Message::Editor(id, message);
         let tab = |label: &'static str, which: Sidebar| {
-            button(text(label).size(12))
-                .padding([2, 6])
-                .style(if self.sidebar == which {
-                    button::primary
-                } else {
-                    button::text
-                })
+            button(text(label).size(size::LABEL).style(style::inherit))
+                .padding(Padding::from([space::XS, space::M]))
+                .style(style::toggle(self.sidebar == which))
                 .on_press(message(EditorMessage::Sidebar(which)))
         };
         let tabs = row![
@@ -637,13 +642,18 @@ impl EditorPane {
             tab("Search", Sidebar::Search),
             tab("Tags", Sidebar::Tags)
         ]
-        .spacing(2);
+        .spacing(space::XXS);
         let Some(index) = index else {
-            return column![tabs, text("Opening the vault…").size(12)]
-                .spacing(6)
-                .padding(6)
-                .width(190)
-                .into();
+            return column![
+                tabs,
+                text("Opening the vault…")
+                    .size(size::META)
+                    .style(style::muted)
+            ]
+            .spacing(space::M)
+            .padding(Padding::from([space::L, space::L]))
+            .width(measure::SIDEBAR)
+            .into();
         };
         let body: Element<'_, Message> = match self.sidebar {
             Sidebar::Files => {
@@ -653,33 +663,46 @@ impl EditorPane {
                     self.tree_offset,
                     self.tree_height,
                 );
-                let mut list = column![space::vertical().height(visible.start as f32 * ROW_HEIGHT)];
+                let mut list = column![Space::new().height(visible.start as f32 * ROW_HEIGHT)];
                 for row in &self.rows[visible.clone()] {
-                    let (label, on) = match &row.kind {
+                    let (label, folder, on) = match &row.kind {
                         RowKind::Folder { path, expanded } => (
                             format!("{} {}", if *expanded { "▾" } else { "▸" }, row.label),
+                            true,
                             EditorMessage::ToggleFolder(path.clone()),
                         ),
                         RowKind::Note { path } => {
-                            (row.label.clone(), EditorMessage::Open(path.clone()))
+                            (row.label.clone(), false, EditorMessage::Open(path.clone()))
                         }
                     };
                     let current = matches!(&row.kind, RowKind::Note { path } if Some(path) == self.path.as_ref());
                     list = list.push(
-                        button(text(label).size(12).wrapping(text::Wrapping::None))
-                            .padding([3.0, 4.0 + row.depth as f32 * 12.0])
-                            .height(ROW_HEIGHT)
-                            .width(Length::Fill)
-                            .style(if current {
-                                button::secondary
-                            } else {
-                                button::text
-                            })
-                            .on_press(message(on)),
+                        button(
+                            container(
+                                text(label)
+                                    .size(size::LABEL)
+                                    .font(if folder {
+                                        style::ui_strong()
+                                    } else {
+                                        style::ui()
+                                    })
+                                    .style(style::inherit)
+                                    .wrapping(text::Wrapping::None),
+                            )
+                            .center_y(Length::Fill),
+                        )
+                        .padding(
+                            Padding::from([space::NONE, space::L])
+                                .left(space::L + row.depth as f32 * measure::INDENT),
+                        )
+                        .height(ROW_HEIGHT)
+                        .width(Length::Fill)
+                        .style(style::list_row(current))
+                        .on_press(message(on)),
                     );
                 }
                 list = list.push(
-                    space::vertical()
+                    Space::new()
                         .height(self.rows.len().saturating_sub(visible.end) as f32 * ROW_HEIGHT),
                 );
                 scrollable(list)
@@ -689,18 +712,29 @@ impl EditorPane {
                             viewport.bounds().height,
                         ))
                     })
+                    .direction(style::scroll_direction())
+                    .style(style::scrollbar)
                     .height(Length::Fill)
                     .into()
             }
             Sidebar::Search => {
-                let mut hits = column![].spacing(2);
+                let mut hits = column![].spacing(space::XXS);
                 for hit in &self.hits {
                     hits = hits.push(
-                        button(column![
-                            text(hit.path.clone()).size(11).style(text::secondary),
-                            text(hit.text.clone()).size(12)
-                        ])
-                        .style(button::text)
+                        button(
+                            column![
+                                text(hit.path.clone())
+                                    .size(size::META)
+                                    .font(style::mono())
+                                    .style(style::muted),
+                                text(hit.text.clone())
+                                    .size(size::LABEL)
+                                    .style(style::inherit)
+                            ]
+                            .spacing(space::XXS),
+                        )
+                        .padding(Padding::from([space::XS, space::M]))
+                        .style(style::list_row(false))
                         .width(Length::Fill)
                         .on_press(message(EditorMessage::SearchOpen(
                             hit.path.clone(),
@@ -721,114 +755,162 @@ impl EditorPane {
                 column![
                     text_input("Search the vault, or #tag", &self.search_query)
                         .id(iced::widget::Id::from(format!("editor-search-{id}")))
-                        .size(12)
+                        .size(size::LABEL)
+                        .padding(Padding::from([space::S, space::L]))
+                        .style(style::input)
                         .on_input(move |query| message(EditorMessage::SearchQuery(query))),
-                    text(timing).size(11).style(text::secondary),
-                    scrollable(hits).height(Length::Fill),
+                    text(timing).size(size::META).style(style::muted),
+                    scrollable(hits)
+                        .direction(style::scroll_direction())
+                        .style(style::scrollbar)
+                        .height(Length::Fill),
                 ]
-                .spacing(4)
+                .spacing(space::S)
                 .into()
             }
             Sidebar::Tags => {
-                let mut tags = column![].spacing(1);
+                let mut tags = column![].spacing(space::XXS);
                 for (tag, count) in index.tags() {
                     tags = tags.push(
-                        button(text(format!("#{tag}  {count}")).size(12))
-                            .style(button::text)
-                            .on_press(message(EditorMessage::SearchQuery(format!("#{tag}")))),
+                        button(
+                            row![
+                                text(format!("#{tag}"))
+                                    .size(size::LABEL)
+                                    .style(style::inherit)
+                                    .width(Length::Fill),
+                                text(count.to_string())
+                                    .size(size::META)
+                                    .font(style::mono())
+                                    .style(style::muted),
+                            ]
+                            .spacing(space::M)
+                            .align_y(iced::Alignment::Center),
+                        )
+                        .padding(Padding::from([space::XS, space::M]))
+                        .width(Length::Fill)
+                        .style(style::list_row(false))
+                        .on_press(message(EditorMessage::SearchQuery(format!("#{tag}")))),
                     );
                 }
-                scrollable(tags).height(Length::Fill).into()
+                scrollable(tags)
+                    .direction(style::scroll_direction())
+                    .style(style::scrollbar)
+                    .height(Length::Fill)
+                    .into()
             }
         };
         column![
             tabs,
-            text(format!("{} notes", index.len()))
-                .size(11)
-                .style(text::secondary),
+            container(
+                text(format!("{} notes", index.len()))
+                    .size(size::META)
+                    .style(style::muted)
+            )
+            .padding(Padding::from([space::NONE, space::M])),
             body
         ]
-        .spacing(4)
-        .padding(6)
-        .width(190)
+        .spacing(space::S)
+        .padding(Padding::from([space::XS, space::L]).bottom(space::L))
+        .width(measure::SIDEBAR)
         .into()
     }
 
-    fn properties_view(&self, id: u64) -> Option<Element<'_, Message>> {
+    fn properties_view(&self, id: u64, focused: bool) -> Option<Element<'_, Message>> {
         if self.front.properties.is_empty() {
             return None;
         }
         let message = move |message: EditorMessage| Message::Editor(id, message);
-        let mut list = column![].spacing(2);
+        let mut list = column![].spacing(space::XS);
         for property in &self.front.properties {
             let value: Element<'_, Message> = match &property.value {
                 Value::Text(current) => {
                     let key = property.key.clone();
                     let submit_key = key.clone();
                     text_input("", self.drafts.get(&property.key).unwrap_or(current))
-                        .size(12)
-                        .padding([1, 4])
+                        .size(size::LABEL)
+                        .padding(Padding::from([space::XXS, space::S]))
+                        .style(style::bare_input)
                         .on_input(move |value| {
                             message(EditorMessage::PropertyDraft(key.clone(), value))
                         })
                         .on_submit(message(EditorMessage::PropertySubmit(submit_key)))
                         .into()
                 }
-                Value::List(items) => text(items.join(", ")).size(12).into(),
-                Value::Other(raw) => text(raw.clone())
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(text::secondary)
+                Value::List(items) => container(text(items.join(", ")).size(size::LABEL))
+                    .padding(Padding::from([space::XXS, space::S]))
                     .into(),
+                Value::Other(raw) => container(
+                    text(raw.clone())
+                        .size(size::MONO)
+                        .font(style::mono())
+                        .style(style::muted),
+                )
+                .padding(Padding::from([space::XXS, space::S]))
+                .into(),
             };
             list = list.push(
                 row![
                     text(property.key.clone())
-                        .size(12)
-                        .width(140)
-                        .style(text::secondary),
+                        .size(size::LABEL)
+                        .width(measure::PROPERTY_KEY)
+                        .style(style::muted),
                     value
                 ]
-                .spacing(8)
+                .spacing(space::M)
                 .align_y(iced::Alignment::Center),
             );
         }
         Some(
-            container(list)
-                .padding([6, 10])
-                .style(container::bordered_box)
-                .width(Length::Fill)
-                .into(),
+            container(
+                container(list)
+                    .padding(Padding::from([space::L, space::XL]))
+                    .style(style::well(focused))
+                    .width(Length::Fill),
+            )
+            .padding(Padding::from([space::NONE, space::XL]).bottom(space::XS))
+            .into(),
         )
     }
 
     fn backlinks_view(&self, id: u64, index: Option<&Index>) -> Element<'_, Message> {
-        let mut list = row![text("Backlinks").size(12).style(text::secondary)]
-            .spacing(6)
+        let mut list = row![text("Backlinks").size(size::META).style(style::muted)]
+            .spacing(space::S)
             .align_y(iced::Alignment::Center);
         if let (Some(index), Some(path)) = (index, &self.path) {
             let backlinks = index.backlinks(path);
             if backlinks.is_empty() {
-                list = list.push(text("none").size(12).style(text::secondary));
+                list = list.push(text("none").size(size::META).style(style::muted));
             }
             for note in backlinks.into_iter().take(100) {
                 list = list.push(
-                    button(text(note.name.clone()).size(12))
-                        .padding([1, 6])
-                        .style(button::secondary)
-                        .on_press(Message::Editor(id, EditorMessage::Open(note.path.clone()))),
+                    button(
+                        text(note.name.clone())
+                            .size(size::META)
+                            .style(style::inherit),
+                    )
+                    .padding(Padding::from([space::XXS, space::S]))
+                    .style(style::link)
+                    .on_press(Message::Editor(id, EditorMessage::Open(note.path.clone()))),
                 );
             }
         }
-        scrollable(list.padding([4, 8]))
-            .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(4).scroller_width(4),
-            ))
-            .width(Length::Fill)
-            .into()
+        column![
+            style::hline(),
+            scrollable(list.padding(Padding::from([space::S, space::XL])))
+                .direction(style::scroll_direction_across())
+                .style(style::scrollbar)
+                .width(Length::Fill)
+        ]
+        .into()
     }
 
-    pub fn view(&self, id: u64, index: Option<&Index>) -> Element<'_, Message> {
+    pub fn view(
+        &self,
+        id: u64,
+        index: Option<&Index>,
+        mode: Mode,
+        focused: bool,
+    ) -> Element<'_, Message> {
         let message = move |message: EditorMessage| Message::Editor(id, message);
         let completion_open = self
             .completion
@@ -842,10 +924,14 @@ impl EditorPane {
                 "Open a note from the tree, or press Cmd+O."
             })
             .height(Length::Fill)
-            .size(14)
-            .padding(12)
+            .size(size::BODY)
+            .padding(Padding::from([space::L, space::XL]))
             .wrapping(text::Wrapping::WordOrGlyph)
-            .highlight("md", iced::highlighter::Theme::Base16Ocean)
+            .style(style::page)
+            .highlight_with::<iced::highlighter::Highlighter>(
+                style::source_settings(mode),
+                style::source,
+            )
             .on_action(move |action| message(EditorMessage::Action(action)))
             .key_binding(move |press| {
                 use iced::keyboard::Key;
@@ -886,7 +972,9 @@ impl EditorPane {
                 row![
                     text_input("Find in note", &find.query)
                         .id(Self::input_id(id))
-                        .size(12)
+                        .size(size::LABEL)
+                        .padding(Padding::from([space::S, space::L]))
+                        .style(style::input)
                         .on_input(move |query| message(EditorMessage::FindQuery(query)))
                         .on_submit(message(EditorMessage::FindNext)),
                     text(if find.query.is_empty() {
@@ -894,17 +982,13 @@ impl EditorPane {
                     } else {
                         format!("{} found", find.matches.len())
                     })
-                    .size(12),
+                    .size(size::META)
+                    .style(style::muted),
                 ]
-                .spacing(8)
-                .padding(4)
+                .spacing(space::M)
+                .padding(Padding::from([space::NONE, space::XL]).bottom(space::M))
                 .align_y(iced::Alignment::Center),
             );
-        }
-        if self.mode != EditorMode::Preview
-            && let Some(properties) = self.properties_view(id)
-        {
-            editor_column = editor_column.push(properties);
         }
         let mut editor_stack = stack![editor];
         if let Some(completion) = self
@@ -912,57 +996,57 @@ impl EditorPane {
             .as_ref()
             .filter(|completion| !completion.items.is_empty())
         {
-            let mut items = column![].spacing(0);
+            let mut items = column![].spacing(space::XXS);
             for (index, name) in completion.items.iter().enumerate() {
-                items = items.push(
-                    button(text(name.clone()).size(12))
-                        .width(Length::Fill)
-                        .style(if index == completion.selected {
-                            button::primary
-                        } else {
-                            button::text
-                        })
-                        .on_press(message(EditorMessage::Complete(Some(index)))),
-                );
+                items = items.push(style::choice_row(
+                    name.clone(),
+                    None,
+                    index == completion.selected,
+                    message(EditorMessage::Complete(Some(index))),
+                ));
             }
             editor_stack = editor_stack.push(
                 container(
                     container(items)
-                        .width(280)
-                        .padding(4)
-                        .style(container::bordered_box),
+                        .width(measure::COMPLETION)
+                        .padding(space::S)
+                        .style(style::overlay_panel),
                 )
                 .align_bottom(Length::Fill)
-                .padding(8),
+                .padding(space::L),
             );
         }
         editor_column = editor_column.push(editor_stack);
 
-        let viewer = VaultViewer { root: &self.root };
+        let viewer = VaultViewer {
+            root: &self.root,
+            focused,
+        };
         let blocks = self.preview.items();
         let mut preview_column = column![
             markdown::view_with(
                 &blocks[..blocks.len().min(PREVIEW_BLOCKS)],
-                markdown::Settings::with_text_size(
-                    14,
-                    markdown::Style::from_palette(Theme::TokyoNight.palette())
-                ),
+                style::prose(mode, focused, size::BODY),
                 &viewer
             )
             .map(move |url| message(EditorMessage::PreviewLink(url)))
         ]
-        .padding(14);
+        .spacing(space::L)
+        .padding(Padding::from([space::L, space::XL]).bottom(space::XXL))
+        .max_width(measure::READING + space::XL * 2.0);
         if blocks.len() > PREVIEW_BLOCKS {
             preview_column = preview_column.push(
                 text(format!(
                     "The preview shows the first {PREVIEW_BLOCKS} of {} blocks.",
                     blocks.len()
                 ))
-                .size(12)
-                .style(text::secondary),
+                .size(size::META)
+                .style(style::muted),
             );
         }
         let preview = scrollable(preview_column)
+            .direction(style::scroll_direction())
+            .style(style::scrollbar)
             .width(Length::Fill)
             .height(Length::Fill);
 
@@ -970,13 +1054,13 @@ impl EditorPane {
             mode_button("Edit", EditorMode::Edit, self.mode, id),
             mode_button("Split", EditorMode::Split, self.mode, id),
             mode_button("Preview", EditorMode::Preview, self.mode, id),
-            space::horizontal(),
+            Space::new().width(Length::Fill),
             text(self.error.clone().unwrap_or_default())
-                .size(12)
-                .style(text::danger),
+                .size(size::META)
+                .style(style::bad),
         ]
-        .spacing(4)
-        .padding([3, 6])
+        .spacing(space::XXS)
+        .padding(Padding::from([space::XS, space::XL]).bottom(space::M))
         .align_y(iced::Alignment::Center);
 
         let main: Element<'_, Message> = match self.mode {
@@ -984,47 +1068,67 @@ impl EditorPane {
             EditorMode::Preview => preview.into(),
             EditorMode::Split => row![
                 editor_column.width(Length::FillPortion(1)),
+                style::vline(),
                 preview.width(Length::FillPortion(1))
             ]
             .into(),
         };
+        // A note's properties sit above both halves of a split, so they
+        // keep the pane's full width.
+        let mut content = column![modes];
+        if self.mode != EditorMode::Preview
+            && let Some(properties) = self.properties_view(id, focused)
+        {
+            content = content.push(properties);
+        }
+        content = content.push(main).push(self.backlinks_view(id, index));
         let body = row![
             self.sidebar_view(id, index),
-            column![modes, main, self.backlinks_view(id, index)].width(Length::Fill)
+            style::vline(),
+            content.width(Length::Fill)
         ];
 
         let mut layers = stack![body];
         if let Some(switcher) = &self.switcher {
-            let mut items = column![
-                text_input("Open a note by name", &switcher.query)
-                    .id(Self::input_id(id))
-                    .size(14)
-                    .on_input(move |query| message(EditorMessage::SwitcherQuery(query)))
-                    .on_submit(message(EditorMessage::SwitcherOpen(None)))
-            ]
-            .spacing(2);
-            for (index, path) in switcher.items.iter().enumerate() {
-                items = items.push(
-                    button(text(path.clone()).size(13))
-                        .width(Length::Fill)
-                        .style(if index == switcher.selected {
-                            button::primary
-                        } else {
-                            button::text
-                        })
-                        .on_press(message(EditorMessage::SwitcherOpen(Some(index)))),
-                );
-            }
-            layers = layers.push(
-                container(
-                    container(items)
-                        .width(460)
-                        .padding(8)
-                        .style(container::bordered_box),
-                )
-                .center_x(Length::Fill)
-                .padding(40),
-            );
+            let query = text_input("Open a note by name", &switcher.query)
+                .id(Self::input_id(id))
+                .size(size::QUERY)
+                .padding(space::NONE)
+                .style(style::bare_input)
+                .on_input(move |query| message(EditorMessage::SwitcherQuery(query)))
+                .on_submit(message(EditorMessage::SwitcherOpen(None)));
+            let choices = switcher
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    let selected = index == switcher.selected;
+                    let (folder, name) = match path.rsplit_once('/') {
+                        Some((folder, name)) => (Some(folder), name),
+                        None => (None, path.as_str()),
+                    };
+                    style::choice_row(
+                        name.trim_end_matches(".md").to_string(),
+                        folder.map(|folder| {
+                            style::choice_note(
+                                style::clip_start(folder, measure::TAB_TITLE_CHARS),
+                                selected,
+                            )
+                        }),
+                        selected,
+                        message(EditorMessage::SwitcherOpen(Some(index))),
+                    )
+                })
+                .collect();
+            layers = layers.push(style::overlay(
+                style::panel(
+                    query,
+                    choices,
+                    &[("Enter", "open"), ("Up, Down", "choose"), ("Esc", "close")],
+                    measure::SWITCHER,
+                ),
+                space::HUGE,
+            ));
         }
         layers.into()
     }
@@ -1036,13 +1140,9 @@ fn mode_button(
     current: EditorMode,
     id: u64,
 ) -> Element<'static, Message> {
-    button(text(label).size(12))
-        .padding([2, 8])
-        .style(if mode == current {
-            button::primary
-        } else {
-            button::text
-        })
+    button(text(label).size(size::LABEL).style(style::inherit))
+        .padding(Padding::from([space::XS, space::M]))
+        .style(style::toggle(mode == current))
         .on_press(Message::Editor(id, EditorMessage::Mode(mode)))
         .into()
 }
@@ -1063,6 +1163,8 @@ pub fn preview_target(url: &str) -> PreviewTarget {
 /// Draws the preview's images from the vault's own files.
 struct VaultViewer<'a> {
     root: &'a Path,
+    /// Whether the pane is focused, which decides what a well stands on.
+    focused: bool,
 }
 
 impl<'a> markdown::Viewer<'a, String> for VaultViewer<'a> {
@@ -1070,9 +1172,19 @@ impl<'a> markdown::Viewer<'a, String> for VaultViewer<'a> {
         url
     }
 
-    fn image(
+    fn code_block(
         &self,
         _settings: markdown::Settings,
+        _language: Option<&'a str>,
+        code: &'a str,
+        _lines: &'a [markdown::Text],
+    ) -> Element<'a, String> {
+        style::code_block(code, self.focused)
+    }
+
+    fn image(
+        &self,
+        settings: markdown::Settings,
         url: &'a markdown::Uri,
         _title: &'a str,
         alt: &markdown::Text,
@@ -1092,12 +1204,13 @@ impl<'a> markdown::Viewer<'a, String> for VaultViewer<'a> {
                 .into(),
             _ => text(format!(
                 "[{}]",
-                alt.spans(markdown::Style::from_palette(Theme::TokyoNight.palette()))
+                alt.spans(settings.style)
                     .iter()
                     .map(|span| span.text.as_ref())
                     .collect::<String>()
             ))
-            .size(12)
+            .size(size::META)
+            .style(style::muted)
             .into(),
         }
     }

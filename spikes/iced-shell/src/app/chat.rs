@@ -2,14 +2,17 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, markdown, row, scrollable, text, text_editor};
-use iced::{Element, Font, Length, Theme};
+use iced::widget::{
+    Space, button, column, container, markdown, row, scrollable, text, text_editor,
+};
+use iced::{Element, Length, Padding};
 
 use crate::chat::event::Usage;
 use crate::chat::runner::{self, RunEvent, RunOutput};
 use crate::chat::transcript::{Item, Status, Transcript};
 use crate::chat::{Agent, Mode, RunRequest};
 use crate::shell::layout::expand_home;
+use crate::style::{self, Step, measure, size, space};
 
 use super::Message;
 
@@ -176,117 +179,159 @@ impl ChatPane {
         ended
     }
 
-    pub fn view(&self, id: u64) -> Element<'_, Message> {
-        let message = move |message: ChatMessage| Message::Chat(id, message);
-        let theme = Theme::TokyoNight;
-        let settings =
-            markdown::Settings::with_text_size(14, markdown::Style::from_palette(theme.palette()));
+    /// The note at the right of the pane's status line: what the agent is
+    /// doing, and what the chat has cost.
+    pub fn status_note(&self) -> String {
+        let state = match (self.transcript.status, self.run.is_some()) {
+            (_, true) => "Running",
+            (Status::Error, _) => "Failed",
+            _ => "Ready",
+        };
+        match self.transcript.total.cost_usd {
+            Some(cost) => format!("{state}, ${cost:.2}"),
+            None => String::from(state),
+        }
+    }
 
-        let mut items = column![].spacing(10).padding([10, 14]);
+    pub fn view(&self, id: u64, mode: style::Mode, focused: bool) -> Element<'_, Message> {
+        let message = move |message: ChatMessage| Message::Chat(id, message);
+        let settings = style::prose(mode, focused, size::PROSE);
+        let viewer = ProseViewer { focused };
+
+        let mut items = column![].spacing(space::XL);
         for (index, item) in self.transcript.items.iter().enumerate() {
             let element: Element<'_, Message> = match item {
-                Item::User { text: said } => container(text(said.clone()).size(14))
-                    .padding([6, 10])
-                    .style(container::rounded_box)
-                    .width(Length::Fill)
-                    .into(),
+                Item::User { text: said } => row![
+                    style::mark(),
+                    column![
+                        text("You").size(size::META).style(style::muted),
+                        text(said.clone())
+                            .size(size::ASK)
+                            .font(style::ui_strong())
+                            .line_height(style::leading::DISPLAY),
+                    ]
+                    .spacing(space::XXS)
+                ]
+                .spacing(space::L)
+                .into(),
                 Item::Assistant { stopped, .. } => {
                     let body: Element<'_, Message> =
                         match self.rendered.get(index).and_then(Option::as_ref) {
-                            Some((_, content)) => markdown::view(content.items(), settings)
-                                .map(move |url| message(ChatMessage::Link(url))),
-                            None => text("").into(),
+                            Some((_, content)) => {
+                                markdown::view_with(content.items(), settings, &viewer)
+                                    .map(move |url| message(ChatMessage::Link(url)))
+                            }
+                            None => Space::new().into(),
                         };
                     if *stopped {
-                        column![body, text("Stopped").size(12).style(text::secondary)]
-                            .spacing(4)
-                            .into()
+                        column![
+                            body,
+                            step(
+                                Step::Quiet,
+                                text("Stopped").size(size::BODY).style(style::muted)
+                            )
+                        ]
+                        .spacing(space::M)
+                        .into()
                     } else {
                         body
                     }
                 }
-                Item::Tool { name, summary, .. } => text(format!("▸ {name} {summary}"))
-                    .size(12)
-                    .font(Font::MONOSPACE)
-                    .style(text::secondary)
+                Item::Tool { name, summary, .. } => step(
+                    Step::Done,
+                    row![
+                        text(name.clone())
+                            .size(size::BODY)
+                            .font(style::ui_strong())
+                            .wrapping(text::Wrapping::None),
+                        text(summary.clone())
+                            .size(size::MONO)
+                            .font(style::mono())
+                            .style(style::muted),
+                    ]
+                    .spacing(space::L)
+                    .align_y(iced::Alignment::Center),
+                ),
+                Item::Note { text: note } => text(note.clone())
+                    .size(size::LABEL)
+                    .style(style::muted)
                     .into(),
-                Item::Note { text: note } => {
-                    text(note.clone()).size(12).style(text::secondary).into()
-                }
-                Item::Error { text: error } => {
-                    container(text(error.clone()).size(13).style(text::danger))
-                        .padding([6, 10])
-                        .style(container::bordered_box)
-                        .width(Length::Fill)
-                        .into()
-                }
+                Item::Error { text: error } => step(
+                    Step::Failed,
+                    column![
+                        text("Failed")
+                            .size(size::BODY)
+                            .font(style::ui_strong())
+                            .style(style::bad),
+                        container(text(error.clone()).size(size::MONO).font(style::mono()))
+                            .padding(Padding::from([space::L, space::XL]))
+                            .width(Length::Fill)
+                            .style(style::well_bad),
+                    ]
+                    .spacing(space::M),
+                ),
                 Item::Usage { usage } => text(usage_line(usage))
-                    .size(11)
-                    .style(text::secondary)
+                    .size(size::META)
+                    .style(style::muted)
                     .into(),
             };
             items = items.push(element);
         }
 
-        let status = match (self.transcript.status, self.run.is_some()) {
-            (_, true) => "Running",
-            (Status::Error, _) => "Failed",
-            _ => "Ready",
-        };
         let total = usage_line(&self.transcript.total);
-        let header = row![
-            text(self.agent.label()).size(13),
-            text(self.directory.clone().unwrap_or_else(|| String::from("~")))
-                .size(12)
-                .style(text::secondary),
-            iced::widget::space::horizontal(),
-            text(total).size(12).style(text::secondary),
-            text(status).size(12).style(if status == "Failed" {
-                text::danger
+        let summary = row![
+            text(if total.is_empty() {
+                String::from("Nothing spent in this chat yet.")
             } else {
-                text::secondary
-            }),
+                format!("This chat: {total}")
+            })
+            .size(size::LABEL)
+            .style(style::muted)
+            .width(Length::Fill),
             button(
                 text(match self.mode {
                     Mode::ReadOnly => "Read only",
-                    Mode::Edit => "Edit files",
+                    Mode::Edit => "Can edit files",
                 })
-                .size(12)
+                .size(size::LABEL)
+                .style(style::inherit)
+                .wrapping(text::Wrapping::None)
             )
-            .padding([2, 8])
-            .style(button::secondary)
+            .padding(Padding::from([space::XXS, space::M]))
+            .style(style::quiet)
             .on_press_maybe((!self.is_running()).then(|| message(ChatMessage::ToggleMode))),
         ]
-        .spacing(10)
-        .align_y(iced::Alignment::Center)
-        .padding([4, 10]);
-
-        let trust: Element<'_, Message> = if self.agent == Agent::Claude && !self.trusted {
-            row![
-                text("Trust this folder? Until you do, its own agent settings, hooks and skills do not load.").size(12),
-                button(text("Trust").size(12)).padding([2, 10]).on_press(message(ChatMessage::Trust)),
-            ]
-            .spacing(10)
-            .align_y(iced::Alignment::Center)
-            .padding([2, 10])
-            .into()
-        } else {
-            column![].into()
-        };
+        .spacing(space::L)
+        .align_y(iced::Alignment::Center);
 
         let action = if self.is_running() {
-            button(text("Stop").size(13))
-                .style(button::danger)
-                .on_press(message(ChatMessage::Stop))
+            button(
+                text("Stop")
+                    .size(size::BODY)
+                    .font(style::ui_strong())
+                    .style(style::inherit),
+            )
+            .style(style::danger)
+            .on_press(message(ChatMessage::Stop))
         } else {
-            button(text("Send").size(13)).on_press(message(ChatMessage::Send))
-        };
+            button(
+                text("Send")
+                    .size(size::BODY)
+                    .font(style::ui_strong())
+                    .style(style::inherit),
+            )
+            .style(style::primary)
+            .on_press(message(ChatMessage::Send))
+        }
+        .padding(Padding::from([space::L, space::XXL]));
         let input = text_editor(&self.draft)
             .id(Self::input_id(id))
             .placeholder("Message the agent. Enter sends, Shift+Enter adds a line.")
-            .size(14)
+            .size(size::BODY)
+            .padding(Padding::from([space::L, space::XL]))
             .height(Length::Shrink)
-            .max_height(160)
+            .max_height(measure::COMPOSER_MAX)
+            .style(style::composer)
             .on_action(move |action| message(ChatMessage::Draft(action)))
             .key_binding(move |press| {
                 let enter = matches!(
@@ -300,19 +345,79 @@ impl ChatPane {
                 }
             });
 
-        column![
-            header,
-            trust,
-            scrollable(items)
-                .id(Self::transcript_id(id))
-                .anchor_bottom()
-                .height(Length::Fill)
-                .width(Length::Fill),
+        let mut foot = column![].spacing(space::M);
+        if self.agent == Agent::Claude && !self.trusted {
+            foot = foot.push(
+                container(
+                    row![
+                        text("Trust this folder? Until you do, its own agent settings, hooks and skills do not load.")
+                            .size(size::LABEL)
+                            .width(Length::Fill),
+                        button(text("Trust").size(size::LABEL).font(style::ui_strong()).style(style::inherit))
+                            .padding(Padding::from([space::XS, space::XL]))
+                            .style(style::secondary)
+                            .on_press(message(ChatMessage::Trust)),
+                    ]
+                    .spacing(space::L)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding(Padding::from([space::M, space::XL]))
+                .style(style::notice),
+            );
+        }
+        foot = foot.push(summary).push(
             row![input, action]
-                .spacing(8)
-                .padding(8)
+                .spacing(space::L)
                 .align_y(iced::Alignment::End),
+        );
+
+        column![
+            scrollable(
+                container(items.max_width(measure::READING))
+                    .center_x(Length::Fill)
+                    .padding(Padding::from([space::HUGE, space::HUGE]).bottom(space::XXL)),
+            )
+            .id(Self::transcript_id(id))
+            .direction(style::scroll_direction())
+            .style(style::scrollbar)
+            .anchor_bottom()
+            .height(Length::Fill)
+            .width(Length::Fill),
+            container(foot.max_width(measure::READING))
+                .center_x(Length::Fill)
+                .padding(Padding::from([space::NONE, space::HUGE]).bottom(space::XL)),
         ]
         .into()
+    }
+}
+
+/// One thing an agent did: a marker, then what it was.
+fn step<'a>(kind: Step, what: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    row![
+        container(style::dot(kind)).padding(Padding::default().top(space::S)),
+        what.into()
+    ]
+    .spacing(space::L)
+    .into()
+}
+
+/// Draws an agent's Markdown with the shell's own code blocks.
+struct ProseViewer {
+    focused: bool,
+}
+
+impl<'a> markdown::Viewer<'a, String> for ProseViewer {
+    fn on_link_click(url: markdown::Uri) -> String {
+        url
+    }
+
+    fn code_block(
+        &self,
+        _settings: markdown::Settings,
+        _language: Option<&'a str>,
+        code: &'a str,
+        _lines: &'a [markdown::Text],
+    ) -> Element<'a, String> {
+        style::code_block(code, self.focused)
     }
 }
