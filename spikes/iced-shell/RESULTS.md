@@ -1,15 +1,16 @@
 # Results: a native shell on iced
 
-Spike date: 18 November 2026. Everything measured here ran on a shared
+Spike date: 18 November 2026. Most of what is measured here ran on a shared
 Linux cloud machine (4 cores, no GPU) under Xvfb with iced's software
-renderer (tiny-skia). The product target is macOS. None of these numbers
-can be compared with the Mac table in the brief, and every claim about
-macOS behaviour below is unverified unless it says the macOS CI job ran it.
+renderer (tiny-skia). The product target is macOS. The Linux numbers cannot
+be compared with the Mac table in the brief. The section "Measured on a
+Mac" holds what was run on the target; any other claim about macOS is
+unverified unless it says the macOS CI job ran it.
 
 ## Verdict
 
-**Yes for the terminal and the shell, no for the web pane, and only with
-patches for the editor.**
+**Yes for the terminal and the shell, yes for the web pane after one fix on
+macOS, and only with patches for the editor.**
 
 - **Terminal: much better.** A terminal built directly on
   `alacritty_terminal` runs vim, htop, tmux and less correctly, keeps memory
@@ -29,16 +30,55 @@ patches for the editor.**
   50,000 lines, fixed with a one-line patch to 20 ms), and the preview has
   no virtualisation, so a very long note previews its first 600 blocks.
   Obsidian's live preview in one pane would need a custom editor widget.
-- **Web pane: the weak point, and unproven.** A system web view as a child
-  view works in principle through `wry`, and pages load here (load events
-  and titles arrive), but on Linux WebKitGTK paints black inside the iced
-  window, and nothing about WKWebView on macOS has run yet. The z-order
-  rule (nothing iced draws can cover a web view) is handled by hiding web
-  views under the palette. This pane is where the move carries real risk.
+- **Web pane: works on macOS, black on Linux.** A system web view as a
+  child view through `wry` draws pages inside its pane on a Mac: a remote
+  site and a local HTML file with a canvas chart and a running timer both
+  rendered (see "Measured on a Mac"). It was blank on the first Mac run
+  because the pane's bounds arrive before the window handle there; the fix
+  is in. On Linux WebKitGTK still paints black inside the iced window. The
+  z-order rule (nothing iced draws can cover a web view) is handled by
+  hiding web views under the palette. Focus and Cmd+C/V inside a page are
+  still untested.
 
-Recommendation: move the terminal and the shell first, keep a decision on
-the web pane open until the macOS build has been tried by hand, and budget
+Recommendation: move the terminal and the shell first, use the web pane for
+anything best written in HTML and JavaScript such as dashboards, and budget
 for owning a text editor widget if the Obsidian-style editor matters.
+
+## Measured on a Mac
+
+MacBook Pro, M2 Max, macOS 26.6.1, release build, real display, screen
+unlocked, windows opened with `KRANG_QUIET=1`. One run each on 18 November
+2026 with other apps open, so treat them as indicative.
+
+| Measure | Value | How |
+| --- | --- | --- |
+| Clean release build | 63 s | `cargo build --release`, crates already downloaded |
+| App bundle size | 23 MB | `scripts/bundle-macos.sh` |
+| Warm start to first frame, median of 5 | 132 ms | `KRANG_SELFTEST=first-frame` |
+| Idle memory after 30 s, one pane of each kind | 164 MB app | `ps` RSS; the web view's own processes are not counted |
+| Idle CPU, 10 s window after 30 s | 0% | CPU time unchanged at 0.69 s |
+| Memory with 4 terminals flooding for 60 s | 183 MB, flat | RSS every 3 s, 16 samples all 183 MB |
+| Quiet terminal echo during that flood (median / p99 / max) | 11.7 / 17.5 / 24.4 ms | 58 pings, 0 unanswered |
+| Frame time resizing a divider beside a busy terminal (median / p99) | 8.8 / 24.8 ms | `KRANG_SELFTEST=resize`, 896 frames |
+| Open the 50,000-line note | 16 ms to load, 80 ms to first frame | `KRANG_SELFTEST=editor` |
+| Editor key to frame (median / p99) | 17.1 / 24.3 ms | 100 keys |
+| Vault search, 5,001 notes | 0.2 to 16.8 ms | four queries |
+| Terminal key to frame (median / p99) | 10.7 / 17.4 ms | `KRANG_SELFTEST=terminal-latency`, 60 keys |
+| Local HTML page loaded | 328 ms after launch | `KRANG_SELFTEST=web` |
+
+The frame figures sit near one or two 60 Hz refresh intervals, so the
+display, not the app, sets them.
+
+Also checked by hand on the same Mac:
+
+- All four pane kinds draw in one window from `bench/all-kinds.toml`: the
+  editor shows the tree, properties, split preview with task boxes, a table
+  and a highlighted code block, and backlinks.
+- `KRANG_QUIET=1` works: the app in front stayed in front through a launch.
+- The real Claude Code and Codex CLIs, run with the arguments the chat pane
+  builds and read by its parsers, each gave a session id, the reply and a
+  usage total with no unread lines for Claude Code and one hook notice kept
+  as a note for Codex. This ran outside the window, not by typing in the pane.
 
 ## Screenshots
 
@@ -118,7 +158,7 @@ but not exercised here.
 
 | Feature | State | Evidence |
 | --- | --- | --- |
-| System web view as an in-process child view | partial | run on Linux: the view is created as a child of the iced window and loads the page (load event and title arrive), but WebKitGTK paints black under Xvfb, with a GDK frame clock warning. Disabling WebKit's sandbox, a common fix for this in containers, was not allowed in this session and was not pursued. macOS (WKWebView) unverified |
+| System web view as an in-process child view | done on macOS, partial on Linux | run on a Mac: remote and local pages draw inside the pane, scripts run. Run on Linux: the view is created as a child of the iced window and loads the page (load event and title arrive), but WebKitGTK paints black under Xvfb, with a GDK frame clock warning. Disabling WebKit's sandbox, a common fix for this in containers, was not allowed in this session and was not pursued. macOS (WKWebView) unverified |
 | URL bar, back, forward, reload, loading state, title | done | code; title and loading arrive on Linux (run) |
 | Local HTML file from disk | done | test (the `localfile` scheme serves the file and its relative style sheet, with the same sandbox header as the current app); run (the page's title arrived) |
 | Follows dividers and splits | done | code: a probe widget reports the pane's bounds on every layout change |
@@ -232,7 +272,7 @@ front keeps the keyboard. iced always activates the app because winit calls
 `activateIgnoringOtherApps(true)` and iced gives no hook to change it, so
 the least invasive fix is a six-line block in a vendored `iced_winit` that
 sets winit's own builder option to `false` (see `vendor/README.md`).
-Unverified: this needs a Mac.
+Checked on a Mac: the app in front stayed in front.
 
 ## Dependencies and licences
 
@@ -314,14 +354,16 @@ macOS first, since it is the target:
    all tests, the release build and the bundle on macos-latest (arm64), and
    the self-test opened a window and drew a first frame there
    (`first_frame_ms 2943.5`, a first launch on a CI runner, so not a speed
-   figure). Still unverified: rendering speed on a real Mac, WKWebView as a child view (creation,
-   position, z-order, focus, Cmd+C/V in a page), `KRANG_QUIET=1`,
-   `proc_pidinfo` for terminal directories, Cmd+C/Cmd+V in the terminal,
-   and every number in the benchmark table.
+   figure). Still unverified on a Mac: the web view's position while a
+   divider moves, its z-order and focus, Cmd+C/V in a page, `proc_pidinfo`
+   for terminal directories, Cmd+C/Cmd+V in the terminal, and full-screen
+   programs such as vim and tmux.
 2. The `omp`, Claude and Codex CLIs inside the terminal (not installed here).
-3. The real Claude and Codex CLIs in the chat pane; only the fake agent ran.
+3. Typing to the real Claude and Codex CLIs in the chat pane. Their output
+   was read by the pane's parsers on a Mac, but only the fake agent ran in
+   the window.
 4. Clicking in mouse-reporting programs, wheel scrollback, link opening in a
    browser, italic and underline on screen.
-5. The web pane drawing a page on any platform.
+5. The web pane drawing a page on Linux.
 6. Pane drag and drop, quick switcher, find, and following a wikilink to a
    missing note, which are built and compile but were not driven by a test.
