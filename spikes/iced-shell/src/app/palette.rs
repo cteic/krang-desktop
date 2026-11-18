@@ -17,9 +17,13 @@ pub enum Command {
     ClosePane,
     CloseTab,
     Magnify,
+    RenameTab,
+    MoveTabLeft,
+    MoveTabRight,
+    SaveLayout,
 }
 
-pub const COMMANDS: [(Command, &str); 13] = [
+pub const COMMANDS: [(Command, &str); 17] = [
     (
         Command::Add(NewPane::Terminal, false),
         "Add a terminal pane on the right",
@@ -57,6 +61,10 @@ pub const COMMANDS: [(Command, &str); 13] = [
     (Command::ClosePane, "Close the pane"),
     (Command::CloseTab, "Close the tab"),
     (Command::Magnify, "Magnify the pane, or restore it"),
+    (Command::RenameTab, "Rename the tab"),
+    (Command::MoveTabLeft, "Move the tab left"),
+    (Command::MoveTabRight, "Move the tab right"),
+    (Command::SaveLayout, "Save the tab as a layout"),
 ];
 
 pub struct Palette {

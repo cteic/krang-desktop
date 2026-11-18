@@ -98,6 +98,10 @@ impl Tree {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TabSpec {
     pub title: String,
+    /// The person chose the title, so the focused pane's own title no
+    /// longer stands in for it.
+    #[serde(default)]
+    pub named: bool,
     pub tree: Tree,
     /// Which leaf has the keyboard, by its place in [`Tree::leaves`].
     #[serde(default)]
@@ -143,7 +147,7 @@ fn pane_kind(id: &str, table: &toml::Table) -> Result<PaneKind, String> {
                 .unwrap_or_default(),
         },
         "editor" => PaneKind::Editor {
-            vault: None,
+            vault: text(table, "vault"),
             path: text(table, "path"),
             mode: match text(table, "mode").as_deref() {
                 Some("split") => EditorMode::Split,
@@ -204,7 +208,8 @@ fn build(
     id: &str,
     entries: &HashMap<String, Entry<'_>>,
     seen: &mut HashSet<String>,
-    focused: &mut Option<String>,
+    leaves: &mut usize,
+    focused: &mut Option<usize>,
 ) -> Result<Tree, String> {
     if !seen.insert(id.to_string()) {
         return Err(format!("pane {id} appears twice in the tree"));
@@ -244,13 +249,14 @@ fn build(
                 .copied()
                 .filter(|size| *size > 0.0)
                 .unwrap_or(1.0);
-            children.push((build(child, entries, seen, focused)?, weight));
+            children.push((build(child, entries, seen, leaves, focused)?, weight));
         }
         return chain(axis, children).ok_or_else(|| format!("split {id} has no children"));
     }
     if entry.table.get("is_focused").and_then(toml::Value::as_bool) == Some(true) {
-        *focused = Some(id.to_string());
+        *focused = Some(*leaves);
     }
+    *leaves += 1;
     Ok(Tree::Pane(PaneSpec {
         title: text(entry.table, "title"),
         kind: pane_kind(id, entry.table)?,
@@ -298,27 +304,216 @@ pub fn parse_layout(source: &str) -> Result<TabSpec, String> {
             ));
         }
     };
-    let mut focused = None;
-    let tree = build(&root, &entries, &mut HashSet::new(), &mut focused)?;
-    let focus = focused.and_then(|id| {
-        let title = entries
-            .get(&id)
-            .and_then(|entry| text(entry.table, "title"));
-        let kind = entries
-            .get(&id)
-            .and_then(|entry| pane_kind(&id, entry.table).ok())?;
-        let wanted = PaneSpec { title, kind };
-        tree.leaves().iter().position(|leaf| **leaf == wanted)
-    });
-    let title = text(&document, "title")
-        .or_else(|| text(&document, "name"))
-        .unwrap_or_else(|| String::from("layout"));
+    let mut focus = None;
+    let tree = build(&root, &entries, &mut HashSet::new(), &mut 0, &mut focus)?;
+    let named = text(&document, "title").or_else(|| text(&document, "name"));
     Ok(TabSpec {
-        title,
+        named: named.is_some(),
+        title: named.unwrap_or_else(|| String::from("layout")),
         tree,
         focus,
         maximized: false,
     })
+}
+
+fn leaf_table(spec: &PaneSpec) -> toml::Table {
+    let mut table = toml::Table::new();
+    let mut set = |key: &str, value: Option<&str>| {
+        if let Some(value) = value {
+            table.insert(key.to_string(), toml::Value::String(value.to_string()));
+        }
+    };
+    set("title", spec.title.as_deref());
+    match &spec.kind {
+        PaneKind::Terminal { directory, .. } => {
+            set("type", Some("terminal"));
+            set("directory", directory.as_deref());
+        }
+        PaneKind::Editor { vault, path, mode } => {
+            set("type", Some("editor"));
+            set("vault", vault.as_deref());
+            set("path", path.as_deref());
+            set(
+                "mode",
+                Some(match mode {
+                    EditorMode::Edit => "edit",
+                    EditorMode::Split => "split",
+                    EditorMode::Preview => "preview",
+                }),
+            );
+        }
+        PaneKind::Web { url } => {
+            set("type", Some("web"));
+            set("url", Some(url));
+        }
+        PaneKind::Chat {
+            agent,
+            directory,
+            mode,
+            ..
+        } => {
+            set("type", Some("chat"));
+            set(
+                "agent",
+                Some(match agent {
+                    Agent::Claude => "claude",
+                    Agent::Codex => "codex",
+                }),
+            );
+            set("directory", directory.as_deref());
+            set(
+                "mode",
+                Some(match mode {
+                    chat::Mode::ReadOnly => "read-only",
+                    chat::Mode::Edit => "edit",
+                }),
+            );
+        }
+    }
+    if let PaneKind::Terminal { commands, .. } = &spec.kind
+        && !commands.is_empty()
+    {
+        let commands = commands.iter().cloned().map(toml::Value::String).collect();
+        table.insert(String::from("commands"), toml::Value::Array(commands));
+    }
+    table
+}
+
+/// The two sizes a layout file gives a split of this ratio. They are whole
+/// numbers out of a thousand, so a file reads back to the ratio it wrote.
+fn sizes(ratio: f32) -> (i64, i64) {
+    let first = (ratio.clamp(0.05, 0.95) * 1000.0).round() as i64;
+    (first, 1000 - first)
+}
+
+/// The ratio a layout file's sizes give back.
+pub fn file_ratio(ratio: f32) -> f32 {
+    let (first, second) = sizes(ratio);
+    first as f32 / (first + second) as f32
+}
+
+struct Writer {
+    panes: Vec<toml::Value>,
+    leaves: usize,
+    splits: usize,
+    focus: Option<usize>,
+}
+
+impl Writer {
+    /// Adds a node and what is under it, and returns the node's id.
+    fn node(&mut self, tree: &Tree, root: bool) -> String {
+        match tree {
+            Tree::Pane(spec) => {
+                let id = format!("pane-{}", self.leaves + 1);
+                let mut table = leaf_table(spec);
+                table.insert(String::from("id"), toml::Value::String(id.clone()));
+                if self.focus == Some(self.leaves) {
+                    table.insert(String::from("is_focused"), toml::Value::Boolean(true));
+                }
+                self.leaves += 1;
+                self.panes.push(toml::Value::Table(table));
+                id
+            }
+            Tree::Split { axis, ratio, a, b } => {
+                self.splits += 1;
+                let id = if root {
+                    String::from("root")
+                } else {
+                    format!("split-{}", self.splits)
+                };
+                // A split is written before its children, as a person
+                // would write the file.
+                let place = self.panes.len();
+                self.panes.push(toml::Value::Boolean(false));
+                let children = [self.node(a, false), self.node(b, false)];
+                let (first, second) = sizes(*ratio);
+                let mut table = toml::Table::new();
+                table.insert(String::from("id"), toml::Value::String(id.clone()));
+                table.insert(
+                    String::from("split"),
+                    toml::Value::String(String::from(match axis {
+                        Axis::Vertical => "vertical",
+                        Axis::Horizontal => "horizontal",
+                    })),
+                );
+                table.insert(
+                    String::from("children"),
+                    toml::Value::Array(children.map(toml::Value::String).to_vec()),
+                );
+                table.insert(
+                    String::from("sizes"),
+                    toml::Value::Array(vec![
+                        toml::Value::Integer(first),
+                        toml::Value::Integer(second),
+                    ]),
+                );
+                self.panes[place] = toml::Value::Table(table);
+                id
+            }
+        }
+    }
+}
+
+/// Writes one tab as a layout file that [`parse_layout`] reads back.
+///
+/// A layout describes where panes go and what they open, so what a pane has
+/// done since is left out: a chat's transcript and trust, and whether a pane
+/// is magnified.
+pub fn write_layout(tab: &TabSpec) -> Result<String, String> {
+    let mut writer = Writer {
+        panes: Vec::new(),
+        leaves: 0,
+        splits: 0,
+        focus: tab.focus,
+    };
+    writer.node(&tab.tree, true);
+    let mut document = toml::Table::new();
+    document.insert(
+        String::from("title"),
+        toml::Value::String(tab.title.clone()),
+    );
+    document.insert(String::from("panes"), toml::Value::Array(writer.panes));
+    toml::to_string(&document).map_err(|error| error.to_string())
+}
+
+/// A tab as [`write_layout`] keeps it: what [`parse_layout`] gives back for
+/// the file. The tests use it, and it documents what a layout leaves out.
+pub fn as_layout(tab: &TabSpec) -> TabSpec {
+    fn tree(node: &Tree) -> Tree {
+        match node {
+            Tree::Pane(spec) => Tree::Pane(PaneSpec {
+                title: spec.title.clone(),
+                kind: match &spec.kind {
+                    PaneKind::Chat {
+                        agent,
+                        directory,
+                        mode,
+                        ..
+                    } => PaneKind::Chat {
+                        agent: *agent,
+                        directory: directory.clone(),
+                        mode: *mode,
+                        trusted: false,
+                        transcript: Transcript::default(),
+                    },
+                    other => other.clone(),
+                },
+            }),
+            Tree::Split { axis, ratio, a, b } => Tree::Split {
+                axis: *axis,
+                ratio: file_ratio(*ratio),
+                a: Box::new(tree(a)),
+                b: Box::new(tree(b)),
+            },
+        }
+    }
+    TabSpec {
+        title: tab.title.clone(),
+        named: true,
+        tree: tree(&tab.tree),
+        focus: tab.focus,
+        maximized: false,
+    }
 }
 
 /// Expands a leading `~` to the home directory. Layout files are written by
@@ -442,6 +637,100 @@ mode = "edit"
         assert!(parse_layout(cycle).is_err());
         let missing = "[[panes]]\nid = \"root\"\nsplit = \"vertical\"\nchildren = [\"x\"]\n";
         assert!(parse_layout(missing).is_err_and(|error| error.contains("no pane with id x")));
+    }
+
+    #[test]
+    fn a_tab_saved_as_a_layout_reads_back_the_same() {
+        let leaf = |title: Option<&str>, kind: PaneKind| {
+            Tree::Pane(PaneSpec {
+                title: title.map(String::from),
+                kind,
+            })
+        };
+        let terminal = || PaneKind::Terminal {
+            directory: Some(String::from("~/src/project")),
+            commands: vec![String::from("git status -sb")],
+        };
+        let mut said = Transcript::default();
+        said.send(String::from("hello"));
+        let tab = TabSpec {
+            title: String::from("review: api \"v2\""),
+            named: true,
+            tree: Tree::Split {
+                axis: Axis::Vertical,
+                ratio: 0.3712,
+                a: Box::new(Tree::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 0.5,
+                    a: Box::new(leaf(None, terminal())),
+                    // The same pane twice: focus must land on the second.
+                    b: Box::new(leaf(None, terminal())),
+                }),
+                b: Box::new(Tree::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 0.99,
+                    a: Box::new(leaf(
+                        Some("notes"),
+                        PaneKind::Editor {
+                            vault: Some(String::from("~/notes")),
+                            path: Some(String::from("~/notes/today.md")),
+                            mode: EditorMode::Preview,
+                        },
+                    )),
+                    b: Box::new(Tree::Split {
+                        axis: Axis::Vertical,
+                        ratio: 0.25,
+                        a: Box::new(leaf(
+                            None,
+                            PaneKind::Web {
+                                url: String::from("http://localhost:3000/"),
+                            },
+                        )),
+                        b: Box::new(leaf(
+                            None,
+                            PaneKind::Chat {
+                                agent: Agent::Codex,
+                                directory: Some(String::from("~/src/project")),
+                                mode: chat::Mode::Edit,
+                                trusted: true,
+                                transcript: said,
+                            },
+                        )),
+                    }),
+                }),
+            },
+            focus: Some(1),
+            maximized: true,
+        };
+        let file = match write_layout(&tab) {
+            Ok(file) => file,
+            Err(error) => panic!("{error}"),
+        };
+        let back = match parse_layout(&file) {
+            Ok(back) => back,
+            Err(error) => panic!("{error}\n{file}"),
+        };
+        assert_eq!(back, as_layout(&tab), "{file}");
+        assert_eq!(back.focus, Some(1));
+        // Saving what was read gives the same file, byte for byte.
+        assert_eq!(write_layout(&back).as_deref(), Ok(file.as_str()));
+        // Sizes in the file are out of a thousand, and never squeeze a pane out.
+        assert!((file_ratio(0.3712) - 0.371).abs() < 1e-6);
+        assert!((file_ratio(0.99) - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_layout_with_a_title_names_its_tab() {
+        let untitled = parse_layout("[[panes]]\nid = \"a\"\n");
+        assert_eq!(
+            untitled.map(|tab| (tab.title, tab.named)),
+            Ok((String::from("layout"), false))
+        );
+        let titled = parse_layout("title = \"api\"\n[[panes]]\nid = \"a\"\n");
+        assert_eq!(
+            titled.map(|tab| (tab.title, tab.named)),
+            Ok((String::from("api"), true))
+        );
     }
 
     #[test]

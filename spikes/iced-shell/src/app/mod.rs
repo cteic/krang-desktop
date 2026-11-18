@@ -28,7 +28,7 @@ use crate::chat::runner::RunEvent;
 use crate::shell::layout::{
     self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, WORKSPACE_VERSION, Workspace,
 };
-use crate::shell::store;
+use crate::shell::{store, tabs};
 use crate::style::{self, Icon, Mode, measure, size, space};
 use crate::term::events::{self, TermEvent};
 use crate::term::palette::Scheme;
@@ -79,6 +79,15 @@ pub enum Message {
     ClosePane(u64),
     SelectTab(usize),
     CloseTab(usize),
+    /// The pointer went down on a tab: it is shown, and held for a drag.
+    TabPressed(usize),
+    TabEntered(usize),
+    TabExited(usize),
+    TabReleased,
+    RenameTab(usize),
+    RenameDraft(String),
+    RenameDone,
+    NoticeExpired(u64),
     PaletteQuery(String),
     PaletteRun(Option<Command>),
     /// Up or down in whichever list is open: the palette or the quick switcher.
@@ -101,6 +110,8 @@ struct Pane {
 
 struct Tab {
     title: String,
+    /// The person named the tab, so it no longer shows its pane's title.
+    named: bool,
     grid: pane_grid::State<u64>,
     focus: Option<pane_grid::Pane>,
 }
@@ -129,9 +140,20 @@ pub struct App {
     theme: Theme,
     /// The window's width, which decides where the tabs go.
     width: f32,
+    /// The tab whose name is being typed, and the name so far.
+    renaming: Option<(usize, String)>,
+    /// The tab the pointer holds, which follows the pointer over the others.
+    tab_drag: Option<usize>,
+    tab_hover: Option<usize>,
+    /// A line that says what a command just did, and which one it is.
+    notice: Option<(u64, String)>,
+    notices: u64,
 }
 
 const PALETTE_INPUT: &str = "palette-input";
+const RENAME_INPUT: &str = "tab-name-input";
+/// How long a notice stays up.
+const NOTICE_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 const NOWHERE: &str = "no-widget";
 
 /// The window's size at start: `KRANG_WINDOW_SIZE`, written `1280x800`, or
@@ -214,6 +236,11 @@ impl App {
             theme_setting,
             theme: Mode::choose(theme_setting, iced::theme::Mode::None).theme(),
             width: window_size().0,
+            renaming: None,
+            tab_drag: None,
+            tab_hover: None,
+            notice: None,
+            notices: 0,
         };
 
         let mut tasks = vec![window::oldest().and_then(|id| {
@@ -227,6 +254,7 @@ impl App {
         let mut specs: Vec<TabSpec> = Vec::new();
         let mut active = 0;
         for path in &options.layouts {
+            let path = &store::resolve_layout(app.state_dir.as_deref(), path);
             match std::fs::read_to_string(path)
                 .map_err(|error| error.to_string())
                 .and_then(|source| layout::parse_layout(&source))
@@ -270,6 +298,7 @@ impl App {
     fn new_tab_spec(&self, kind: NewPane) -> TabSpec {
         TabSpec {
             title: String::from("shell"),
+            named: false,
             tree: Tree::Pane(self.new_pane_spec(kind)),
             focus: Some(0),
             maximized: false,
@@ -385,6 +414,7 @@ impl App {
             .map(|(pane, _)| *pane);
         let mut tab = Tab {
             title: spec.title,
+            named: spec.named,
             grid,
             focus,
         };
@@ -492,6 +522,7 @@ impl App {
                     .and_then(|id| leaves.iter().position(|leaf| leaf == id));
                 Some(TabSpec {
                     title: tab.title.clone(),
+                    named: tab.named,
                     tree,
                     focus,
                     maximized: tab.grid.maximized().is_some(),
@@ -739,6 +770,79 @@ impl App {
         Task::batch([task, self.show_tab()])
     }
 
+    /// Starts typing a tab's name in place, with the name it shows now.
+    fn start_rename(&mut self, index: usize) -> Task<Message> {
+        let Some(tab) = self.tabs.get(index) else {
+            return Task::none();
+        };
+        self.tab_drag = None;
+        self.renaming = Some((index, self.tab_name(tab)));
+        Task::batch([
+            iced::widget::operation::focus(RENAME_INPUT),
+            iced::widget::operation::select_all(RENAME_INPUT),
+        ])
+    }
+
+    /// Takes the typed name. An empty name gives the tab back to its panes:
+    /// it shows the focused pane's title again.
+    fn finish_rename(&mut self) {
+        let Some((index, name)) = self.renaming.take() else {
+            return;
+        };
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        let name = name.trim();
+        tab.named = !name.is_empty();
+        if tab.named {
+            tab.title = name.to_string();
+        }
+        self.save();
+    }
+
+    fn move_tab(&mut self, by: i32) -> Task<Message> {
+        if let Some(target) = tabs::neighbour(self.tabs.len(), self.active, by) {
+            self.active = tabs::reorder(&mut self.tabs, self.active, self.active, target);
+            self.save();
+        }
+        self.focus_task()
+    }
+
+    /// Writes the shown tab to the layouts folder, where `--layout <name>`
+    /// finds it.
+    fn save_layout(&mut self) -> Task<Message> {
+        let saved = self
+            .workspace()
+            .tabs
+            .into_iter()
+            .nth(self.active)
+            .ok_or_else(|| String::from("the tab has no panes"))
+            .and_then(|mut tab| {
+                tab.title = self.tab_name(self.tab());
+                let text = layout::write_layout(&tab)?;
+                let dir = self
+                    .state_dir
+                    .as_deref()
+                    .ok_or_else(|| String::from("there is no folder to save in"))?;
+                store::save_layout(dir, &tab.title, &text).map_err(|error| error.to_string())
+            });
+        let said = match saved {
+            Ok(file) => format!("Saved the layout to {}", style::tilde(&file)),
+            Err(error) => format!("Could not save the layout: {error}"),
+        };
+        Task::batch([self.say(said), self.focus_task()])
+    }
+
+    /// Shows a line about what just happened, for a few seconds.
+    fn say(&mut self, notice: String) -> Task<Message> {
+        self.notices += 1;
+        let number = self.notices;
+        self.notice = Some((number, notice));
+        Task::perform(tokio::time::sleep(NOTICE_FOR), move |()| {
+            Message::NoticeExpired(number)
+        })
+    }
+
     fn cycle_pane(&mut self, by: i32) -> Task<Message> {
         let tab = self.tab();
         let order = leaf_panes(tab.grid.layout());
@@ -783,6 +887,9 @@ impl App {
     fn shortcut(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::Escape => {
+                if self.renaming.take().is_some() {
+                    return self.focus_task();
+                }
                 if self.palette.take().is_some() {
                     self.sync_web();
                     return self.focus_task();
@@ -1074,6 +1181,7 @@ impl App {
             Message::SystemTheme(system) => self.set_mode(Mode::choose(self.theme_setting, system)),
             Message::Resized(size) => self.width = size.width,
             Message::PaneClicked(pane) => {
+                self.finish_rename();
                 if self.tab().focus != Some(pane) {
                     return self.focus(pane);
                 }
@@ -1094,7 +1202,60 @@ impl App {
                     return self.show_tab();
                 }
             }
-            Message::CloseTab(index) => return self.close_tab(index),
+            Message::CloseTab(index) => {
+                self.renaming = None;
+                return self.close_tab(index);
+            }
+            Message::TabPressed(index) => {
+                if self.renaming.as_ref().is_some_and(|(tab, _)| *tab == index) {
+                    return Task::none();
+                }
+                self.finish_rename();
+                if index < self.tabs.len() {
+                    self.tab_drag = Some(index);
+                    self.active = index;
+                    return self.show_tab();
+                }
+            }
+            Message::TabEntered(index) => {
+                self.tab_hover = Some(index);
+                if let Some(held) = self.tab_drag
+                    && held != index
+                    && index < self.tabs.len()
+                {
+                    self.active = tabs::reorder(&mut self.tabs, self.active, held, index);
+                    self.tab_drag = Some(index);
+                }
+            }
+            Message::TabExited(index) => {
+                if self.tab_hover == Some(index) {
+                    self.tab_hover = None;
+                }
+            }
+            Message::TabReleased => {
+                if self.tab_drag.take().is_some() {
+                    self.save();
+                }
+            }
+            Message::RenameTab(index) => return self.start_rename(index),
+            Message::RenameDraft(draft) => {
+                if let Some((_, name)) = self.renaming.as_mut() {
+                    *name = draft;
+                }
+            }
+            Message::RenameDone => {
+                self.finish_rename();
+                return self.focus_task();
+            }
+            Message::NoticeExpired(number) => {
+                if self
+                    .notice
+                    .as_ref()
+                    .is_some_and(|(known, _)| *known == number)
+                {
+                    self.notice = None;
+                }
+            }
             Message::PaletteQuery(query) => {
                 if let Some(palette) = self.palette.as_mut() {
                     palette.query = query;
@@ -1111,6 +1272,10 @@ impl App {
                     Some(Command::ClosePane) => self.shortcut(Action::ClosePane),
                     Some(Command::CloseTab) => self.shortcut(Action::CloseTab),
                     Some(Command::Magnify) => self.shortcut(Action::Magnify),
+                    Some(Command::RenameTab) => self.start_rename(self.active),
+                    Some(Command::MoveTabLeft) => self.move_tab(-1),
+                    Some(Command::MoveTabRight) => self.move_tab(1),
+                    Some(Command::SaveLayout) => self.save_layout(),
                     None => self.focus_task(),
                 };
             }
@@ -1400,6 +1565,19 @@ impl App {
         if self.theme_setting.is_none() {
             subscriptions.push(iced::system::theme_changes().map(Message::SystemTheme));
         }
+        if self.tab_drag.is_some() {
+            // The pointer may come up anywhere, so the window listens for
+            // it, and only while a tab is held.
+            subscriptions.push(iced::event::listen_with(|event, _status, _window| {
+                matches!(
+                    event,
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left
+                    ))
+                )
+                .then_some(Message::TabReleased)
+            }));
+        }
         if cfg!(target_os = "linux") && !self.web.is_empty() {
             // WebKitGTK only: see `host::pump`. macOS needs no timer.
             subscriptions.push(
@@ -1476,15 +1654,20 @@ impl App {
         )
     }
 
-    fn tab_label(&self, tab: &Tab) -> String {
-        let focus_title = tab
-            .focus
+    /// A tab's name: the one the person gave it, or else the title of the
+    /// pane that has the keyboard.
+    fn tab_name(&self, tab: &Tab) -> String {
+        if tab.named {
+            return tab.title.clone();
+        }
+        tab.focus
             .and_then(|pane| tab.grid.get(pane))
-            .and_then(|id| self.pane_title(*id));
-        style::clip_end(
-            &focus_title.unwrap_or_else(|| tab.title.clone()),
-            measure::TAB_TITLE_CHARS,
-        )
+            .and_then(|id| self.pane_title(*id))
+            .unwrap_or_else(|| tab.title.clone())
+    }
+
+    fn tab_label(&self, tab: &Tab) -> String {
+        style::clip_end(&self.tab_name(tab), measure::TAB_TITLE_CHARS)
     }
 
     /// The panes of the shown tab, listed under it in the rail.
@@ -1539,10 +1722,46 @@ impl App {
             })
             .style(style::inherit)
             .wrapping(text::Wrapping::None);
-        let select = button(label)
-            .padding(Padding::from([space::S, space::L]))
-            .style(style::tab(selected))
-            .on_press(Message::SelectTab(index));
+        let renaming = self
+            .renaming
+            .as_ref()
+            .filter(|(tab, _)| *tab == index)
+            .map(|(_, draft)| draft);
+        let select: Element<'_, Message> = match renaming {
+            Some(draft) => text_input("Tab name", draft)
+                .id(RENAME_INPUT)
+                .size(size::BODY)
+                .padding(Padding::from([space::S, space::L]))
+                .style(style::input)
+                .on_input(Message::RenameDraft)
+                .on_submit(Message::RenameDone)
+                .width(if fill {
+                    Length::Fill
+                } else {
+                    Length::Fixed(measure::TAB_NAME)
+                })
+                .into(),
+            None => {
+                let state = if self.tab_drag == Some(index) {
+                    style::Held::Dragged
+                } else if self.tab_hover == Some(index) {
+                    style::Held::Hovered
+                } else {
+                    style::Held::Idle
+                };
+                mouse_area(
+                    container(label)
+                        .padding(Padding::from([space::S, space::L]))
+                        .width(if fill { Length::Fill } else { Length::Shrink })
+                        .style(style::tab_surface(selected, state)),
+                )
+                .on_press(Message::TabPressed(index))
+                .on_double_click(Message::RenameTab(index))
+                .on_enter(Message::TabEntered(index))
+                .on_exit(Message::TabExited(index))
+                .into()
+            }
+        };
         let close = button(
             container(style::close_mark())
                 .center_x(Length::Fill)
@@ -1553,17 +1772,10 @@ impl App {
         .padding(space::NONE)
         .style(style::quiet)
         .on_press(Message::CloseTab(index));
-        row![
-            if fill {
-                select.width(Length::Fill)
-            } else {
-                select
-            },
-            close
-        ]
-        .spacing(space::XXS)
-        .align_y(iced::Alignment::Center)
-        .into()
+        row![select, close]
+            .spacing(space::XXS)
+            .align_y(iced::Alignment::Center)
+            .into()
     }
 
     fn add_pane_button(&self, with_keys: bool) -> Element<'_, Message> {
@@ -1608,6 +1820,7 @@ impl App {
                 .direction(style::scroll_direction())
                 .style(style::scrollbar)
                 .height(Length::Fill),
+            self.notice_line(),
             container(self.add_pane_button(true)).width(Length::Fill),
         ]
         .spacing(space::L)
@@ -1618,6 +1831,17 @@ impl App {
         )
         .width(measure::RAIL)
         .into()
+    }
+
+    /// What a command just did, or nothing.
+    fn notice_line(&self) -> Element<'_, Message> {
+        match &self.notice {
+            Some((_, notice)) => text(notice.clone())
+                .size(size::META)
+                .style(style::muted)
+                .into(),
+            None => Space::new().into(),
+        }
     }
 
     /// The tabs across the top of a narrow window.
@@ -1643,8 +1867,11 @@ impl App {
         let tab = self.tab();
         let focus = tab.focus;
         let magnified = tab.grid.maximized().is_some();
+        // While a tab's name is typed no pane has the keyboard, so the
+        // letters do not also reach a terminal.
+        let typing_elsewhere = self.renaming.is_some();
         PaneGrid::new(&tab.grid, move |pane, id, _maximized| {
-            let focused = focus == Some(pane);
+            let focused = focus == Some(pane) && !typing_elsewhere;
             let id = *id;
             let body: Element<'_, Message> = match self.panes.get(&id).map(|pane| &pane.body) {
                 Some(Body::Terminal(terminal)) => terminal.view(id, focused, self.mode),
@@ -1767,7 +1994,12 @@ impl App {
                 Padding::from([space::L, space::L]).left(space::NONE)
             });
         let body: Element<'_, Message> = if narrow {
-            column![self.tab_bar(), grid].into()
+            column![
+                self.tab_bar(),
+                container(self.notice_line()).padding(Padding::from([space::NONE, space::L])),
+                grid
+            ]
+            .into()
         } else {
             row![self.rail(), grid].into()
         };
