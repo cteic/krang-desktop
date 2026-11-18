@@ -103,6 +103,13 @@ row "CPU with 4 terminals flooding" "$(awk -v a="$t0" -v b="$t1" -v hz="$hz" -v 
 wait $pid
 row "Quiet terminal echo during flood (median / p99 / max)" "$(value quiet_terminal_echo_median_ms "$work/flood.txt") / $(value quiet_terminal_echo_p99_ms "$work/flood.txt") / $(value quiet_terminal_echo_max_ms "$work/flood.txt") ms" "$(value quiet_terminal_echo_count "$work/flood.txt") pings, $(value quiet_terminal_unanswered "$work/flood.txt") unanswered"
 
+# The same flood in a tab that is not shown, with the quiet terminal in the shown tab.
+KRANG_SELFTEST=flood KRANG_SELFTEST_SECONDS=30 "$bin" --layout "$work/layouts/quiet.toml" --layout "$work/layouts/flood.toml" > "$work/hidden.txt" 2>/dev/null &
+pid=$!
+sleep 10; t0=$(ticks $pid); sleep 10; t1=$(ticks $pid)
+wait $pid
+row "Flood in a hidden tab: app CPU / quiet echo median, p99" "$(awk -v a="$t0" -v b="$t1" -v hz="$hz" 'BEGIN { printf "%.0f%%", (b - a) / hz / 10 * 100 }') / $(value quiet_terminal_echo_median_ms "$work/hidden.txt"), $(value quiet_terminal_echo_p99_ms "$work/hidden.txt") ms" "hidden terminals parse but take no snapshots"
+
 # Frame time while the divider moves every frame next to a busy terminal.
 KRANG_SELFTEST=resize KRANG_SELFTEST_SECONDS=10 "$bin" --layout "$work/layouts/resize.toml" > "$work/resize.txt" 2>/dev/null
 row "Frame time, divider moving, busy terminal (median / p99)" "$(value resize_frame_median_ms "$work/resize.txt") / $(value resize_frame_p99_ms "$work/resize.txt") ms" "$(value resize_frame_count "$work/resize.txt") frames, time between redraws"
