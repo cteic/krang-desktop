@@ -158,7 +158,7 @@ but not exercised here.
 
 | Feature | State | Evidence |
 | --- | --- | --- |
-| System web view as an in-process child view | done on macOS, partial on Linux | run on a Mac: remote and local pages draw inside the pane, scripts run. Run on Linux: the view is created as a child of the iced window and loads the page (load event and title arrive), but WebKitGTK paints black under Xvfb, with a GDK frame clock warning. Disabling WebKit's sandbox, a common fix for this in containers, was not allowed in this session and was not pursued. macOS (WKWebView) unverified |
+| System web view as an in-process child view | done on macOS, partial on Linux | run on a Mac: remote and local pages draw inside the pane, scripts run. Run on Linux: the view is created as a child of the iced window and loads the page (load event and title arrive), but WebKitGTK paints black under Xvfb, with a GDK frame clock warning. Disabling WebKit's sandbox, a common fix for this in containers, was not allowed in this session and was not pursued |
 | URL bar, back, forward, reload, loading state, title | done | code; title and loading arrive on Linux (run) |
 | Local HTML file from disk | done | test (the `localfile` scheme serves the file and its relative style sheet, with the same sandbox header as the current app); run (the page's title arrived) |
 | Follows dividers and splits | done | code: a probe widget reports the pane's bounds on every layout change |
