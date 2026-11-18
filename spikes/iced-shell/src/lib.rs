@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod chat;
+pub mod files;
 pub mod shell;
 pub mod style;
 pub mod term;
