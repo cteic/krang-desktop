@@ -16,6 +16,11 @@
 //! | `tabs`              | Names a tab, moves it, saves it as a layout, prints the tabs |
 //! | `files`             | Opens `KRANG_SELFTEST_DIR` in a files pane and times it   |
 //!
+//! `KRANG_SELFTEST_SHOT=<file.bmp>` writes what the window has drawn to a
+//! picture just before any scenario finishes. The app draws it itself, so
+//! it works with the screen locked, where `screencapture` does not. Native
+//! web views are not in it: they are drawn by the system, over the window.
+//!
 //! `showcase` sends two messages to the first chat pane, the second one
 //! failing, so a transcript with a tool step, code, a cost and an error is
 //! on screen. `KRANG_SELFTEST_SHOW=palette` then opens the command palette
@@ -35,7 +40,8 @@
 //!
 //! `files` first prints the folder and open folders of any files pane that
 //! came back from the saved workspace. It then opens `KRANG_SELFTEST_DIR`
-//! in a new tab and prints how long the listing took, how long the rows
+//! in a new tab, or with no folder named uses the files pane that is
+//! there, and prints how long the listing took, how long the rows
 //! took, and the time from a Page Down to the frame that shows it, sixty
 //! times over. `KRANG_SELFTEST_OPEN` is a comma-separated list of paths
 //! under the folder to click in turn, a folder before what is in it; the
@@ -111,6 +117,7 @@ pub enum Step {
     TerminalType(u32),
     Show(u32),
     Measured(&'static str, Place),
+    Shot(iced::window::Screenshot),
     Finish,
 }
 
@@ -178,6 +185,7 @@ pub struct SelfTest {
     edit_times: Vec<Duration>,
     nav_times: Vec<Duration>,
     files_started: Option<Instant>,
+    shot_taken: bool,
     vault_ready: bool,
     web_started: Instant,
 }
@@ -198,6 +206,7 @@ impl SelfTest {
             edit_times: Vec::new(),
             nav_times: Vec::new(),
             files_started: None,
+            shot_taken: false,
             vault_ready: false,
             web_started: Instant::now(),
         }
@@ -473,7 +482,31 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
                 after(Duration::from_millis(40), Step::Type(number + 1)),
             ])
         }
-        (_, Step::Finish) => finish(app),
+        (_, Step::Shot(shot)) => {
+            if let Some(file) = std::env::var_os("KRANG_SELFTEST_SHOT") {
+                match std::fs::write(&file, bitmap(&shot)) {
+                    Ok(()) => report(
+                        "screenshot",
+                        format!("{}x{}", shot.size.width, shot.size.height),
+                    ),
+                    Err(error) => eprintln!("krang-shell: could not write the picture: {error}"),
+                }
+            }
+            finish(app)
+        }
+        (_, Step::Finish) => {
+            let wanted = std::env::var_os("KRANG_SELFTEST_SHOT").is_some();
+            let taken = app
+                .selftest
+                .as_mut()
+                .is_none_or(|selftest| std::mem::replace(&mut selftest.shot_taken, true));
+            match app.window {
+                Some(window) if wanted && !taken => {
+                    iced::window::screenshot(window).map(|shot| Message::SelfTest(Step::Shot(shot)))
+                }
+                _ => finish(app),
+            }
+        }
         _ => Task::none(),
     }
 }
@@ -574,7 +607,14 @@ fn files(app: &mut App, number: u32) -> Task<Message> {
         if restored {
             return after(Duration::from_millis(800), Step::Show(1));
         }
-        let directory = std::env::var("KRANG_SELFTEST_DIR").unwrap_or_default();
+        if let Some(selftest) = app.selftest.as_mut() {
+            selftest.files_started = Some(Instant::now());
+        }
+        // With no folder named, the test drives the files pane that is
+        // already there, such as one from a layout.
+        let Ok(directory) = std::env::var("KRANG_SELFTEST_DIR") else {
+            return next(1);
+        };
         let spec = TabSpec {
             title: String::from("files"),
             named: false,
@@ -592,9 +632,6 @@ fn files(app: &mut App, number: u32) -> Task<Message> {
         let (tab, load) = app.build_tab(spec);
         app.tabs.push(tab);
         app.active = app.tabs.len() - 1;
-        if let Some(selftest) = app.selftest.as_mut() {
-            selftest.files_started = Some(Instant::now());
-        }
         return Task::batch([load, app.show_tab(), next(1)]);
     }
     let Some(id) = last_files(app) else {
@@ -797,6 +834,42 @@ fn chat_scroll(app: &mut App, number: u32) -> Task<Message> {
     }
 }
 
+/// A screenshot as an uncompressed BMP file: 24 bits a pixel, rows from
+/// the bottom up, each padded to four bytes. No picture library is needed
+/// to write it, and `sips` turns it into a PNG.
+fn bitmap(shot: &iced::window::Screenshot) -> Vec<u8> {
+    let (width, height) = (shot.size.width as usize, shot.size.height as usize);
+    let row = (width * 3).div_ceil(4) * 4;
+    let pixels = row * height;
+    let mut file = Vec::with_capacity(54 + pixels);
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&(54 + pixels as u32).to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&54_u32.to_le_bytes());
+    file.extend_from_slice(&40_u32.to_le_bytes());
+    file.extend_from_slice(&(width as i32).to_le_bytes());
+    file.extend_from_slice(&(height as i32).to_le_bytes());
+    file.extend_from_slice(&1_u16.to_le_bytes());
+    file.extend_from_slice(&24_u16.to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&(pixels as u32).to_le_bytes());
+    // 72 dots an inch, and no colour table.
+    file.extend_from_slice(&2835_u32.to_le_bytes());
+    file.extend_from_slice(&2835_u32.to_le_bytes());
+    file.extend_from_slice(&[0; 8]);
+    for line in (0..height).rev() {
+        let start = line * width * 4;
+        let Some(rgba) = shot.rgba.get(start..start + width * 4) else {
+            break;
+        };
+        for [red, green, blue, _] in rgba.as_chunks::<4>().0 {
+            file.extend_from_slice(&[*blue, *green, *red]);
+        }
+        file.resize(file.len() + row - width * 3, 0);
+    }
+    file
+}
+
 fn finish(app: &mut App) -> Task<Message> {
     let Some(selftest) = app.selftest.as_mut() else {
         return iced::exit();
@@ -860,5 +933,26 @@ mod tests {
             (51.0, 99.0, 100.0)
         );
         assert_eq!(summary(&mut []), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_screenshot_becomes_a_bitmap_with_rows_from_the_bottom() {
+        // Three pixels wide, so each row of nine bytes is padded to twelve.
+        let shot = iced::window::Screenshot::new(
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, // red, green, blue
+                1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255,
+            ],
+            iced::Size::new(3, 2),
+            1.0,
+        );
+        let file = bitmap(&shot);
+        assert_eq!(file.len(), 54 + 24);
+        assert_eq!(&file[..2], b"BM");
+        assert_eq!(file[18..22], 3_i32.to_le_bytes());
+        assert_eq!(file[22..26], 2_i32.to_le_bytes());
+        // The last row comes first, as blue, green, red.
+        assert_eq!(file[54..66], [3, 2, 1, 6, 5, 4, 9, 8, 7, 0, 0, 0]);
+        assert_eq!(file[66..78], [0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 0, 0]);
     }
 }
