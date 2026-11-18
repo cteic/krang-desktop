@@ -7,12 +7,12 @@ use std::sync::Arc;
 use alacritty_terminal::event::{Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
 use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::index::Side;
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty;
-use alacritty_terminal::index::Side;
 
 use super::events::{EventProxy, Sender};
 use super::snapshot::{Snapshot, grid_point};
@@ -61,7 +61,13 @@ fn login_shell() -> String {
     std::env::var("SHELL")
         .ok()
         .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| String::from(if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }))
+        .unwrap_or_else(|| {
+            String::from(if cfg!(target_os = "macos") {
+                "/bin/zsh"
+            } else {
+                "/bin/sh"
+            })
+        })
 }
 
 impl Session {
@@ -87,8 +93,15 @@ impl Session {
             scrolling_history: SCROLLBACK_LINES,
             ..Config::default()
         };
-        let dimensions = TermSize::new(usize::from(spawn.size.columns), usize::from(spawn.size.lines));
-        let term = Arc::new(FairMutex::new(Term::new(config, &dimensions, proxy.clone())));
+        let dimensions = TermSize::new(
+            usize::from(spawn.size.columns),
+            usize::from(spawn.size.lines),
+        );
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &dimensions,
+            proxy.clone(),
+        )));
         let event_loop = EventLoop::new(Arc::clone(&term), proxy.clone(), pty, false, false)?;
         let notifier = Notifier(event_loop.channel());
         // The loop thread owns the pty. It ends on `Msg::Shutdown`, and
@@ -165,9 +178,10 @@ impl Session {
         }
         self.size = size;
         self.notifier.on_resize(size.window_size());
-        self.term
-            .lock()
-            .resize(TermSize::new(usize::from(size.columns), usize::from(size.lines)));
+        self.term.lock().resize(TermSize::new(
+            usize::from(size.columns),
+            usize::from(size.lines),
+        ));
         self.refresh();
     }
 
@@ -205,7 +219,10 @@ impl Session {
     }
 
     pub fn selection_text(&self) -> Option<String> {
-        self.term.lock().selection_to_string().filter(|text| !text.is_empty())
+        self.term
+            .lock()
+            .selection_to_string()
+            .filter(|text| !text.is_empty())
     }
 
     /// The shell's working directory, read from the operating system, so it

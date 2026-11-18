@@ -36,9 +36,15 @@ gtk = "0.18"
 # builds optimise every dependency and leave only this crate unoptimised.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
+
+# Line tables are enough for backtraces, and a smaller binary links faster.
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 debug = "line-tables-only"
 
 [patch.crates-io]
 iced_winit = { path = "vendor/iced_winit" }
+iced_graphics = { path = "vendor/iced_graphics" }

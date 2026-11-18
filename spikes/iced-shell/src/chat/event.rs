@@ -12,7 +12,11 @@ pub enum AgentEvent {
     /// A whole message. It may repeat text already sent as deltas.
     Text(String),
     /// A tool call. `id` is the agent's own id for it, when it gives one.
-    Tool { id: Option<String>, name: String, summary: String },
+    Tool {
+        id: Option<String>,
+        name: String,
+        summary: String,
+    },
     /// An output line that could not be read, kept as it came.
     Note(String),
     Done(Usage),
@@ -97,8 +101,23 @@ mod tests {
     #[test]
     fn usage_adds_what_each_side_knows() {
         let mut total = Usage::default();
-        total.add(Usage { cost_usd: Some(0.5), input_tokens: Some(10), output_tokens: None });
-        total.add(Usage { cost_usd: Some(0.25), input_tokens: None, output_tokens: Some(3) });
-        assert_eq!(total, Usage { cost_usd: Some(0.75), input_tokens: Some(10), output_tokens: Some(3) });
+        total.add(Usage {
+            cost_usd: Some(0.5),
+            input_tokens: Some(10),
+            output_tokens: None,
+        });
+        total.add(Usage {
+            cost_usd: Some(0.25),
+            input_tokens: None,
+            output_tokens: Some(3),
+        });
+        assert_eq!(
+            total,
+            Usage {
+                cost_usd: Some(0.75),
+                input_tokens: Some(10),
+                output_tokens: Some(3)
+            }
+        );
     }
 }

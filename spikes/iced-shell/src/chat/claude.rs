@@ -19,7 +19,12 @@ const SUMMARY_KEYS: [&str; 9] = [
 ];
 
 const DENIED_TOOLS: [&str; 2] = ["Read(.obsidian/**)", "Read(**/.obsidian/**)"];
-const EDIT_ALLOWED_TOOLS: [&str; 4] = ["Bash(kd node:*)", "Bash(kd relate:*)", "Bash(kd types:*)", "Bash(kd nodes:*)"];
+const EDIT_ALLOWED_TOOLS: [&str; 4] = [
+    "Bash(kd node:*)",
+    "Bash(kd relate:*)",
+    "Bash(kd types:*)",
+    "Bash(kd nodes:*)",
+];
 
 /// The arguments for one message. The prompt goes on standard input.
 pub fn args(request: &RunRequest) -> Vec<String> {
@@ -61,12 +66,23 @@ pub fn summarise_tool_input(input: &Value) -> String {
     let Some(record) = input.as_object() else {
         return input.as_str().map(one_line).unwrap_or_default();
     };
-    let text = |value: &Value| value.as_str().filter(|text| !text.trim().is_empty()).map(one_line);
+    let text = |value: &Value| {
+        value
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .map(one_line)
+    };
     SUMMARY_KEYS
         .iter()
         .find_map(|key| record.get(*key).and_then(text))
         .or_else(|| record.values().find_map(text))
-        .unwrap_or_else(|| if record.is_empty() { String::new() } else { one_line(&input.to_string()) })
+        .unwrap_or_else(|| {
+            if record.is_empty() {
+                String::new()
+            } else {
+                one_line(&input.to_string())
+            }
+        })
 }
 
 fn stream_events(value: &Value) -> Vec<AgentEvent> {
@@ -78,7 +94,9 @@ fn stream_events(value: &Value) -> Vec<AgentEvent> {
             let delta = event.get("delta");
             let is_text = delta.and_then(|delta| str_at(delta, "type")) == Some("text_delta");
             match delta.and_then(|delta| str_at(delta, "text")) {
-                Some(text) if is_text && !text.is_empty() => vec![AgentEvent::TextDelta(text.to_string())],
+                Some(text) if is_text && !text.is_empty() => {
+                    vec![AgentEvent::TextDelta(text.to_string())]
+                }
                 _ => Vec::new(),
             }
         }
@@ -106,11 +124,16 @@ fn assistant_events(value: &Value) -> Vec<AgentEvent> {
     content
         .iter()
         .filter_map(|block| match str_at(block, "type")? {
-            "text" => str_at(block, "text").filter(|text| !text.is_empty()).map(|text| AgentEvent::Text(text.to_string())),
+            "text" => str_at(block, "text")
+                .filter(|text| !text.is_empty())
+                .map(|text| AgentEvent::Text(text.to_string())),
             "tool_use" => Some(AgentEvent::Tool {
                 id: str_at(block, "id").map(String::from),
                 name: str_at(block, "name")?.to_string(),
-                summary: block.get("input").map(summarise_tool_input).unwrap_or_default(),
+                summary: block
+                    .get("input")
+                    .map(summarise_tool_input)
+                    .unwrap_or_default(),
             }),
             _ => None,
         })
@@ -130,16 +153,32 @@ fn result_events(value: &Value) -> Vec<AgentEvent> {
             .and_then(Value::as_array)
             .map(|errors| errors.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        let detail = if errors.is_empty() { str_at(value, "result").unwrap_or("").to_string() } else { errors.join("\n") };
-        let message = if detail.is_empty() { subtype.unwrap_or("The run failed").to_string() } else { detail };
+        let detail = if errors.is_empty() {
+            str_at(value, "result").unwrap_or("").to_string()
+        } else {
+            errors.join("\n")
+        };
+        let message = if detail.is_empty() {
+            subtype.unwrap_or("The run failed").to_string()
+        } else {
+            detail
+        };
         events.push(AgentEvent::Error(message));
     } else {
         let usage = value.get("usage");
-        let tokens = |key: &str| usage.and_then(|usage| usage.get(key)).and_then(Value::as_u64);
-        let input = [tokens("input_tokens"), tokens("cache_read_input_tokens"), tokens("cache_creation_input_tokens")]
-            .into_iter()
-            .flatten()
-            .reduce(|a, b| a + b);
+        let tokens = |key: &str| {
+            usage
+                .and_then(|usage| usage.get(key))
+                .and_then(Value::as_u64)
+        };
+        let input = [
+            tokens("input_tokens"),
+            tokens("cache_read_input_tokens"),
+            tokens("cache_creation_input_tokens"),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| a + b);
         events.push(AgentEvent::Done(Usage {
             cost_usd: value.get("total_cost_usd").and_then(Value::as_f64),
             input_tokens: input,
@@ -173,7 +212,12 @@ mod tests {
     use super::*;
 
     fn request(mode: Mode, session: Option<&str>, trusted: bool) -> RunRequest {
-        RunRequest { mode, directory: None, session_id: session.map(String::from), trusted }
+        RunRequest {
+            mode,
+            directory: None,
+            session_id: session.map(String::from),
+            trusted,
+        }
     }
 
     #[test]
@@ -208,18 +252,32 @@ mod tests {
             [
                 AgentEvent::Session("abc".into()),
                 AgentEvent::TextDelta("Hel".into()),
-                AgentEvent::Tool { id: Some("t1".into()), name: "Read".into(), summary: String::new() },
+                AgentEvent::Tool {
+                    id: Some("t1".into()),
+                    name: "Read".into(),
+                    summary: String::new()
+                },
                 AgentEvent::Text("Hello".into()),
-                AgentEvent::Tool { id: Some("t1".into()), name: "Read".into(), summary: "/a/b.md".into() },
+                AgentEvent::Tool {
+                    id: Some("t1".into()),
+                    name: "Read".into(),
+                    summary: "/a/b.md".into()
+                },
                 AgentEvent::Session("abc".into()),
-                AgentEvent::Done(Usage { cost_usd: Some(0.012), input_tokens: Some(105), output_tokens: Some(7) }),
+                AgentEvent::Done(Usage {
+                    cost_usd: Some(0.012),
+                    input_tokens: Some(105),
+                    output_tokens: Some(7)
+                }),
             ]
         );
     }
 
     #[test]
     fn an_error_result_is_an_error_never_done() {
-        let events = parse_line(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}"#);
+        let events = parse_line(
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}"#,
+        );
         assert_eq!(events, [AgentEvent::Error("boom".into())]);
         let events = parse_line(r#"{"type":"result","subtype":"error_max_turns"}"#);
         assert_eq!(events, [AgentEvent::Error("error_max_turns".into())]);
@@ -227,7 +285,10 @@ mod tests {
 
     #[test]
     fn unreadable_and_unknown_lines() {
-        assert_eq!(parse_line("not json"), [AgentEvent::Note("not json".into())]);
+        assert_eq!(
+            parse_line("not json"),
+            [AgentEvent::Note("not json".into())]
+        );
         assert!(parse_line(r#"{"type":"user"}"#).is_empty());
         assert!(parse_line(r#"{"type":"assistant","message":{}}"#).is_empty());
         assert!(parse_line("   ").is_empty());
@@ -237,8 +298,14 @@ mod tests {
     fn tool_summaries() {
         let input: Value = serde_json::json!({"command": "ls -la\n  /tmp"});
         assert_eq!(summarise_tool_input(&input), "ls -la /tmp");
-        assert_eq!(summarise_tool_input(&serde_json::json!({"other": "x"})), "x");
-        assert_eq!(summarise_tool_input(&serde_json::json!({"n": 1})), r#"{"n":1}"#);
+        assert_eq!(
+            summarise_tool_input(&serde_json::json!({"other": "x"})),
+            "x"
+        );
+        assert_eq!(
+            summarise_tool_input(&serde_json::json!({"n": 1})),
+            r#"{"n":1}"#
+        );
         assert_eq!(summarise_tool_input(&serde_json::json!({})), "");
     }
 }

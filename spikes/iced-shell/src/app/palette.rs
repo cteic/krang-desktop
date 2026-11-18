@@ -20,16 +20,40 @@ pub enum Command {
 }
 
 pub const COMMANDS: [(Command, &str); 13] = [
-    (Command::Add(NewPane::Terminal, false), "Add a terminal pane on the right"),
-    (Command::Add(NewPane::Editor, false), "Add a Markdown editor pane on the right"),
-    (Command::Add(NewPane::Web, false), "Add a web pane on the right"),
-    (Command::Add(NewPane::Chat, false), "Add a chat pane on the right"),
-    (Command::Add(NewPane::Terminal, true), "Add a terminal pane below"),
-    (Command::Add(NewPane::Editor, true), "Add a Markdown editor pane below"),
+    (
+        Command::Add(NewPane::Terminal, false),
+        "Add a terminal pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Editor, false),
+        "Add a Markdown editor pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Web, false),
+        "Add a web pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Chat, false),
+        "Add a chat pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Terminal, true),
+        "Add a terminal pane below",
+    ),
+    (
+        Command::Add(NewPane::Editor, true),
+        "Add a Markdown editor pane below",
+    ),
     (Command::Add(NewPane::Web, true), "Add a web pane below"),
     (Command::Add(NewPane::Chat, true), "Add a chat pane below"),
-    (Command::NewTab(NewPane::Terminal), "New tab with a terminal"),
-    (Command::NewTab(NewPane::Editor), "New tab with a Markdown editor"),
+    (
+        Command::NewTab(NewPane::Terminal),
+        "New tab with a terminal",
+    ),
+    (
+        Command::NewTab(NewPane::Editor),
+        "New tab with a Markdown editor",
+    ),
     (Command::ClosePane, "Close the pane"),
     (Command::CloseTab, "Close the tab"),
     (Command::Magnify, "Magnify the pane, or restore it"),
@@ -43,16 +67,29 @@ pub struct Palette {
 
 impl Palette {
     pub fn new() -> Self {
-        let mut palette = Self { query: String::new(), matches: Vec::new(), selected: 0 };
+        let mut palette = Self {
+            query: String::new(),
+            matches: Vec::new(),
+            selected: 0,
+        };
         palette.filter();
         palette
     }
 
     pub fn filter(&mut self) {
-        let ranked = fuzzy::rank(&self.query, COMMANDS.iter().map(|(_, label)| *label), COMMANDS.len());
+        let ranked = fuzzy::rank(
+            &self.query,
+            COMMANDS.iter().map(|(_, label)| *label),
+            COMMANDS.len(),
+        );
         self.matches = ranked
             .into_iter()
-            .filter_map(|label| COMMANDS.iter().find(|(_, known)| *known == label).map(|(command, _)| *command))
+            .filter_map(|label| {
+                COMMANDS
+                    .iter()
+                    .find(|(_, known)| *known == label)
+                    .map(|(command, _)| *command)
+            })
             .collect();
         self.selected = 0;
     }
@@ -70,7 +107,10 @@ impl Palette {
 }
 
 pub fn label(command: Command) -> &'static str {
-    COMMANDS.iter().find(|(known, _)| *known == command).map_or("", |(_, label)| label)
+    COMMANDS
+        .iter()
+        .find(|(known, _)| *known == command)
+        .map_or("", |(_, label)| label)
 }
 
 #[cfg(test)]

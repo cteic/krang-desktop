@@ -12,7 +12,9 @@ pub struct Probe<'a, Message> {
 }
 
 pub fn probe<'a, Message>(on_bounds: impl Fn(Rectangle) -> Message + 'a) -> Probe<'a, Message> {
-    Probe { on_bounds: Box::new(on_bounds) }
+    Probe {
+        on_bounds: Box::new(on_bounds),
+    }
 }
 
 #[derive(Default)]
@@ -31,7 +33,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Probe<'_, Message> {
         tree::State::new(Reported::default())
     }
 
-    fn layout(&mut self, _tree: &mut Tree, _renderer: &iced::Renderer, limits: &layout::Limits) -> layout::Node {
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
         layout::Node::new(limits.max())
     }
 

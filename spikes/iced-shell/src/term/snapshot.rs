@@ -28,7 +28,10 @@ pub struct Style {
 
 impl Hash for Style {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        [self.fg.r, self.fg.g, self.fg.b, self.bg.r, self.bg.g, self.bg.b].hash(state);
+        [
+            self.fg.r, self.fg.g, self.fg.b, self.bg.r, self.bg.g, self.bg.b,
+        ]
+        .hash(state);
         [self.bold, self.italic, self.underline, self.strike].hash(state);
     }
 }
@@ -87,7 +90,13 @@ impl Snapshot {
             },
             link: None,
         };
-        let mut rows = vec![Row { cells: vec![blank; columns], hash: 0 }; screen_lines];
+        let mut rows = vec![
+            Row {
+                cells: vec![blank; columns],
+                hash: 0
+            };
+            screen_lines
+        ];
         let mut links: Vec<String> = Vec::new();
 
         for indexed in content.display_iter {
@@ -116,7 +125,11 @@ impl Snapshot {
             if selection.is_some_and(|range| range.contains(indexed.point)) {
                 bg = palette::SELECTION;
             }
-            let c = if flags.contains(Flags::HIDDEN) { ' ' } else { cell.c };
+            let c = if flags.contains(Flags::HIDDEN) {
+                ' '
+            } else {
+                cell.c
+            };
             let link = cell.hyperlink().and_then(|link| {
                 let uri = link.uri();
                 let index = match links.iter().position(|known| known == uri) {
@@ -209,7 +222,11 @@ mod tests {
     use alacritty_terminal::vte::ansi::Processor;
 
     fn term_with(columns: usize, lines: usize, bytes: &[u8]) -> Term<VoidListener> {
-        let mut term = Term::new(Config::default(), &TermSize::new(columns, lines), VoidListener);
+        let mut term = Term::new(
+            Config::default(),
+            &TermSize::new(columns, lines),
+            VoidListener,
+        );
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, bytes);
         term
@@ -222,7 +239,14 @@ mod tests {
         assert_eq!(snapshot.row_text(0).trim_end(), "plain bold");
         let cell = snapshot.rows[0].cells[6];
         assert!(cell.style.bold);
-        assert_eq!(cell.style.fg, Rgb { r: 10, g: 20, b: 30 });
+        assert_eq!(
+            cell.style.fg,
+            Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            }
+        );
         assert_eq!(snapshot.cursor.map(|cursor| cursor.column), Some(10));
     }
 
@@ -264,9 +288,16 @@ mod tests {
 
     #[test]
     fn an_osc_8_link_is_found_under_its_text() {
-        let term = term_with(30, 2, b"\x1b]8;;https://example.org/a\x1b\\here\x1b]8;;\x1b\\ x");
+        let term = term_with(
+            30,
+            2,
+            b"\x1b]8;;https://example.org/a\x1b\\here\x1b]8;;\x1b\\ x",
+        );
         let snapshot = Snapshot::take(&term);
-        assert_eq!(snapshot.link_at(0, 2).as_deref(), Some("https://example.org/a"));
+        assert_eq!(
+            snapshot.link_at(0, 2).as_deref(),
+            Some("https://example.org/a")
+        );
         assert_eq!(snapshot.link_at(0, 5), None);
     }
 }

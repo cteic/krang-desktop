@@ -26,7 +26,12 @@ pub struct RunEvent {
 
 /// Where agents are usually installed. An app opened from the Dock inherits
 /// a bare PATH that has none of these.
-const EXTRA_BIN_DIRS: [&str; 4] = [".local/bin", ".cargo/bin", "/opt/homebrew/bin", "/usr/local/bin"];
+const EXTRA_BIN_DIRS: [&str; 4] = [
+    ".local/bin",
+    ".cargo/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+];
 
 pub fn agent_path(home: Option<&Path>, inherited: Option<&str>) -> String {
     let mut parts: Vec<String> = EXTRA_BIN_DIRS
@@ -39,17 +44,26 @@ pub fn agent_path(home: Option<&Path>, inherited: Option<&str>) -> String {
             }
         })
         .collect();
-    parts.extend(inherited.unwrap_or("").split(':').filter(|part| !part.is_empty()).map(String::from));
+    parts.extend(
+        inherited
+            .unwrap_or("")
+            .split(':')
+            .filter(|part| !part.is_empty())
+            .map(String::from),
+    );
     parts.join(":")
 }
 
 /// The program for an agent: the override from the environment when set,
 /// which is how the tests run a fake agent, or the first match on the path.
 pub fn find_agent(agent: Agent, path: &str) -> Option<PathBuf> {
-    if let Some(program) = std::env::var_os(agent.override_env()).filter(|value| !value.is_empty()) {
+    if let Some(program) = std::env::var_os(agent.override_env()).filter(|value| !value.is_empty())
+    {
         return Some(PathBuf::from(program));
     }
-    path.split(':').map(|dir| Path::new(dir).join(agent.program())).find(|candidate| candidate.is_file())
+    path.split(':')
+        .map(|dir| Path::new(dir).join(agent.program()))
+        .find(|candidate| candidate.is_file())
 }
 
 pub struct Started {
@@ -69,7 +83,8 @@ pub fn start(
 ) -> Result<Started, String> {
     let home = dirs::home_dir();
     let path = agent_path(home.as_deref(), std::env::var("PATH").ok().as_deref());
-    let program = find_agent(agent, &path).ok_or_else(|| format!("{} was not found. Is it installed?", agent.program()))?;
+    let program = find_agent(agent, &path)
+        .ok_or_else(|| format!("{} was not found. Is it installed?", agent.program()))?;
     let mut command = Command::new(&program);
     command
         .args(args)
@@ -81,7 +96,9 @@ pub fn start(
     if let Some(directory) = directory.or(home.as_deref()) {
         command.current_dir(directory);
     }
-    let mut child = command.spawn().map_err(|error| format!("start {}: {error}", agent.program()))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("start {}: {error}", agent.program()))?;
     let group = i32::try_from(child.id()).map_err(|_| String::from("process id out of range"))?;
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
@@ -104,14 +121,25 @@ pub fn start(
         if let Some(stdout) = stdout {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                if sender.send(RunEvent { pane, run, output: RunOutput::Line(line) }).is_err() {
+                if sender
+                    .send(RunEvent {
+                        pane,
+                        run,
+                        output: RunOutput::Line(line),
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
         }
         let stderr = stderr_reader.join().unwrap_or_default();
         let code = child.wait().ok().and_then(|status| status.code());
-        let _ = sender.send(RunEvent { pane, run, output: RunOutput::Exit { code, stderr } });
+        let _ = sender.send(RunEvent {
+            pane,
+            run,
+            output: RunOutput::Exit { code, stderr },
+        });
     });
     Ok(Started { group })
 }
@@ -132,7 +160,11 @@ mod tests {
 
     #[test]
     fn stopping_a_group_ends_the_child_and_what_it_started() {
-        let Ok(mut child) = Command::new("/bin/sh").args(["-c", "sleep 30 & wait"]).process_group(0).spawn() else {
+        let Ok(mut child) = Command::new("/bin/sh")
+            .args(["-c", "sleep 30 & wait"])
+            .process_group(0)
+            .spawn()
+        else {
             panic!("could not start sh");
         };
         let group = i32::try_from(child.id()).unwrap_or_default();
@@ -140,7 +172,10 @@ mod tests {
         stop_group(group);
         assert!(child.wait().is_ok_and(|status| !status.success()));
         thread::sleep(std::time::Duration::from_millis(150));
-        assert!(!group_alive(group), "a process in the group outlived the stop");
+        assert!(
+            !group_alive(group),
+            "a process in the group outlived the stop"
+        );
     }
 
     /// Whether a group has a member that is still running. A container's
@@ -180,12 +215,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("krang-runner-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let script = dir.join("claude");
-        let _ = std::fs::write(&script, "#!/bin/sh\nread prompt\necho \"got $prompt\"\necho oops >&2\nexit 3\n");
-        let _ = std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755));
+        let _ = std::fs::write(
+            &script,
+            "#!/bin/sh\nread prompt\necho \"got $prompt\"\necho oops >&2\nexit 3\n",
+        );
+        let _ =
+            std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755));
         let args = vec![];
         // SAFETY of the test: the variable is set before any thread reads it.
         unsafe { std::env::set_var(Agent::Claude.override_env(), &script) };
-        let started = start(Agent::Claude, args, Some(&dir), "hello\n".into(), 1, 9, sender);
+        let started = start(
+            Agent::Claude,
+            args,
+            Some(&dir),
+            "hello\n".into(),
+            1,
+            9,
+            sender,
+        );
         assert!(started.is_ok());
         let mut seen = Vec::new();
         while let Some(event) = receiver.blocking_recv() {
@@ -196,7 +243,13 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(seen, [r#"Line("got hello")"#, r#"Exit { code: Some(3), stderr: "oops\n" }"#]);
+        assert_eq!(
+            seen,
+            [
+                r#"Line("got hello")"#,
+                r#"Exit { code: Some(3), stderr: "oops\n" }"#
+            ]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

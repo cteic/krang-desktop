@@ -68,11 +68,16 @@ pub enum Step {
 }
 
 fn seconds() -> u64 {
-    std::env::var("KRANG_SELFTEST_SECONDS").ok().and_then(|value| value.parse().ok()).unwrap_or(30)
+    std::env::var("KRANG_SELFTEST_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(30)
 }
 
 fn after(delay: Duration, step: Step) -> Task<Message> {
-    Task::perform(tokio::time::sleep(delay), move |()| Message::SelfTest(step.clone()))
+    Task::perform(tokio::time::sleep(delay), move |()| {
+        Message::SelfTest(step.clone())
+    })
 }
 
 fn report(name: &str, value: impl std::fmt::Display) {
@@ -90,7 +95,11 @@ pub fn summary(times: &mut [Duration]) -> (f64, f64, f64) {
     }
     times.sort();
     let at = |fraction: f64| times[((times.len() - 1) as f64 * fraction).round() as usize];
-    (millis(at(0.5)), millis(at(0.99)), millis(times[times.len() - 1]))
+    (
+        millis(at(0.5)),
+        millis(at(0.99)),
+        millis(times[times.len() - 1]),
+    )
 }
 
 fn report_summary(name: &str, times: &mut [Duration]) {
@@ -156,7 +165,10 @@ impl SelfTest {
         if !self.first_frame {
             self.first_frame = true;
             if let Some(start) = PROCESS_START.get() {
-                report("first_frame_ms", format!("{:.1}", millis(at.duration_since(*start))));
+                report(
+                    "first_frame_ms",
+                    format!("{:.1}", millis(at.duration_since(*start))),
+                );
             }
             if self.plan == Plan::FirstFrame {
                 return iced::exit();
@@ -174,7 +186,11 @@ impl SelfTest {
             self.frames.push(at);
             if at >= until {
                 self.resize_until = None;
-                let mut intervals: Vec<Duration> = self.frames.windows(2).map(|pair| pair[1].duration_since(pair[0])).collect();
+                let mut intervals: Vec<Duration> = self
+                    .frames
+                    .windows(2)
+                    .map(|pair| pair[1].duration_since(pair[0]))
+                    .collect();
                 report_summary("resize_frame", &mut intervals);
                 return Task::done(Message::SelfTest(Step::Finish));
             }
@@ -183,12 +199,16 @@ impl SelfTest {
     }
 
     pub fn terminal_output(&mut self, _id: u64, terminal: &TerminalPane) -> Task<Message> {
-        let Some(session) = &terminal.session else { return Task::none() };
+        let Some(session) = &terminal.session else {
+            return Task::none();
+        };
         if terminal.title.as_deref() == Some("quiet") || self.plan == Plan::Flood {
             let screen = session.snapshot().text();
             let now = Instant::now();
             self.pings.retain(|(number, sent)| {
-                let seen = screen.lines().any(|line| line.trim() == format!("ping-{number}"));
+                let seen = screen
+                    .lines()
+                    .any(|line| line.trim() == format!("ping-{number}"));
                 if seen {
                     self.ping_times.push(now.duration_since(*sent));
                 }
@@ -215,7 +235,10 @@ impl SelfTest {
         if self.plan == Plan::Web
             && let WebEvent::Loaded { url, .. } = event
         {
-            report("web_loaded_ms", format!("{:.1}", millis(self.web_started.elapsed())));
+            report(
+                "web_loaded_ms",
+                format!("{:.1}", millis(self.web_started.elapsed())),
+            );
             report("web_loaded_url", url);
         }
     }
@@ -228,27 +251,48 @@ impl SelfTest {
 }
 
 fn find_pane(app: &App, wanted: impl Fn(&Pane) -> bool) -> Option<u64> {
-    let mut ids: Vec<u64> = app.panes.iter().filter(|(_, pane)| wanted(pane)).map(|(id, _)| *id).collect();
+    let mut ids: Vec<u64> = app
+        .panes
+        .iter()
+        .filter(|(_, pane)| wanted(pane))
+        .map(|(id, _)| *id)
+        .collect();
     ids.sort_unstable();
     ids.first().copied()
 }
 
 fn quiet_terminal(app: &App) -> Option<u64> {
-    find_pane(app, |pane| pane.title.as_deref() == Some("quiet") && matches!(pane.body, Body::Terminal(_)))
+    find_pane(app, |pane| {
+        pane.title.as_deref() == Some("quiet") && matches!(pane.body, Body::Terminal(_))
+    })
 }
 
 pub fn step(app: &mut App, step: Step) -> Task<Message> {
-    let Some(plan) = app.selftest.as_ref().map(|selftest| selftest.plan) else { return Task::none() };
+    let Some(plan) = app.selftest.as_ref().map(|selftest| selftest.plan) else {
+        return Task::none();
+    };
     match (plan, step) {
         (Plan::FirstFrame, _) => Task::none(),
-        (Plan::Hold | Plan::Web, Step::Begin) => after(Duration::from_secs(seconds()), Step::Finish),
+        (Plan::Hold | Plan::Web, Step::Begin) => {
+            after(Duration::from_secs(seconds()), Step::Finish)
+        }
         (Plan::Flood, Step::Begin) => {
             report("flood_seconds", seconds());
-            Task::batch([after(Duration::from_secs(1), Step::Ping(0)), after(Duration::from_secs(seconds()), Step::Finish)])
+            Task::batch([
+                after(Duration::from_secs(1), Step::Ping(0)),
+                after(Duration::from_secs(seconds()), Step::Finish),
+            ])
         }
         (Plan::Flood, Step::Ping(number)) => {
             if let Some(id) = quiet_terminal(app)
-                && let Some(Pane { body: Body::Terminal(TerminalPane { session: Some(session), .. }), .. }) = app.panes.get(&id)
+                && let Some(Pane {
+                    body:
+                        Body::Terminal(TerminalPane {
+                            session: Some(session),
+                            ..
+                        }),
+                    ..
+                }) = app.panes.get(&id)
             {
                 session.write(format!("echo ping-{number}\r").into_bytes());
                 if let Some(selftest) = app.selftest.as_mut() {
@@ -259,17 +303,30 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
         }
         (Plan::Resize, Step::Begin) => {
             if let Some(selftest) = app.selftest.as_mut() {
-                selftest.resize_until = Some(Instant::now() + Duration::from_secs(seconds().min(20)));
+                selftest.resize_until =
+                    Some(Instant::now() + Duration::from_secs(seconds().min(20)));
             }
             Task::none()
         }
-        (Plan::TerminalLatency, Step::Begin) => Task::done(Message::SelfTest(Step::TerminalType(0))),
+        (Plan::TerminalLatency, Step::Begin) => {
+            Task::done(Message::SelfTest(Step::TerminalType(0)))
+        }
         (Plan::TerminalLatency, Step::TerminalType(number)) => {
             if number >= 60 {
                 return Task::done(Message::SelfTest(Step::Finish));
             }
-            let Some(id) = find_pane(app, |pane| matches!(pane.body, Body::Terminal(_))) else { return Task::none() };
-            if let Some(Pane { body: Body::Terminal(TerminalPane { session: Some(session), .. }), .. }) = app.panes.get_mut(&id) {
+            let Some(id) = find_pane(app, |pane| matches!(pane.body, Body::Terminal(_))) else {
+                return Task::none();
+            };
+            if let Some(Pane {
+                body:
+                    Body::Terminal(TerminalPane {
+                        session: Some(session),
+                        ..
+                    }),
+                ..
+            }) = app.panes.get_mut(&id)
+            {
                 let before = session.snapshot().text().matches('x').count();
                 if let Some(selftest) = app.selftest.as_mut() {
                     selftest.typed = Some((Instant::now(), before));
@@ -279,19 +336,34 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             after(Duration::from_millis(60), Step::TerminalType(number + 1))
         }
         (Plan::Editor, Step::Begin) => {
-            let ready = app.selftest.as_ref().is_some_and(|selftest| selftest.vault_ready);
+            let ready = app
+                .selftest
+                .as_ref()
+                .is_some_and(|selftest| selftest.vault_ready);
             if !ready {
                 return after(Duration::from_millis(100), Step::Begin);
             }
-            let Some(id) = find_pane(app, |pane| matches!(pane.body, Body::Editor(_))) else { return Task::none() };
+            let Some(id) = find_pane(app, |pane| matches!(pane.body, Body::Editor(_))) else {
+                return Task::none();
+            };
             let note = std::env::var("KRANG_SELFTEST_NOTE").unwrap_or_default();
-            if let Some(Pane { body: Body::Editor(editor), .. }) = app.panes.get_mut(&id) {
+            if let Some(Pane {
+                body: Body::Editor(editor),
+                ..
+            }) = app.panes.get_mut(&id)
+            {
                 let started = Instant::now();
                 let _ = editor.open(&note);
-                report("editor_open_ms", format!("{:.1}", millis(started.elapsed())));
+                report(
+                    "editor_open_ms",
+                    format!("{:.1}", millis(started.elapsed())),
+                );
                 report("editor_open_lines", editor.content.line_count());
                 if let Some(selftest) = app.selftest.as_mut() {
-                    selftest.probe = Some(Probe { since: started, frames: 0 });
+                    selftest.probe = Some(Probe {
+                        since: started,
+                        frames: 0,
+                    });
                 }
             }
             after(Duration::from_millis(1500), Step::Type(0))
@@ -310,13 +382,21 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             if number >= 100 {
                 return Task::done(Message::SelfTest(Step::Finish));
             }
-            let Some(id) = find_pane(app, |pane| matches!(pane.body, Body::Editor(_))) else { return Task::none() };
+            let Some(id) = find_pane(app, |pane| matches!(pane.body, Body::Editor(_))) else {
+                return Task::none();
+            };
             if let Some(selftest) = app.selftest.as_mut() {
-                selftest.probe = Some(Probe { since: Instant::now(), frames: 0 });
+                selftest.probe = Some(Probe {
+                    since: Instant::now(),
+                    frames: 0,
+                });
             }
             let c = char::from(b'a' + (number % 26) as u8);
             Task::batch([
-                Task::done(Message::Editor(id, EditorMessage::Action(Action::Edit(Edit::Insert(c))))),
+                Task::done(Message::Editor(
+                    id,
+                    EditorMessage::Action(Action::Edit(Edit::Insert(c))),
+                )),
                 after(Duration::from_millis(40), Step::Type(number + 1)),
             ])
         }
@@ -326,7 +406,9 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
 }
 
 fn finish(app: &mut App) -> Task<Message> {
-    let Some(selftest) = app.selftest.as_mut() else { return iced::exit() };
+    let Some(selftest) = app.selftest.as_mut() else {
+        return iced::exit();
+    };
     match selftest.plan {
         Plan::Flood => {
             let unanswered = selftest.pings.len();
@@ -344,12 +426,23 @@ fn finish(app: &mut App) -> Task<Message> {
                 Body::Editor(editor) => Some(editor),
                 _ => None,
             });
-            if let Some(index) = editor.and_then(|editor| app.vaults.get(&editor.root)).and_then(Option::as_ref) {
+            if let Some(index) = editor
+                .and_then(|editor| app.vaults.get(&editor.root))
+                .and_then(Option::as_ref)
+            {
                 report("vault_notes", index.len());
-                for query in ["meeting", "zebra-unique-term", "#project", "the quick brown"] {
+                for query in [
+                    "meeting",
+                    "zebra-unique-term",
+                    "#project",
+                    "the quick brown",
+                ] {
                     let started = Instant::now();
                     let hits = index.search(query, 300).len();
-                    report(&format!("search_ms[{query}]"), format!("{:.2} ({hits} hits)", millis(started.elapsed())));
+                    report(
+                        &format!("search_ms[{}]", query.replace(' ', "_")),
+                        format!("{:.2} ({hits} hits)", millis(started.elapsed())),
+                    );
                 }
             }
         }
@@ -367,7 +460,10 @@ mod tests {
     fn summary_reports_median_p99_and_max() {
         let mut times: Vec<Duration> = (1..=100).map(Duration::from_millis).collect();
         let (median, p99, max) = summary(&mut times);
-        assert_eq!((median.round(), p99.round(), max.round()), (51.0, 99.0, 100.0));
+        assert_eq!(
+            (median.round(), p99.round(), max.round()),
+            (51.0, 99.0, 100.0)
+        );
         assert_eq!(summary(&mut []), (0.0, 0.0, 0.0));
     }
 }

@@ -16,13 +16,19 @@ pub struct Feed<T> {
 
 impl<T> Feed<T> {
     pub fn new(name: &'static str, receiver: UnboundedReceiver<T>) -> Self {
-        Self { name, receiver: Arc::new(Mutex::new(Some(receiver))) }
+        Self {
+            name,
+            receiver: Arc::new(Mutex::new(Some(receiver))),
+        }
     }
 }
 
 impl<T> Clone for Feed<T> {
     fn clone(&self) -> Self {
-        Self { name: self.name, receiver: Arc::clone(&self.receiver) }
+        Self {
+            name: self.name,
+            receiver: Arc::clone(&self.receiver),
+        }
     }
 }
 

@@ -12,7 +12,9 @@ fn encode(target: &str) -> String {
     let mut out = String::with_capacity(target.len());
     for byte in target.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'~' => out.push(char::from(byte)),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'~' => {
+                out.push(char::from(byte))
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -25,7 +27,9 @@ pub fn decode(text: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%'
-            && let Some(byte) = text.get(index + 1..index + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            && let Some(byte) = text
+                .get(index + 1..index + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
         {
             out.push(byte);
             index += 3;
@@ -38,7 +42,9 @@ pub fn decode(text: &str) -> String {
 }
 
 fn is_image(target: &str) -> bool {
-    target.rsplit_once('.').is_some_and(|(_, ext)| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+    target
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
 }
 
 fn escape_label(label: &str) -> String {
@@ -54,14 +60,22 @@ pub fn preview_source(text: &str) -> String {
         out.push_str(&body[last..link.range.start]);
         last = link.range.end;
         if link.embed && is_image(&link.target) {
-            out.push_str(&format!("![{}]({VAULT_SCHEME}{})", escape_label(&link.target), encode(&link.target)));
+            out.push_str(&format!(
+                "![{}]({VAULT_SCHEME}{})",
+                escape_label(&link.target),
+                encode(&link.target)
+            ));
             continue;
         }
         let label = link.label.clone().unwrap_or_else(|| match &link.heading {
             Some(heading) => format!("{} > {heading}", link.target),
             None => link.target.clone(),
         });
-        out.push_str(&format!("[{}]({WIKI_SCHEME}{})", escape_label(&label), encode(&link.target)));
+        out.push_str(&format!(
+            "[{}]({WIKI_SCHEME}{})",
+            escape_label(&label),
+            encode(&link.target)
+        ));
     }
     out.push_str(&body[last..]);
     out
@@ -73,7 +87,9 @@ mod tests {
 
     #[test]
     fn wikilinks_become_followable_links() {
-        let source = preview_source("---\na: 1\n---\nSee [[My Note|this]], [[Other#Part]] and ![[img one.png]].");
+        let source = preview_source(
+            "---\na: 1\n---\nSee [[My Note|this]], [[Other#Part]] and ![[img one.png]].",
+        );
         assert_eq!(
             source,
             "See [this](wiki:My%20Note), [Other > Part](wiki:Other) and ![img one.png](vault:img%20one.png)."

@@ -9,7 +9,10 @@
 use std::collections::HashMap;
 
 use iced::Rectangle;
-use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle, WindowHandle};
+use raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
+    RawWindowHandle, WindowHandle,
+};
 use tokio::sync::mpsc::UnboundedSender;
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
@@ -18,13 +21,27 @@ use super::local;
 
 #[derive(Debug, Clone)]
 pub enum WebEvent {
-    Loading { pane: u64, url: String },
-    Loaded { pane: u64, url: String },
-    Title { pane: u64, title: String },
+    Loading {
+        pane: u64,
+        url: String,
+    },
+    Loaded {
+        pane: u64,
+        url: String,
+    },
+    Title {
+        pane: u64,
+        title: String,
+    },
     /// The person clicked into the page.
     Focused(u64),
     /// A Cmd (or Super) shortcut pressed while the page had the keyboard.
-    Shortcut { pane: u64, key: String, shift: bool, alt: bool },
+    Shortcut {
+        pane: u64,
+        key: String,
+        shift: bool,
+        alt: bool,
+    },
 }
 
 /// The iced window's native handles, taken once after it opens.
@@ -78,7 +95,11 @@ const BRIDGE: &str = r#"(() => {
 fn rect(bounds: Rectangle) -> Rect {
     Rect {
         position: LogicalPosition::new(f64::from(bounds.x), f64::from(bounds.y)).into(),
-        size: LogicalSize::new(f64::from(bounds.width.max(1.0)), f64::from(bounds.height.max(1.0))).into(),
+        size: LogicalSize::new(
+            f64::from(bounds.width.max(1.0)),
+            f64::from(bounds.height.max(1.0)),
+        )
+        .into(),
     }
 }
 
@@ -90,8 +111,14 @@ fn bridge_event(pane: u64, body: &str) -> Option<WebEvent> {
     Some(WebEvent::Shortcut {
         pane,
         key: value.get("key")?.as_str()?.to_string(),
-        shift: value.get("shift").and_then(serde_json::Value::as_bool).unwrap_or(false),
-        alt: value.get("alt").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        shift: value
+            .get("shift")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        alt: value
+            .get("alt")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -109,7 +136,11 @@ pub struct WebHost {
 
 impl WebHost {
     pub fn new(sender: UnboundedSender<WebEvent>) -> Self {
-        Self { parent: None, views: HashMap::new(), sender }
+        Self {
+            parent: None,
+            views: HashMap::new(),
+            sender,
+        }
     }
 
     pub fn set_parent(&mut self, parent: ParentWindow) {
@@ -135,10 +166,17 @@ impl WebHost {
     /// Builds the web view for a pane, hidden until its bounds are known.
     pub fn create(&mut self, pane: u64, url: &str) -> Result<(), String> {
         let parent = self.parent.ok_or("the window is not ready")?;
-        let (load, title, ipc) = (self.sender.clone(), self.sender.clone(), self.sender.clone());
+        let (load, title, ipc) = (
+            self.sender.clone(),
+            self.sender.clone(),
+            self.sender.clone(),
+        );
         let builder = WebViewBuilder::new()
             .with_visible(false)
-            .with_bounds(rect(Rectangle::new(iced::Point::ORIGIN, iced::Size::new(1.0, 1.0))))
+            .with_bounds(rect(Rectangle::new(
+                iced::Point::ORIGIN,
+                iced::Size::new(1.0, 1.0),
+            )))
             .with_initialization_script(BRIDGE)
             .with_custom_protocol(local::SCHEME.into(), |_, request| local::serve(&request))
             .with_on_page_load_handler(move |event, url| {
@@ -156,9 +194,22 @@ impl WebHost {
                     let _ = ipc.send(event);
                 }
             });
-        let builder = if url.is_empty() { builder.with_html("<!doctype html><title>New page</title>") } else { builder.with_url(url) };
-        let webview = builder.build_as_child(&parent).map_err(|error| error.to_string())?;
-        self.views.insert(pane, View { webview, bounds: None, visible: false });
+        let builder = if url.is_empty() {
+            builder.with_html("<!doctype html><title>New page</title>")
+        } else {
+            builder.with_url(url)
+        };
+        let webview = builder
+            .build_as_child(&parent)
+            .map_err(|error| error.to_string())?;
+        self.views.insert(
+            pane,
+            View {
+                webview,
+                bounds: None,
+                visible: false,
+            },
+        );
         Ok(())
     }
 
@@ -212,7 +263,10 @@ impl WebHost {
 
     pub fn history(&self, pane: u64) -> (bool, bool) {
         self.views.get(&pane).map_or((false, false), |view| {
-            (view.webview.can_go_back().unwrap_or(false), view.webview.can_go_forward().unwrap_or(false))
+            (
+                view.webview.can_go_back().unwrap_or(false),
+                view.webview.can_go_forward().unwrap_or(false),
+            )
         })
     }
 
@@ -255,7 +309,10 @@ mod tests {
 
     #[test]
     fn reads_bridge_messages() {
-        assert!(matches!(bridge_event(3, r#"{"focus":true}"#), Some(WebEvent::Focused(3))));
+        assert!(matches!(
+            bridge_event(3, r#"{"focus":true}"#),
+            Some(WebEvent::Focused(3))
+        ));
         assert!(matches!(
             bridge_event(3, r#"{"key":"d","shift":true,"alt":false}"#),
             Some(WebEvent::Shortcut { pane: 3, ref key, shift: true, alt: false }) if key == "d"

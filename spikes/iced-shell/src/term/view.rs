@@ -10,13 +10,13 @@ use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use iced::advanced::layout::{self, Layout};
+use iced::advanced::mouse::{self, ScrollDelta};
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::{self, Paragraph as _, Renderer as _, Span};
 use iced::advanced::widget::{self, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Renderer as _, Shell};
 use iced::alignment::Vertical;
 use iced::keyboard::{self, Key};
-use iced::advanced::mouse::{self, ScrollDelta};
 use iced::{Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Theme};
 
 use super::input::{self, MouseAction, MouseButton};
@@ -91,7 +91,10 @@ pub fn cell_size(font_size: f32) -> Size {
         wrapping: text::Wrapping::None,
     });
     let bounds = probe.min_bounds();
-    Size::new((bounds.width / 10.0).max(1.0), bounds.height.ceil().max(1.0))
+    Size::new(
+        (bounds.width / 10.0).max(1.0),
+        bounds.height.ceil().max(1.0),
+    )
 }
 
 struct Run {
@@ -136,14 +139,26 @@ fn color(rgb: Rgb) -> Color {
 
 fn font(style: Style) -> Font {
     Font {
-        weight: if style.bold { iced::font::Weight::Bold } else { iced::font::Weight::Normal },
-        style: if style.italic { iced::font::Style::Italic } else { iced::font::Style::Normal },
+        weight: if style.bold {
+            iced::font::Weight::Bold
+        } else {
+            iced::font::Weight::Normal
+        },
+        style: if style.italic {
+            iced::font::Style::Italic
+        } else {
+            iced::font::Style::Normal
+        },
         ..Font::MONOSPACE
     }
 }
 
 fn same_ink(a: Style, b: Style) -> bool {
-    a.fg == b.fg && a.bold == b.bold && a.italic == b.italic && a.underline == b.underline && a.strike == b.strike
+    a.fg == b.fg
+        && a.bold == b.bold
+        && a.italic == b.italic
+        && a.underline == b.underline
+        && a.strike == b.strike
 }
 
 /// Splits a row into runs of one style. A character outside ASCII gets a
@@ -157,16 +172,18 @@ fn layout_row(cells: &[Cell], font_size: f32) -> Vec<Run> {
         let single = !cells[start].c.is_ascii();
         let mut end = start + 1;
         if !single {
-            while end < cells.len()
-                && cells[end].c.is_ascii()
-                && same_ink(cells[end].style, style)
+            while end < cells.len() && cells[end].c.is_ascii() && same_ink(cells[end].style, style)
             {
                 end += 1;
             }
         }
         let text: String = cells[start..end].iter().map(|cell| cell.c).collect();
         let decorated = style.underline || style.strike;
-        let visible = if decorated { text.as_str() } else { text.trim_end() };
+        let visible = if decorated {
+            text.as_str()
+        } else {
+            text.trim_end()
+        };
         if !visible.trim().is_empty() || decorated {
             let span: Span<'_, (), Font> = Span::new(visible)
                 .color(color(style.fg))
@@ -181,10 +198,17 @@ fn layout_row(cells: &[Cell], font_size: f32) -> Vec<Run> {
                 font: font(style),
                 align_x: text::Alignment::Left,
                 align_y: Vertical::Top,
-                shaping: if single { text::Shaping::Advanced } else { text::Shaping::Basic },
+                shaping: if single {
+                    text::Shaping::Advanced
+                } else {
+                    text::Shaping::Basic
+                },
                 wrapping: text::Wrapping::None,
             });
-            runs.push(Run { column: start, paragraph });
+            runs.push(Run {
+                column: start,
+                paragraph,
+            });
         }
         start = end;
     }
@@ -201,13 +225,29 @@ impl<Message> TerminalView<'_, Message> {
         (line, column, right_half)
     }
 
-    fn report_mouse(&self, shell: &mut Shell<'_, Message>, button: MouseButton, action: MouseAction, at: (usize, usize), modifiers: keyboard::Modifiers) {
-        if let Some(bytes) = input::encode_mouse(button, action, at.0, at.1, modifiers, self.snapshot.mode) {
+    fn report_mouse(
+        &self,
+        shell: &mut Shell<'_, Message>,
+        button: MouseButton,
+        action: MouseAction,
+        at: (usize, usize),
+        modifiers: keyboard::Modifiers,
+    ) {
+        if let Some(bytes) =
+            input::encode_mouse(button, action, at.0, at.1, modifiers, self.snapshot.mode)
+        {
             shell.publish((self.on_input)(Input::Bytes(bytes)));
         }
     }
 
-    fn handle_key(&self, key: &Key, text: Option<&str>, modifiers: keyboard::Modifiers, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>) {
+    fn handle_key(
+        &self,
+        key: &Key,
+        text: Option<&str>,
+        modifiers: keyboard::Modifiers,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
         let copy_paste = if cfg!(target_os = "macos") {
             modifiers.logo()
         } else {
@@ -254,7 +294,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
         tree::State::new(State::default())
     }
 
-    fn layout(&mut self, _tree: &mut Tree, _renderer: &iced::Renderer, limits: &layout::Limits) -> layout::Node {
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
         layout::Node::new(limits.max())
     }
 
@@ -287,7 +332,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
         let mode = self.snapshot.mode;
         let modifiers = keyboard::Modifiers::default();
         match event {
-            Event::Keyboard(keyboard::Event::KeyPressed { key, text, modifiers, .. }) if self.focused => {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                text,
+                modifiers,
+                ..
+            }) if self.focused => {
                 self.handle_key(key, text.as_deref(), *modifiers, clipboard, shell);
             }
             Event::Mouse(mouse::Event::ButtonPressed(button)) => {
@@ -318,7 +368,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                     state.selecting = true;
                     state.moved = kind != SelectionType::Simple;
                     state.pressed_at = (at.0, at.1);
-                    shell.publish((self.on_input)(Input::Select { kind, line: at.0, column: at.1, right_half: at.2 }));
+                    shell.publish((self.on_input)(Input::Select {
+                        kind,
+                        line: at.0,
+                        column: at.1,
+                        right_half: at.2,
+                    }));
                 }
                 shell.capture_event();
             }
@@ -329,10 +384,20 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                         state.moved = true;
                     }
                     if state.moved {
-                        shell.publish((self.on_input)(Input::ExtendSelection { line: at.0, column: at.1, right_half: at.2 }));
+                        shell.publish((self.on_input)(Input::ExtendSelection {
+                            line: at.0,
+                            column: at.1,
+                            right_half: at.2,
+                        }));
                     }
                 } else if input::wants_mouse(mode) && bounds.contains(*position) {
-                    self.report_mouse(shell, MouseButton::Left, MouseAction::Motion(state.held), (at.0, at.1), modifiers);
+                    self.report_mouse(
+                        shell,
+                        MouseButton::Left,
+                        MouseAction::Motion(state.held),
+                        (at.0, at.1),
+                        modifiers,
+                    );
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(_)) => {
@@ -370,9 +435,19 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                 }
                 let at = self.cell_at(bounds, cell, position);
                 if input::wants_mouse(mode) {
-                    let button = if lines > 0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+                    let button = if lines > 0 {
+                        MouseButton::WheelUp
+                    } else {
+                        MouseButton::WheelDown
+                    };
                     for _ in 0..lines.unsigned_abs() {
-                        self.report_mouse(shell, button, MouseAction::Press, (at.0, at.1), modifiers);
+                        self.report_mouse(
+                            shell,
+                            button,
+                            MouseAction::Press,
+                            (at.0, at.1),
+                            modifiers,
+                        );
                     }
                 } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
                     let key: &[u8] = if lines > 0 { b"\x1bOA" } else { b"\x1bOB" };
@@ -387,7 +462,14 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
         }
     }
 
-    fn mouse_interaction(&self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, _viewport: &Rectangle, _renderer: &iced::Renderer) -> mouse::Interaction {
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+        _renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
         let Some(position) = cursor.position_over(layout.bounds()) else {
             return mouse::Interaction::None;
@@ -418,13 +500,25 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
     ) {
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
-        let cell = state.cell.map(|(size, _)| size).unwrap_or_else(|| cell_size(self.font_size));
+        let cell = state
+            .cell
+            .map(|(size, _)| size)
+            .unwrap_or_else(|| cell_size(self.font_size));
         let mut cache = state.rows.borrow_mut();
-        cache.resize_with(self.snapshot.rows.len(), || RowCache { hash: 0, runs: Vec::new() });
+        cache.resize_with(self.snapshot.rows.len(), || RowCache {
+            hash: 0,
+            runs: Vec::new(),
+        });
         let snapshot = self.snapshot;
 
         renderer.with_layer(bounds, |renderer| {
-            renderer.fill_quad(Quad { bounds, ..Quad::default() }, color(palette::BACKGROUND));
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    ..Quad::default()
+                },
+                color(palette::BACKGROUND),
+            );
 
             for (line, row) in snapshot.rows.iter().enumerate() {
                 let y = bounds.y + line as f32 * cell.height;
@@ -458,18 +552,56 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                 let x = bounds.x + cursor.column as f32 * cell.width;
                 let y = bounds.y + cursor.line as f32 * cell.height;
                 let (rect, hollow) = match cursor.shape {
-                    CursorShape::Beam => (Rectangle { x, y, width: 2.0, height: cell.height }, false),
-                    CursorShape::Underline => (Rectangle { x, y: y + cell.height - 2.0, width: cell.width, height: 2.0 }, false),
-                    _ => (Rectangle { x, y, width: cell.width, height: cell.height }, !self.focused || cursor.shape == CursorShape::HollowBlock),
+                    CursorShape::Beam => (
+                        Rectangle {
+                            x,
+                            y,
+                            width: 2.0,
+                            height: cell.height,
+                        },
+                        false,
+                    ),
+                    CursorShape::Underline => (
+                        Rectangle {
+                            x,
+                            y: y + cell.height - 2.0,
+                            width: cell.width,
+                            height: 2.0,
+                        },
+                        false,
+                    ),
+                    _ => (
+                        Rectangle {
+                            x,
+                            y,
+                            width: cell.width,
+                            height: cell.height,
+                        },
+                        !self.focused || cursor.shape == CursorShape::HollowBlock,
+                    ),
                 };
                 let cursor_color = color(palette::CURSOR);
                 if hollow {
                     renderer.fill_quad(
-                        Quad { bounds: rect, border: Border { color: cursor_color, width: 1.0, radius: 0.0.into() }, ..Quad::default() },
+                        Quad {
+                            bounds: rect,
+                            border: Border {
+                                color: cursor_color,
+                                width: 1.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Quad::default()
+                        },
                         Color::TRANSPARENT,
                     );
                 } else {
-                    renderer.fill_quad(Quad { bounds: rect, ..Quad::default() }, cursor_color);
+                    renderer.fill_quad(
+                        Quad {
+                            bounds: rect,
+                            ..Quad::default()
+                        },
+                        cursor_color,
+                    );
                 }
             }
 
@@ -482,16 +614,29 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                 let y = bounds.y + line as f32 * cell.height;
                 for run in &slot.runs {
                     let position = Point::new(bounds.x + run.column as f32 * cell.width, y);
-                    renderer.fill_paragraph(&run.paragraph, position, color(palette::FOREGROUND), bounds);
+                    renderer.fill_paragraph(
+                        &run.paragraph,
+                        position,
+                        color(palette::FOREGROUND),
+                        bounds,
+                    );
                 }
             }
 
             // Text under a block cursor takes the background colour, so it stays readable.
-            if let Some(cursor) = snapshot.cursor.filter(|cursor| self.focused && matches!(cursor.shape, CursorShape::Block))
-                && let Some(cell_under) = snapshot.rows.get(cursor.line).and_then(|row| row.cells.get(cursor.column))
+            if let Some(cursor) = snapshot
+                .cursor
+                .filter(|cursor| self.focused && matches!(cursor.shape, CursorShape::Block))
+                && let Some(cell_under) = snapshot
+                    .rows
+                    .get(cursor.line)
+                    .and_then(|row| row.cells.get(cursor.column))
                 && cell_under.c != ' '
             {
-                let position = Point::new(bounds.x + cursor.column as f32 * cell.width, bounds.y + cursor.line as f32 * cell.height);
+                let position = Point::new(
+                    bounds.x + cursor.column as f32 * cell.width,
+                    bounds.y + cursor.line as f32 * cell.height,
+                );
                 renderer.fill_text(
                     text::Text {
                         content: cell_under.c.to_string(),
@@ -512,10 +657,19 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
         });
     }
 
-    fn operate(&mut self, _tree: &mut Tree, _layout: Layout<'_>, _renderer: &iced::Renderer, _operation: &mut dyn widget::Operation) {}
+    fn operate(
+        &mut self,
+        _tree: &mut Tree,
+        _layout: Layout<'_>,
+        _renderer: &iced::Renderer,
+        _operation: &mut dyn widget::Operation,
+    ) {
+    }
 }
 
-impl<'a, Message: 'a> From<TerminalView<'a, Message>> for Element<'a, Message, Theme, iced::Renderer> {
+impl<'a, Message: 'a> From<TerminalView<'a, Message>>
+    for Element<'a, Message, Theme, iced::Renderer>
+{
     fn from(view: TerminalView<'a, Message>) -> Self {
         Element::new(view)
     }

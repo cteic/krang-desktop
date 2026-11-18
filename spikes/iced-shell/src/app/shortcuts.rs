@@ -79,7 +79,11 @@ pub fn web_action(key: &str, shift: bool) -> Option<Action> {
         "Enter" => Key::Named(Named::Enter),
         other => Key::Character(other.into()),
     };
-    let modifiers = if shift { Modifiers::LOGO | Modifiers::SHIFT } else { Modifiers::LOGO };
+    let modifiers = if shift {
+        Modifiers::LOGO | Modifiers::SHIFT
+    } else {
+        Modifiers::LOGO
+    };
     action(&key, modifiers)
 }
 
@@ -101,7 +105,10 @@ mod tests {
         assert_eq!(press("]", cmd), Some(Action::NextPane));
         assert_eq!(press("}", cmd_shift), Some(Action::NextTab));
         assert_eq!(press("w", cmd_shift), Some(Action::CloseTab));
-        assert_eq!(action(&Key::Named(Named::Enter), cmd_shift), Some(Action::Magnify));
+        assert_eq!(
+            action(&Key::Named(Named::Enter), cmd_shift),
+            Some(Action::Magnify)
+        );
         assert_eq!(press("3", cmd), Some(Action::GoToTab(2)));
     }
 

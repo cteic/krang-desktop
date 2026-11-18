@@ -109,11 +109,11 @@ row "Frame time, divider moving, busy terminal (median / p99)" "$(value resize_f
 
 # Editor: the 50,000-line note, typing, and vault search.
 KRANG_SELFTEST=editor KRANG_SELFTEST_NOTE="Big note.md" "$bin" --layout "$work/layouts/editor.toml" > "$work/editor.txt" 2>/dev/null
-row "Open the 50,000-line note (load / to frame)" "$(value editor_open_ms "$work/editor.txt") / $(value editor_open_to_frame_ms "$work/editor.txt") ms" "$(value editor_open_lines "$work/editor.txt") lines"
+row "Open the 50,000-line note (in update / to frame)" "$(value editor_open_ms "$work/editor.txt") / $(value editor_open_to_frame_ms "$work/editor.txt") ms" "$(value editor_open_lines "$work/editor.txt") lines"
 row "Editor keystroke to frame (median / p99)" "$(value editor_key_to_frame_median_ms "$work/editor.txt") / $(value editor_key_to_frame_p99_ms "$work/editor.txt") ms" "100 keys into the 50,000-line note"
 row "Editor update per keystroke (median / p99)" "$(value editor_update_median_ms "$work/editor.txt") / $(value editor_update_p99_ms "$work/editor.txt") ms" "time inside update()"
 for query in "meeting" "zebra-unique-term" "#project" "the quick brown"; do
-  row "Vault search: $query" "$(grep -F "search_ms[$query]" "$work/editor.txt" | cut -d' ' -f2-)" "$(value vault_notes "$work/editor.txt") notes, in memory"
+  row "Vault search: $query" "$(grep -F "search_ms[${query// /_}]" "$work/editor.txt" | cut -d' ' -f2-) ms" "$(value vault_notes "$work/editor.txt") notes, in memory"
 done
 
 KRANG_SELFTEST=terminal-latency "$bin" --fresh > "$work/term.txt" 2>/dev/null

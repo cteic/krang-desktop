@@ -21,10 +21,20 @@ pub struct TerminalPane {
 }
 
 impl TerminalPane {
-    pub fn start(id: u64, directory: Option<PathBuf>, size: GridSize, sender: &Sender, commands: &[String]) -> Self {
+    pub fn start(
+        id: u64,
+        directory: Option<PathBuf>,
+        size: GridSize,
+        sender: &Sender,
+        commands: &[String],
+    ) -> Self {
         let directory = directory.filter(|dir| dir.is_dir());
         let spawned = Session::spawn(
-            Spawn { id, directory: directory.as_deref(), size },
+            Spawn {
+                id,
+                directory: directory.as_deref(),
+                size,
+            },
             sender.clone(),
         );
         let (session, error) = match spawned {
@@ -36,19 +46,38 @@ impl TerminalPane {
             }
             Err(error) => (None, Some(format!("Could not start the shell: {error}"))),
         };
-        Self { session, error, title: None, start_directory: directory }
+        Self {
+            session,
+            error,
+            title: None,
+            start_directory: directory,
+        }
     }
 
     pub fn working_directory(&self) -> Option<PathBuf> {
-        self.session.as_ref().and_then(Session::working_directory).or_else(|| self.start_directory.clone())
+        self.session
+            .as_ref()
+            .and_then(Session::working_directory)
+            .or_else(|| self.start_directory.clone())
     }
 
     pub fn view(&self, id: u64, focused: bool) -> Element<'_, Message> {
         match &self.session {
-            Some(session) => TerminalView::new(session.snapshot(), session.size(), focused, FONT_SIZE, move |input| Message::Terminal(id, input)).into(),
+            Some(session) => TerminalView::new(
+                session.snapshot(),
+                session.size(),
+                focused,
+                FONT_SIZE,
+                move |input| Message::Terminal(id, input),
+            )
+            .into(),
             None => center(
                 column![
-                    text(self.error.clone().unwrap_or_else(|| String::from("The shell has exited."))),
+                    text(
+                        self.error
+                            .clone()
+                            .unwrap_or_else(|| String::from("The shell has exited."))
+                    ),
                     button("Start a new shell").on_press(Message::RestartTerminal(id)),
                 ]
                 .spacing(12),

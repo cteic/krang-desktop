@@ -16,11 +16,25 @@ pub fn args(request: &RunRequest) -> Vec<String> {
     };
     let mut args: Vec<String> = Vec::new();
     if let Some(session) = &request.session_id {
-        args.extend(["exec", "resume", session, "--json", "--skip-git-repo-check", "-c"].map(String::from));
+        args.extend(
+            [
+                "exec",
+                "resume",
+                session,
+                "--json",
+                "--skip-git-repo-check",
+                "-c",
+            ]
+            .map(String::from),
+        );
         args.push(format!("sandbox_mode=\"{sandbox}\""));
     } else {
         args.extend(["exec", "--json", "--skip-git-repo-check"].map(String::from));
-        if let Some(directory) = request.directory.as_deref().filter(|dir| dir.starts_with('/')) {
+        if let Some(directory) = request
+            .directory
+            .as_deref()
+            .filter(|dir| dir.starts_with('/'))
+        {
             args.extend(["-C".into(), directory.to_string()]);
         }
         args.extend(["-s".into(), sandbox.into()]);
@@ -30,33 +44,57 @@ pub fn args(request: &RunRequest) -> Vec<String> {
 }
 
 fn tool(item: &Value, name: &str, summary: String) -> AgentEvent {
-    AgentEvent::Tool { id: str_at(item, "id").map(String::from), name: name.to_string(), summary }
+    AgentEvent::Tool {
+        id: str_at(item, "id").map(String::from),
+        name: name.to_string(),
+        summary,
+    }
 }
 
 fn item_events(item: &Value, completed: bool) -> Vec<AgentEvent> {
     let text = |key: &str| str_at(item, key).unwrap_or("");
     match str_at(item, "type") {
-        Some("agent_message") if completed && !text("text").is_empty() => vec![AgentEvent::Text(text("text").to_string())],
+        Some("agent_message") if completed && !text("text").is_empty() => {
+            vec![AgentEvent::Text(text("text").to_string())]
+        }
         Some("command_execution") => vec![tool(item, "Run", one_line(text("command")))],
         Some("file_change") => {
             let paths: Vec<&str> = item
                 .get("changes")
                 .and_then(Value::as_array)
-                .map(|changes| changes.iter().filter_map(|change| str_at(change, "path")).collect())
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .filter_map(|change| str_at(change, "path"))
+                        .collect()
+                })
                 .unwrap_or_default();
             vec![tool(item, "Edit", one_line(&paths.join(", ")))]
         }
         Some("mcp_tool_call") => {
-            let name = [text("server"), text("tool")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(".");
-            vec![tool(item, if name.is_empty() { "Tool" } else { &name }, String::new())]
+            let name = [text("server"), text("tool")]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(".");
+            vec![tool(
+                item,
+                if name.is_empty() { "Tool" } else { &name },
+                String::new(),
+            )]
         }
         Some("web_search") => vec![tool(item, "Search", one_line(text("query")))],
         Some("todo_list") => {
-            let steps = item.get("items").and_then(Value::as_array).map_or(0, Vec::len);
+            let steps = item
+                .get("items")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
             vec![tool(item, "Plan", format!("{steps} steps"))]
         }
         // An error item is a warning inside a turn that carries on.
-        Some("error") if completed => str_at(item, "message").map(|message| vec![AgentEvent::Note(message.to_string())]).unwrap_or_default(),
+        Some("error") if completed => str_at(item, "message")
+            .map(|message| vec![AgentEvent::Note(message.to_string())])
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -68,22 +106,41 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
         Line::Json(value) => value,
     };
     match str_at(&value, "type") {
-        Some("thread.started") => str_at(&value, "thread_id").map(|id| vec![AgentEvent::Session(id.to_string())]).unwrap_or_default(),
-        Some(kind @ ("item.started" | "item.updated" | "item.completed")) => {
-            value.get("item").map(|item| item_events(item, kind == "item.completed")).unwrap_or_default()
-        }
+        Some("thread.started") => str_at(&value, "thread_id")
+            .map(|id| vec![AgentEvent::Session(id.to_string())])
+            .unwrap_or_default(),
+        Some(kind @ ("item.started" | "item.updated" | "item.completed")) => value
+            .get("item")
+            .map(|item| item_events(item, kind == "item.completed"))
+            .unwrap_or_default(),
         Some("turn.completed") => {
-            let tokens = |key: &str| value.pointer(&format!("/usage/{key}")).and_then(Value::as_u64);
+            let tokens = |key: &str| {
+                value
+                    .pointer(&format!("/usage/{key}"))
+                    .and_then(Value::as_u64)
+            };
             let input = match (tokens("input_tokens"), tokens("cached_input_tokens")) {
                 (Some(a), Some(b)) => Some(a + b),
                 (a, b) => a.or(b),
             };
-            vec![AgentEvent::Done(Usage { cost_usd: None, input_tokens: input, output_tokens: tokens("output_tokens") })]
+            vec![AgentEvent::Done(Usage {
+                cost_usd: None,
+                input_tokens: input,
+                output_tokens: tokens("output_tokens"),
+            })]
         }
         Some("turn.failed") => vec![AgentEvent::Error(
-            value.pointer("/error/message").and_then(Value::as_str).unwrap_or("The turn failed").to_string(),
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("The turn failed")
+                .to_string(),
         )],
-        Some("error") => vec![AgentEvent::Error(str_at(&value, "message").unwrap_or("The agent reported an error").to_string())],
+        Some("error") => vec![AgentEvent::Error(
+            str_at(&value, "message")
+                .unwrap_or("The agent reported an error")
+                .to_string(),
+        )],
         _ => Vec::new(),
     }
 }
@@ -94,9 +151,21 @@ mod tests {
 
     #[test]
     fn first_message_and_follow_up_arguments() {
-        let first = RunRequest { mode: Mode::ReadOnly, directory: Some("/w".into()), session_id: None, trusted: false };
-        assert_eq!(args(&first).join(" "), "exec --json --skip-git-repo-check -C /w -s read-only -");
-        let next = RunRequest { session_id: Some("t1".into()), mode: Mode::Edit, ..first };
+        let first = RunRequest {
+            mode: Mode::ReadOnly,
+            directory: Some("/w".into()),
+            session_id: None,
+            trusted: false,
+        };
+        assert_eq!(
+            args(&first).join(" "),
+            "exec --json --skip-git-repo-check -C /w -s read-only -"
+        );
+        let next = RunRequest {
+            session_id: Some("t1".into()),
+            mode: Mode::Edit,
+            ..first
+        };
         assert_eq!(
             args(&next).join(" "),
             "exec resume t1 --json --skip-git-repo-check -c sandbox_mode=\"workspace-write\" -"
@@ -116,9 +185,17 @@ mod tests {
             events,
             [
                 AgentEvent::Session("th".into()),
-                AgentEvent::Tool { id: Some("i1".into()), name: "Run".into(), summary: "ls".into() },
+                AgentEvent::Tool {
+                    id: Some("i1".into()),
+                    name: "Run".into(),
+                    summary: "ls".into()
+                },
                 AgentEvent::Text("Done.".into()),
-                AgentEvent::Done(Usage { cost_usd: None, input_tokens: Some(12), output_tokens: Some(4) }),
+                AgentEvent::Done(Usage {
+                    cost_usd: None,
+                    input_tokens: Some(12),
+                    output_tokens: Some(4)
+                }),
             ]
         );
     }

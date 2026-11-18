@@ -46,7 +46,12 @@ mod tests {
             version: WORKSPACE_VERSION,
             tabs: vec![TabSpec {
                 title: "t".into(),
-                tree: Tree::Pane(PaneSpec { title: None, kind: PaneKind::Web { url: "https://example.org".into() } }),
+                tree: Tree::Pane(PaneSpec {
+                    title: None,
+                    kind: PaneKind::Web {
+                        url: "https://example.org".into(),
+                    },
+                }),
                 focus: Some(0),
                 maximized: false,
             }],

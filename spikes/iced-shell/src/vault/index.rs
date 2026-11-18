@@ -57,8 +57,18 @@ fn read_note(path: String, text: String) -> Note {
             tags.push(tag);
         }
     }
-    let links = links::wikilinks(body).into_iter().filter(|link| !link.embed).map(|link| normalise(&link.target)).collect();
-    Note { name: note_name(&path), path, text, links, tags }
+    let links = links::wikilinks(body)
+        .into_iter()
+        .filter(|link| !link.embed)
+        .map(|link| normalise(&link.target))
+        .collect();
+    Note {
+        name: note_name(&path),
+        path,
+        text,
+        links,
+        tags,
+    }
 }
 
 /// Every `.md` file under `root`, skipping hidden folders such as `.obsidian`
@@ -91,7 +101,13 @@ fn markdown_files(root: &Path) -> Vec<PathBuf> {
 
 pub fn relative(root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
-    Some(relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
+    Some(
+        relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 impl Index {
@@ -99,7 +115,9 @@ impl Index {
     /// spends most of its open time here.
     pub fn open(root: &Path) -> Self {
         let files = markdown_files(root);
-        let workers = std::thread::available_parallelism().map_or(4, usize::from).min(8);
+        let workers = std::thread::available_parallelism()
+            .map_or(4, usize::from)
+            .min(8);
         let chunk = files.len().div_ceil(workers).max(1);
         let notes: Vec<Note> = std::thread::scope(|scope| {
             let handles: Vec<_> = files
@@ -115,9 +133,15 @@ impl Index {
                     })
                 })
                 .collect();
-            handles.into_iter().flat_map(|handle| handle.join().unwrap_or_default()).collect()
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect()
         });
-        let mut index = Index { root: root.to_path_buf(), ..Index::default() };
+        let mut index = Index {
+            root: root.to_path_buf(),
+            ..Index::default()
+        };
         for note in notes {
             index.insert(note);
         }
@@ -128,7 +152,10 @@ impl Index {
         let key = normalise(&note.name);
         self.by_name.entry(key).or_default().push(note.path.clone());
         for target in &note.links {
-            self.backlinks.entry(target.clone()).or_default().insert(note.path.clone());
+            self.backlinks
+                .entry(target.clone())
+                .or_default()
+                .insert(note.path.clone());
         }
         self.notes.insert(note.path.clone(), note);
     }
@@ -173,7 +200,11 @@ impl Index {
     /// with the shortest path wins, as in Obsidian.
     pub fn resolve(&self, target: &str) -> Option<&Note> {
         let key = normalise(target);
-        if let Some(note) = self.notes.get(target.trim()).or_else(|| self.notes.get(&format!("{}.md", target.trim()))) {
+        if let Some(note) = self
+            .notes
+            .get(target.trim())
+            .or_else(|| self.notes.get(&format!("{}.md", target.trim())))
+        {
             return Some(note);
         }
         self.by_name
@@ -205,7 +236,10 @@ impl Index {
                 *counts.entry(tag).or_default() += 1;
             }
         }
-        counts.into_iter().map(|(tag, count)| (tag.to_string(), count)).collect()
+        counts
+            .into_iter()
+            .map(|(tag, count)| (tag.to_string(), count))
+            .collect()
     }
 
     /// Case-insensitive search over every line of every note. A query that
@@ -219,9 +253,17 @@ impl Index {
             return self
                 .notes
                 .values()
-                .filter(|note| note.tags.iter().any(|known| known.eq_ignore_ascii_case(tag)))
+                .filter(|note| {
+                    note.tags
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(tag))
+                })
                 .take(limit)
-                .map(|note| SearchHit { path: note.path.clone(), line: 0, text: format!("#{tag}") })
+                .map(|note| SearchHit {
+                    path: note.path.clone(),
+                    line: 0,
+                    text: format!("#{tag}"),
+                })
                 .collect();
         }
         let needle = query.to_lowercase();
@@ -229,14 +271,26 @@ impl Index {
         let mut hits = Vec::new();
         for note in self.notes.values() {
             // Most notes do not match at all: rule them out with one pass first.
-            let matches = if ascii { contains_ascii_ci(&note.text, &needle) } else { note.text.to_lowercase().contains(&needle) };
+            let matches = if ascii {
+                contains_ascii_ci(&note.text, &needle)
+            } else {
+                note.text.to_lowercase().contains(&needle)
+            };
             if !matches {
                 continue;
             }
             for (line, text) in note.text.lines().enumerate() {
-                let found = if ascii { contains_ascii_ci(text, &needle) } else { text.to_lowercase().contains(&needle) };
+                let found = if ascii {
+                    contains_ascii_ci(text, &needle)
+                } else {
+                    text.to_lowercase().contains(&needle)
+                };
                 if found {
-                    hits.push(SearchHit { path: note.path.clone(), line, text: text.trim().chars().take(160).collect() });
+                    hits.push(SearchHit {
+                        path: note.path.clone(),
+                        line,
+                        text: text.trim().chars().take(160).collect(),
+                    });
                     if hits.len() >= limit {
                         return hits;
                     }
@@ -257,7 +311,8 @@ fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
     let upper = first.to_ascii_uppercase();
     hay.len() >= needle.len()
         && (0..=hay.len() - needle.len()).any(|at| {
-            (hay[at] == first || hay[at] == upper) && hay[at..at + needle.len()].eq_ignore_ascii_case(needle)
+            (hay[at] == first || hay[at] == upper)
+                && hay[at..at + needle.len()].eq_ignore_ascii_case(needle)
         })
 }
 
@@ -266,13 +321,20 @@ mod tests {
     use super::*;
 
     fn vault() -> (PathBuf, Index) {
-        let root = std::env::temp_dir().join(format!("krang-vault-{}-{}", std::process::id(), rand_suffix()));
+        let root = std::env::temp_dir().join(format!(
+            "krang-vault-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
         let _ = std::fs::create_dir_all(root.join("sub"));
         let _ = std::fs::create_dir_all(root.join(".obsidian"));
         let write = |path: &str, text: &str| {
             let _ = std::fs::write(root.join(path), text);
         };
-        write("Alpha.md", "---\ntags: [science]\n---\nLinks to [[Beta]] and [[sub/Gamma|g]]. #draft\n");
+        write(
+            "Alpha.md",
+            "---\ntags: [science]\n---\nLinks to [[Beta]] and [[sub/Gamma|g]]. #draft\n",
+        );
         write("Beta.md", "Back to [[alpha]]. The Quick brown fox.\n");
         write("sub/Gamma.md", "Nothing here but `[[Alpha]]` in code.\n");
         write(".obsidian/Hidden.md", "[[Beta]]");
@@ -281,15 +343,23 @@ mod tests {
     }
 
     fn rand_suffix() -> u128 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos())
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos())
     }
 
     #[test]
     fn indexes_notes_and_skips_hidden_folders() {
         let (root, index) = vault();
         assert_eq!(index.len(), 3);
-        assert_eq!(index.resolve("gamma").map(|note| note.path.as_str()), Some("sub/Gamma.md"));
-        assert_eq!(index.resolve("sub/Gamma").map(|note| note.path.as_str()), Some("sub/Gamma.md"));
+        assert_eq!(
+            index.resolve("gamma").map(|note| note.path.as_str()),
+            Some("sub/Gamma.md")
+        );
+        assert_eq!(
+            index.resolve("sub/Gamma").map(|note| note.path.as_str()),
+            Some("sub/Gamma.md")
+        );
         assert!(index.resolve("Missing").is_none());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -297,7 +367,13 @@ mod tests {
     #[test]
     fn backlinks_follow_links_and_ignore_code() {
         let (root, mut index) = vault();
-        let names = |index: &Index, path: &str| index.backlinks(path).iter().map(|note| note.name.clone()).collect::<Vec<_>>();
+        let names = |index: &Index, path: &str| {
+            index
+                .backlinks(path)
+                .iter()
+                .map(|note| note.name.clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names(&index, "Beta.md"), ["Alpha"]);
         assert_eq!(names(&index, "Alpha.md"), ["Beta"]);
         assert_eq!(names(&index, "sub/Gamma.md"), ["Alpha"]);
@@ -311,8 +387,19 @@ mod tests {
     fn searches_text_and_tags() {
         let (root, index) = vault();
         let hits = index.search("quick BROWN", 10);
-        assert_eq!(hits, [SearchHit { path: "Beta.md".into(), line: 0, text: "Back to [[alpha]]. The Quick brown fox.".into() }]);
-        let tagged: Vec<String> = index.search("#science", 10).into_iter().map(|hit| hit.path).collect();
+        assert_eq!(
+            hits,
+            [SearchHit {
+                path: "Beta.md".into(),
+                line: 0,
+                text: "Back to [[alpha]]. The Quick brown fox.".into()
+            }]
+        );
+        let tagged: Vec<String> = index
+            .search("#science", 10)
+            .into_iter()
+            .map(|hit| hit.path)
+            .collect();
         assert_eq!(tagged, ["Alpha.md"]);
         assert_eq!(index.tags(), [("draft".into(), 1), ("science".into(), 1)]);
         let _ = std::fs::remove_dir_all(root);

@@ -22,7 +22,9 @@ use iced::{Element, Length, Subscription, Task, Theme, keyboard, window};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::chat::runner::RunEvent;
-use crate::shell::layout::{self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, Workspace, WORKSPACE_VERSION};
+use crate::shell::layout::{
+    self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, WORKSPACE_VERSION, Workspace,
+};
 use crate::shell::store;
 use crate::term::events::{self, TermEvent};
 use crate::term::session::GridSize;
@@ -77,7 +79,7 @@ pub enum Message {
 
 enum Body {
     Terminal(TerminalPane),
-    Editor(EditorPane),
+    Editor(Box<EditorPane>),
     Web(WebPane),
     Chat(ChatPane),
 }
@@ -128,7 +130,12 @@ pub fn run(options: Options) -> iced::Result {
 
 fn default_size() -> GridSize {
     let cell = cell_size(terminal::FONT_SIZE);
-    GridSize { columns: 80, lines: 24, cell_width: cell.width.round() as u16, cell_height: cell.height.round() as u16 }
+    GridSize {
+        columns: 80,
+        lines: 24,
+        cell_width: cell.width.round() as u16,
+        cell_height: cell.height.round() as u16,
+    }
 }
 
 fn axis(axis: Axis) -> pane_grid::Axis {
@@ -169,16 +176,25 @@ impl App {
             selftest: options.selftest.map(selftest::SelfTest::new),
         };
 
-        let mut tasks = vec![window::oldest().and_then(|id| window::run(id, move |window| Message::WindowReady(id, ParentWindow::from_window(window))))];
+        let mut tasks = vec![window::oldest().and_then(|id| {
+            window::run(id, move |window| {
+                Message::WindowReady(id, ParentWindow::from_window(window))
+            })
+        })];
         let mut specs: Vec<TabSpec> = Vec::new();
         let mut active = 0;
         for path in &options.layouts {
-            match std::fs::read_to_string(path).map_err(|error| error.to_string()).and_then(|source| layout::parse_layout(&source)) {
+            match std::fs::read_to_string(path)
+                .map_err(|error| error.to_string())
+                .and_then(|source| layout::parse_layout(&source))
+            {
                 Ok(tab) => specs.push(tab),
                 Err(error) => eprintln!("krang-shell: {}: {error}", path.display()),
             }
         }
-        if specs.is_empty() && persist && !options.fresh
+        if specs.is_empty()
+            && persist
+            && !options.fresh
             && let Some(saved) = app.state_dir.as_deref().and_then(store::load)
         {
             active = saved.active;
@@ -209,15 +225,27 @@ impl App {
     }
 
     fn new_tab_spec(&self, kind: NewPane) -> TabSpec {
-        TabSpec { title: String::from("shell"), tree: Tree::Pane(self.new_pane_spec(kind)), focus: Some(0), maximized: false }
+        TabSpec {
+            title: String::from("shell"),
+            tree: Tree::Pane(self.new_pane_spec(kind)),
+            focus: Some(0),
+            maximized: false,
+        }
     }
 
     /// A new pane of a kind, starting where the focused pane is working.
     fn new_pane_spec(&self, kind: NewPane) -> PaneSpec {
         let directory = self.focused_id().and_then(|id| self.pane_directory(id));
         let kind = match kind {
-            NewPane::Terminal => PaneKind::Terminal { directory: directory.map(|dir| dir.to_string_lossy().into_owned()), commands: Vec::new() },
-            NewPane::Editor => PaneKind::Editor { vault: Some(self.default_vault.to_string_lossy().into_owned()), path: None, mode: EditorMode::Edit },
+            NewPane::Terminal => PaneKind::Terminal {
+                directory: directory.map(|dir| dir.to_string_lossy().into_owned()),
+                commands: Vec::new(),
+            },
+            NewPane::Editor => PaneKind::Editor {
+                vault: Some(self.default_vault.to_string_lossy().into_owned()),
+                path: None,
+                mode: EditorMode::Edit,
+            },
             NewPane::Web => PaneKind::Web { url: String::new() },
             NewPane::Chat => PaneKind::Chat {
                 agent: crate::chat::Agent::Claude,
@@ -244,9 +272,18 @@ impl App {
         self.next_id += 1;
         let mut task = Task::none();
         let body = match spec.kind {
-            PaneKind::Terminal { directory, commands } => {
+            PaneKind::Terminal {
+                directory,
+                commands,
+            } => {
                 let directory = directory.as_deref().map(layout::expand_home);
-                Body::Terminal(TerminalPane::start(id, directory, default_size(), &self.term_sender, &commands))
+                Body::Terminal(TerminalPane::start(
+                    id,
+                    directory,
+                    default_size(),
+                    &self.term_sender,
+                    &commands,
+                ))
             }
             PaneKind::Editor { vault, path, mode } => {
                 let path = path.map(|path| layout::expand_home(&path));
@@ -256,7 +293,10 @@ impl App {
                     .unwrap_or_else(|| self.default_vault.clone());
                 let root = std::fs::canonicalize(&root).unwrap_or(root);
                 let mut pane = EditorPane::new(root.clone(), mode);
-                if let Some(relative) = path.and_then(|path| std::fs::canonicalize(&path).ok()).and_then(|path| crate::vault::index::relative(&root, &path)) {
+                if let Some(relative) = path
+                    .and_then(|path| std::fs::canonicalize(&path).ok())
+                    .and_then(|path| crate::vault::index::relative(&root, &path))
+                {
                     task = pane.open(&relative);
                 }
                 if let Some(Some(index)) = self.vaults.get(&root) {
@@ -265,12 +305,24 @@ impl App {
                     self.vaults.insert(root.clone(), None);
                     task = Task::batch([task, open_vault(root)]);
                 }
-                Body::Editor(pane)
+                Body::Editor(Box::new(pane))
             }
             PaneKind::Web { url } => Body::Web(WebPane::new(&url)),
-            PaneKind::Chat { agent, directory, mode, trusted, transcript } => Body::Chat(ChatPane::new(agent, directory, mode, trusted, transcript)),
+            PaneKind::Chat {
+                agent,
+                directory,
+                mode,
+                trusted,
+                transcript,
+            } => Body::Chat(ChatPane::new(agent, directory, mode, trusted, transcript)),
         };
-        self.panes.insert(id, Pane { title: spec.title, body });
+        self.panes.insert(
+            id,
+            Pane {
+                title: spec.title,
+                body,
+            },
+        );
         (id, task)
     }
 
@@ -279,9 +331,19 @@ impl App {
         let mut leaves = Vec::new();
         let configuration = self.configuration(spec.tree, &mut tasks, &mut leaves);
         let grid = pane_grid::State::with_configuration(configuration);
-        let focus_id = spec.focus.and_then(|index| leaves.get(index).copied()).or(leaves.first().copied());
-        let focus = grid.iter().find(|(_, id)| Some(**id) == focus_id).map(|(pane, _)| *pane);
-        let mut tab = Tab { title: spec.title, grid, focus };
+        let focus_id = spec
+            .focus
+            .and_then(|index| leaves.get(index).copied())
+            .or(leaves.first().copied());
+        let focus = grid
+            .iter()
+            .find(|(_, id)| Some(**id) == focus_id)
+            .map(|(pane, _)| *pane);
+        let mut tab = Tab {
+            title: spec.title,
+            grid,
+            focus,
+        };
         if spec.maximized
             && let Some(focus) = focus
         {
@@ -290,7 +352,12 @@ impl App {
         (tab, Task::batch(tasks))
     }
 
-    fn configuration(&mut self, tree: Tree, tasks: &mut Vec<Task<Message>>, leaves: &mut Vec<u64>) -> pane_grid::Configuration<u64> {
+    fn configuration(
+        &mut self,
+        tree: Tree,
+        tasks: &mut Vec<Task<Message>>,
+        leaves: &mut Vec<u64>,
+    ) -> pane_grid::Configuration<u64> {
         match tree {
             Tree::Pane(spec) => {
                 let (id, task) = self.create_pane(spec);
@@ -298,7 +365,12 @@ impl App {
                 leaves.push(id);
                 pane_grid::Configuration::Pane(id)
             }
-            Tree::Split { axis: split, ratio, a, b } => pane_grid::Configuration::Split {
+            Tree::Split {
+                axis: split,
+                ratio,
+                a,
+                b,
+            } => pane_grid::Configuration::Split {
                 axis: axis(split),
                 ratio,
                 a: Box::new(self.configuration(*a, tasks, leaves)),
@@ -310,13 +382,23 @@ impl App {
     fn pane_spec(&self, id: u64) -> Option<PaneSpec> {
         let pane = self.panes.get(&id)?;
         let kind = match &pane.body {
-            Body::Terminal(terminal) => PaneKind::Terminal { directory: terminal.working_directory().map(|dir| dir.to_string_lossy().into_owned()), commands: Vec::new() },
+            Body::Terminal(terminal) => PaneKind::Terminal {
+                directory: terminal
+                    .working_directory()
+                    .map(|dir| dir.to_string_lossy().into_owned()),
+                commands: Vec::new(),
+            },
             Body::Editor(editor) => PaneKind::Editor {
                 vault: Some(editor.root.to_string_lossy().into_owned()),
-                path: editor.path.as_ref().map(|path| editor.absolute(path).to_string_lossy().into_owned()),
+                path: editor
+                    .path
+                    .as_ref()
+                    .map(|path| editor.absolute(path).to_string_lossy().into_owned()),
                 mode: editor.mode,
             },
-            Body::Web(web) => PaneKind::Web { url: web.url.clone() },
+            Body::Web(web) => PaneKind::Web {
+                url: web.url.clone(),
+            },
             Body::Chat(chat) => PaneKind::Chat {
                 agent: chat.agent,
                 directory: chat.directory.clone(),
@@ -325,14 +407,27 @@ impl App {
                 transcript: chat.transcript.clone(),
             },
         };
-        Some(PaneSpec { title: pane.title.clone(), kind })
+        Some(PaneSpec {
+            title: pane.title.clone(),
+            kind,
+        })
     }
 
     fn tree_of(&self, grid: &pane_grid::State<u64>, node: &pane_grid::Node) -> Option<Tree> {
         Some(match node {
             pane_grid::Node::Pane(pane) => Tree::Pane(self.pane_spec(*grid.get(*pane)?)?),
-            pane_grid::Node::Split { axis: split, ratio, a, b, .. } => Tree::Split {
-                axis: if *split == pane_grid::Axis::Vertical { Axis::Vertical } else { Axis::Horizontal },
+            pane_grid::Node::Split {
+                axis: split,
+                ratio,
+                a,
+                b,
+                ..
+            } => Tree::Split {
+                axis: if *split == pane_grid::Axis::Vertical {
+                    Axis::Vertical
+                } else {
+                    Axis::Horizontal
+                },
                 ratio: *ratio,
                 a: Box::new(self.tree_of(grid, a)?),
                 b: Box::new(self.tree_of(grid, b)?),
@@ -347,11 +442,23 @@ impl App {
             .filter_map(|tab| {
                 let tree = self.tree_of(&tab.grid, tab.grid.layout())?;
                 let leaves = leaf_ids(&tab.grid, tab.grid.layout());
-                let focus = tab.focus.and_then(|pane| tab.grid.get(pane)).and_then(|id| leaves.iter().position(|leaf| leaf == id));
-                Some(TabSpec { title: tab.title.clone(), tree, focus, maximized: tab.grid.maximized().is_some() })
+                let focus = tab
+                    .focus
+                    .and_then(|pane| tab.grid.get(pane))
+                    .and_then(|id| leaves.iter().position(|leaf| leaf == id));
+                Some(TabSpec {
+                    title: tab.title.clone(),
+                    tree,
+                    focus,
+                    maximized: tab.grid.maximized().is_some(),
+                })
             })
             .collect();
-        Workspace { version: WORKSPACE_VERSION, tabs, active: self.active }
+        Workspace {
+            version: WORKSPACE_VERSION,
+            tabs,
+            active: self.active,
+        }
     }
 
     fn save(&self) {
@@ -384,9 +491,16 @@ impl App {
             return Some(title.clone());
         }
         Some(match &pane.body {
-            Body::Terminal(terminal) => terminal.title.clone().unwrap_or_else(|| String::from("terminal")),
+            Body::Terminal(terminal) => terminal
+                .title
+                .clone()
+                .unwrap_or_else(|| String::from("terminal")),
             Body::Editor(editor) => editor.title(),
-            Body::Web(web) => web.title.clone().filter(|title| !title.is_empty()).unwrap_or_else(|| String::from("web")),
+            Body::Web(web) => web
+                .title
+                .clone()
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| String::from("web")),
             Body::Chat(chat) => format!("chat · {}", chat.agent.label()),
         })
     }
@@ -405,7 +519,11 @@ impl App {
         let shown: Vec<u64> = if self.palette.is_some() {
             Vec::new()
         } else {
-            self.panes.iter().filter(|(id, pane)| matches!(pane.body, Body::Web(_)) && self.is_visible(**id)).map(|(id, _)| *id).collect()
+            self.panes
+                .iter()
+                .filter(|(id, pane)| matches!(pane.body, Body::Web(_)) && self.is_visible(**id))
+                .map(|(id, _)| *id)
+                .collect()
         };
         self.web.show_only(&|id| shown.contains(&id));
     }
@@ -415,7 +533,15 @@ impl App {
     fn show_tab(&mut self) -> Task<Message> {
         let ids: Vec<u64> = self.tab().grid.iter().map(|(_, id)| *id).collect();
         for id in ids {
-            if let Some(Pane { body: Body::Terminal(TerminalPane { session: Some(session), .. }), .. }) = self.panes.get_mut(&id) {
+            if let Some(Pane {
+                body:
+                    Body::Terminal(TerminalPane {
+                        session: Some(session),
+                        ..
+                    }),
+                ..
+            }) = self.panes.get_mut(&id)
+            {
                 session.show();
             }
         }
@@ -448,12 +574,20 @@ impl App {
     }
 
     fn split(&mut self, kind: NewPane, down: bool) -> Task<Message> {
-        let Some(target) = self.tab().focus.or_else(|| self.tab().grid.iter().next().map(|(pane, _)| *pane)) else {
+        let Some(target) = self
+            .tab()
+            .focus
+            .or_else(|| self.tab().grid.iter().next().map(|(pane, _)| *pane))
+        else {
             return Task::none();
         };
         let spec = self.new_pane_spec(kind);
         let (id, task) = self.create_pane(spec);
-        let split_axis = if down { pane_grid::Axis::Horizontal } else { pane_grid::Axis::Vertical };
+        let split_axis = if down {
+            pane_grid::Axis::Horizontal
+        } else {
+            pane_grid::Axis::Vertical
+        };
         if self.tab().grid.maximized().is_some() {
             self.tab_mut().grid.restore();
         }
@@ -467,11 +601,20 @@ impl App {
     }
 
     fn close_pane(&mut self, id: u64) -> Task<Message> {
-        let Some(tab_index) = self.tabs.iter().position(|tab| tab.grid.iter().any(|(_, known)| *known == id)) else {
+        let Some(tab_index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.grid.iter().any(|(_, known)| *known == id))
+        else {
             return Task::none();
         };
         let tab = &mut self.tabs[tab_index];
-        let Some(pane) = tab.grid.iter().find(|(_, known)| **known == id).map(|(pane, _)| *pane) else {
+        let Some(pane) = tab
+            .grid
+            .iter()
+            .find(|(_, known)| **known == id)
+            .map(|(pane, _)| *pane)
+        else {
             return Task::none();
         };
         if tab.grid.len() == 1 {
@@ -539,7 +682,10 @@ impl App {
         if order.is_empty() {
             return Task::none();
         }
-        let current = tab.focus.and_then(|focus| order.iter().position(|pane| *pane == focus)).unwrap_or(0);
+        let current = tab
+            .focus
+            .and_then(|focus| order.iter().position(|pane| *pane == focus))
+            .unwrap_or(0);
         let next = order[(current as i32 + by).rem_euclid(order.len() as i32) as usize];
         if self.tab().grid.maximized().is_some() {
             self.tab_mut().grid.maximize(next);
@@ -553,9 +699,20 @@ impl App {
         }
     }
 
-    fn with_editor(&mut self, f: impl FnOnce(&mut EditorPane, u64, Option<&Index>) -> Task<Message>) -> Task<Message> {
-        let Some(id) = self.focused_id() else { return Task::none() };
-        let Some(Pane { body: Body::Editor(editor), .. }) = self.panes.get_mut(&id) else { return Task::none() };
+    fn with_editor(
+        &mut self,
+        f: impl FnOnce(&mut EditorPane, u64, Option<&Index>) -> Task<Message>,
+    ) -> Task<Message> {
+        let Some(id) = self.focused_id() else {
+            return Task::none();
+        };
+        let Some(Pane {
+            body: Body::Editor(editor),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
         let index = self.vaults.get(&editor.root).and_then(Option::as_ref);
         f(editor, id, index)
     }
@@ -614,7 +771,12 @@ impl App {
             }
             Action::CloseTab => return self.close_tab(self.active),
             Action::FocusAddress => {
-                if let Some(id) = self.focused_id().filter(|id| matches!(self.panes.get(id).map(|pane| &pane.body), Some(Body::Web(_)))) {
+                if let Some(id) = self.focused_id().filter(|id| {
+                    matches!(
+                        self.panes.get(id).map(|pane| &pane.body),
+                        Some(Body::Web(_))
+                    )
+                }) {
                     self.web.blur(id);
                     return iced::widget::operation::focus(WebPane::address_id(id));
                 }
@@ -624,9 +786,13 @@ impl App {
                     self.web.reload(id);
                 }
             }
-            Action::Undo | Action::Redo => return self.with_editor(|editor, id, _| editor.undo(id, action == Action::Redo)),
+            Action::Undo | Action::Redo => {
+                return self.with_editor(|editor, id, _| editor.undo(id, action == Action::Redo));
+            }
             Action::Find => return self.with_editor(|editor, id, _| editor.open_find(id)),
-            Action::QuickSwitcher => return self.with_editor(|editor, id, index| editor.open_switcher(id, index)),
+            Action::QuickSwitcher => {
+                return self.with_editor(|editor, id, index| editor.open_switcher(id, index));
+            }
             Action::VaultSearch => return self.with_editor(|editor, id, _| editor.open_search(id)),
             Action::TogglePreview => {
                 return self.with_editor(|editor, _, _| {
@@ -635,16 +801,27 @@ impl App {
                 });
             }
             Action::Save => {
-                let Some(id) = self.focused_id() else { return Task::none() };
-                if let Some(Pane { body: Body::Editor(editor), .. }) = self.panes.get_mut(&id) {
+                let Some(id) = self.focused_id() else {
+                    return Task::none();
+                };
+                if let Some(Pane {
+                    body: Body::Editor(editor),
+                    ..
+                }) = self.panes.get_mut(&id)
+                {
                     let root = editor.root.clone();
                     let saved = editor.save_now();
                     self.store_saved(&root, saved);
                 }
             }
             Action::FollowLink => {
-                let Some(id) = self.focused_id() else { return Task::none() };
-                if let Some(Pane { body: Body::Editor(editor), .. }) = self.panes.get(&id)
+                let Some(id) = self.focused_id() else {
+                    return Task::none();
+                };
+                if let Some(Pane {
+                    body: Body::Editor(editor),
+                    ..
+                }) = self.panes.get(&id)
                     && let Some(target) = editor.link_at_cursor()
                 {
                     return self.follow(id, &target);
@@ -656,13 +833,24 @@ impl App {
 
     /// Opens the note a wikilink names, creating it when it does not exist.
     fn follow(&mut self, id: u64, target: &str) -> Task<Message> {
-        let Some(Pane { body: Body::Editor(editor), .. }) = self.panes.get_mut(&id) else { return Task::none() };
+        let Some(Pane {
+            body: Body::Editor(editor),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
+            return Task::none();
+        };
         let root = editor.root.clone();
-        let Some(Some(index)) = self.vaults.get_mut(&root) else { return Task::none() };
+        let Some(Some(index)) = self.vaults.get_mut(&root) else {
+            return Task::none();
+        };
         let path = match index.resolve(target) {
             Some(note) => note.path.clone(),
             None => {
-                let name = target.trim().trim_end_matches(".md").replace(['\\', ':'], "-");
+                let name = target
+                    .trim()
+                    .trim_end_matches(".md")
+                    .replace(['\\', ':'], "-");
                 if name.is_empty() || name.split('/').any(|part| part == ".." || part.is_empty()) {
                     return Task::none();
                 }
@@ -683,11 +871,16 @@ impl App {
         let (task, saved) = editor.update(id, EditorMessage::Open(path), index);
         self.store_saved(&root, saved);
         self.refresh_trees(&root);
-        Task::batch([task, iced::widget::operation::focus(EditorPane::editor_id(id))])
+        Task::batch([
+            task,
+            iced::widget::operation::focus(EditorPane::editor_id(id)),
+        ])
     }
 
     fn refresh_trees(&mut self, root: &PathBuf) {
-        let Some(Some(index)) = self.vaults.get(root) else { return };
+        let Some(Some(index)) = self.vaults.get(root) else {
+            return;
+        };
         for pane in self.panes.values_mut() {
             if let Body::Editor(editor) = &mut pane.body
                 && &editor.root == root
@@ -721,7 +914,11 @@ impl App {
             Message::Shortcut(action) => return self.shortcut(action),
             Message::Term(TermEvent { id, event }) => {
                 let visible = self.is_visible(id);
-                let Some(Pane { body: Body::Terminal(terminal), .. }) = self.panes.get_mut(&id) else {
+                let Some(Pane {
+                    body: Body::Terminal(terminal),
+                    ..
+                }) = self.panes.get_mut(&id)
+                else {
                     return Task::none();
                 };
                 match event {
@@ -751,13 +948,27 @@ impl App {
             Message::Terminal(id, input) => return self.terminal_input(id, input),
             Message::RestartTerminal(id) => {
                 let size = default_size();
-                if let Some(Pane { body: Body::Terminal(terminal), .. }) = self.panes.get_mut(&id) {
-                    *terminal = TerminalPane::start(id, terminal.start_directory.clone(), size, &self.term_sender, &[]);
+                if let Some(Pane {
+                    body: Body::Terminal(terminal),
+                    ..
+                }) = self.panes.get_mut(&id)
+                {
+                    *terminal = TerminalPane::start(
+                        id,
+                        terminal.start_directory.clone(),
+                        size,
+                        &self.term_sender,
+                        &[],
+                    );
                 }
             }
             Message::Run(event) => {
                 let pane = event.pane;
-                if let Some(Pane { body: Body::Chat(chat), .. }) = self.panes.get_mut(&pane) {
+                if let Some(Pane {
+                    body: Body::Chat(chat),
+                    ..
+                }) = self.panes.get_mut(&pane)
+                {
                     if chat.receive(event) {
                         self.save();
                     }
@@ -824,7 +1035,10 @@ impl App {
                 if let Some(palette) = self.palette.as_mut() {
                     palette.step(by);
                 } else if let Some(id) = self.focused_id()
-                    && matches!(self.panes.get(&id).map(|pane| &pane.body), Some(Body::Editor(_)))
+                    && matches!(
+                        self.panes.get(&id).map(|pane| &pane.body),
+                        Some(Body::Editor(_))
+                    )
                 {
                     return self.editor(id, EditorMessage::SwitcherMove(by));
                 }
@@ -841,18 +1055,40 @@ impl App {
 
     fn terminal_input(&mut self, id: u64, input: Input) -> Task<Message> {
         if let Input::Focus = input {
-            let pane = self.tab().grid.iter().find(|(_, known)| **known == id).map(|(pane, _)| *pane);
+            let pane = self
+                .tab()
+                .grid
+                .iter()
+                .find(|(_, known)| **known == id)
+                .map(|(pane, _)| *pane);
             return pane.map_or_else(Task::none, |pane| self.focus(pane));
         }
-        let Some(Pane { body: Body::Terminal(TerminalPane { session: Some(session), .. }), .. }) = self.panes.get_mut(&id) else {
+        let Some(Pane {
+            body:
+                Body::Terminal(TerminalPane {
+                    session: Some(session),
+                    ..
+                }),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
             return Task::none();
         };
         match input {
             Input::Bytes(bytes) => session.type_bytes(bytes),
             Input::Resize(size) => session.resize(size),
             Input::Scroll(lines) => session.scroll(lines),
-            Input::Select { kind, line, column, right_half } => session.select(kind, line, column, right_half),
-            Input::ExtendSelection { line, column, right_half } => session.extend_selection(line, column, right_half),
+            Input::Select {
+                kind,
+                line,
+                column,
+                right_half,
+            } => session.select(kind, line, column, right_half),
+            Input::ExtendSelection {
+                line,
+                column,
+                right_half,
+            } => session.extend_selection(line, column, right_half),
             Input::ClearSelection => session.clear_selection(),
             Input::Copy => {
                 if let Some(text) = session.selection_text() {
@@ -873,7 +1109,11 @@ impl App {
 
     fn chat(&mut self, id: u64, message: ChatMessage) -> Task<Message> {
         let run = self.next_id;
-        let Some(Pane { body: Body::Chat(chat), .. }) = self.panes.get_mut(&id) else {
+        let Some(Pane {
+            body: Body::Chat(chat),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
             return Task::none();
         };
         match message {
@@ -908,14 +1148,21 @@ impl App {
 
     fn web_event(&mut self, event: WebEvent) -> Task<Message> {
         let pane = match &event {
-            WebEvent::Loading { pane, .. } | WebEvent::Loaded { pane, .. } | WebEvent::Title { pane, .. } | WebEvent::Shortcut { pane, .. } => *pane,
+            WebEvent::Loading { pane, .. }
+            | WebEvent::Loaded { pane, .. }
+            | WebEvent::Title { pane, .. }
+            | WebEvent::Shortcut { pane, .. } => *pane,
             WebEvent::Focused(pane) => *pane,
         };
         let history = self.web.history(pane);
         if let Some(selftest) = self.selftest.as_mut() {
             selftest.web_event(&event);
         }
-        let Some(Pane { body: Body::Web(web), .. }) = self.panes.get_mut(&pane) else {
+        let Some(Pane {
+            body: Body::Web(web),
+            ..
+        }) = self.panes.get_mut(&pane)
+        else {
             return Task::none();
         };
         match event {
@@ -933,7 +1180,12 @@ impl App {
             }
             WebEvent::Title { title, .. } => web.title = Some(title),
             WebEvent::Focused(_) => {
-                let target = self.tab().grid.iter().find(|(_, id)| **id == pane).map(|(pane, _)| *pane);
+                let target = self
+                    .tab()
+                    .grid
+                    .iter()
+                    .find(|(_, id)| **id == pane)
+                    .map(|(pane, _)| *pane);
                 if let Some(target) = target {
                     self.tab_mut().focus = Some(target);
                     return iced::widget::operation::focus(NOWHERE);
@@ -949,7 +1201,11 @@ impl App {
     }
 
     fn web_message(&mut self, id: u64, message: WebMessage) -> Task<Message> {
-        let Some(Pane { body: Body::Web(web), .. }) = self.panes.get_mut(&id) else {
+        let Some(Pane {
+            body: Body::Web(web),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
             return Task::none();
         };
         match message {
@@ -993,7 +1249,11 @@ impl App {
                 }
             };
         }
-        let Some(Pane { body: Body::Editor(editor), .. }) = self.panes.get_mut(&id) else {
+        let Some(Pane {
+            body: Body::Editor(editor),
+            ..
+        }) = self.panes.get_mut(&id)
+        else {
             return Task::none();
         };
         let root = editor.root.clone();
@@ -1017,22 +1277,40 @@ impl App {
             Subscription::run_with(self.run_feed.clone(), feed::stream).map(Message::Run),
             Subscription::run_with(self.web_feed.clone(), feed::stream).map(Message::WebEvent),
             iced::event::listen_with(|event, _status, _window| match event {
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(keyboard::key::Named::ArrowUp), .. }) => Some(Message::Step(-1)),
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(keyboard::key::Named::ArrowDown), .. }) => Some(Message::Step(1)),
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => shortcuts::action(&key, modifiers).map(Message::Shortcut),
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+                    ..
+                }) => Some(Message::Step(-1)),
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+                    ..
+                }) => Some(Message::Step(1)),
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                    shortcuts::action(&key, modifiers).map(Message::Shortcut)
+                }
                 _ => None,
             }),
             window::close_requests().map(Message::CloseRequested),
         ];
         if cfg!(target_os = "linux") && !self.web.is_empty() {
             // WebKitGTK only: see `host::pump`. macOS needs no timer.
-            subscriptions.push(iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::WebPump));
+            subscriptions.push(
+                iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::WebPump),
+            );
         }
-        if self.selftest.as_ref().is_some_and(selftest::SelfTest::wants_frames) {
-            subscriptions.push(iced::event::listen_raw(|event, _status, _window| match event {
-                iced::Event::Window(window::Event::RedrawRequested(at)) => Some(Message::Frame(at)),
-                _ => None,
-            }));
+        if self
+            .selftest
+            .as_ref()
+            .is_some_and(selftest::SelfTest::wants_frames)
+        {
+            subscriptions.push(iced::event::listen_raw(
+                |event, _status, _window| match event {
+                    iced::Event::Window(window::Event::RedrawRequested(at)) => {
+                        Some(Message::Frame(at))
+                    }
+                    _ => None,
+                },
+            ));
         }
         Subscription::batch(subscriptions)
     }
@@ -1040,15 +1318,29 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let mut tabs = row![].spacing(2).padding([4, 6]);
         for (index, tab) in self.tabs.iter().enumerate() {
-            let focus_title = tab.focus.and_then(|pane| tab.grid.get(pane)).and_then(|id| self.pane_title(*id));
-            let label = format!("{}  {}", index + 1, focus_title.unwrap_or_else(|| tab.title.clone()));
+            let focus_title = tab
+                .focus
+                .and_then(|pane| tab.grid.get(pane))
+                .and_then(|id| self.pane_title(*id));
+            let label = format!(
+                "{}  {}",
+                index + 1,
+                focus_title.unwrap_or_else(|| tab.title.clone())
+            );
             tabs = tabs.push(
                 row![
                     button(text(label).size(12).wrapping(text::Wrapping::None))
                         .padding([3, 10])
-                        .style(if index == self.active { button::primary } else { button::secondary })
+                        .style(if index == self.active {
+                            button::primary
+                        } else {
+                            button::secondary
+                        })
                         .on_press(Message::SelectTab(index)),
-                    button(text("×").size(12)).padding([3, 6]).style(button::text).on_press(Message::CloseTab(index)),
+                    button(text("×").size(12))
+                        .padding([3, 6])
+                        .style(button::text)
+                        .on_press(Message::CloseTab(index)),
                 ]
                 .spacing(0),
             );
@@ -1062,47 +1354,94 @@ impl App {
             let title = self.pane_title(id).unwrap_or_default();
             let body: Element<'_, Message> = match self.panes.get(&id).map(|pane| &pane.body) {
                 Some(Body::Terminal(terminal)) => terminal.view(id, focused),
-                Some(Body::Editor(editor)) => editor.view(id, self.vaults.get(&editor.root).and_then(Option::as_ref)),
+                Some(Body::Editor(editor)) => {
+                    editor.view(id, self.vaults.get(&editor.root).and_then(Option::as_ref))
+                }
                 Some(Body::Web(web)) => web.view(id),
                 Some(Body::Chat(chat)) => chat.view(id),
                 None => text("").into(),
             };
-            let title_bar = pane_grid::TitleBar::new(text(title).size(12).style(if focused { text::primary } else { text::secondary }))
-                .controls(pane_grid::Controls::new(button(text("×").size(12)).padding([0, 6]).style(button::text).on_press(Message::ClosePane(id))))
-                .padding([2, 8])
+            let title_bar = pane_grid::TitleBar::new(text(title).size(12).style(if focused {
+                text::primary
+            } else {
+                text::secondary
+            }))
+            .controls(pane_grid::Controls::new(
+                button(text("×").size(12))
+                    .padding([0, 6])
+                    .style(button::text)
+                    .on_press(Message::ClosePane(id)),
+            ))
+            .padding([2, 8])
+            .style(move |theme: &Theme| {
+                let palette = theme.extended_palette();
+                container::Style::default().background(if focused {
+                    palette.background.strong.color
+                } else {
+                    palette.background.weak.color
+                })
+            });
+            pane_grid::Content::new(body)
+                .title_bar(title_bar)
                 .style(move |theme: &Theme| {
                     let palette = theme.extended_palette();
-                    container::Style::default().background(if focused { palette.background.strong.color } else { palette.background.weak.color })
-                });
-            pane_grid::Content::new(body).title_bar(title_bar).style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
-                container::Style::default()
-                    .background(palette.background.base.color)
-                    .border(iced::Border { color: if focused { palette.primary.strong.color } else { palette.background.strong.color }, width: 1.0, radius: 0.0.into() })
-            })
+                    container::Style::default()
+                        .background(palette.background.base.color)
+                        .border(iced::Border {
+                            color: if focused {
+                                palette.primary.strong.color
+                            } else {
+                                palette.background.strong.color
+                            },
+                            width: 1.0,
+                            radius: 0.0.into(),
+                        })
+                })
         })
         .spacing(4)
         .on_click(Message::PaneClicked)
         .on_drag(Message::PaneDragged)
         .on_resize(8, Message::PaneResized);
 
-        let mut layers = stack![column![tabs, container(grid).padding([0, 4]).height(Length::Fill)]];
+        let mut layers = stack![column![
+            tabs,
+            container(grid).padding([0, 4]).height(Length::Fill)
+        ]];
         if let Some(palette) = &self.palette {
-            let mut list = column![text_input("Type a command", &palette.query)
-                .id(PALETTE_INPUT)
-                .size(14)
-                .on_input(Message::PaletteQuery)
-                .on_submit(Message::PaletteRun(None))]
+            let mut list = column![
+                text_input("Type a command", &palette.query)
+                    .id(PALETTE_INPUT)
+                    .size(14)
+                    .on_input(Message::PaletteQuery)
+                    .on_submit(Message::PaletteRun(None))
+            ]
             .spacing(2);
             for (index, command) in palette.matches.iter().enumerate() {
                 list = list.push(
                     button(text(palette::label(*command)).size(13))
                         .width(Length::Fill)
-                        .style(if index == palette.selected { button::primary } else { button::text })
+                        .style(if index == palette.selected {
+                            button::primary
+                        } else {
+                            button::text
+                        })
                         .on_press(Message::PaletteRun(Some(*command))),
                 );
             }
-            layers = layers.push(mouse_area(container(container(list).width(520).padding(8).style(container::bordered_box)).center_x(Length::Fill).padding(60).height(Length::Fill)).on_press(Message::Shortcut(Action::Escape)));
+            layers = layers.push(
+                mouse_area(
+                    container(
+                        container(list)
+                            .width(520)
+                            .padding(8)
+                            .style(container::bordered_box),
+                    )
+                    .center_x(Length::Fill)
+                    .padding(60)
+                    .height(Length::Fill),
+                )
+                .on_press(Message::Shortcut(Action::Escape)),
+            );
         }
         layers.into()
     }
@@ -1120,21 +1459,30 @@ fn leaf_panes(node: &pane_grid::Node) -> Vec<pane_grid::Pane> {
 }
 
 fn leaf_ids(grid: &pane_grid::State<u64>, node: &pane_grid::Node) -> Vec<u64> {
-    leaf_panes(node).into_iter().filter_map(|pane| grid.get(pane).copied()).collect()
+    leaf_panes(node)
+        .into_iter()
+        .filter_map(|pane| grid.get(pane).copied())
+        .collect()
 }
 
 /// The vault a note belongs to: the nearest folder above it that holds
 /// `.obsidian`, or else the note's own folder.
 fn vault_root_for(path: &std::path::Path) -> Option<PathBuf> {
     let parent = path.parent()?;
-    parent.ancestors().find(|dir| dir.join(".obsidian").is_dir()).map(PathBuf::from).or_else(|| Some(parent.to_path_buf()))
+    parent
+        .ancestors()
+        .find(|dir| dir.join(".obsidian").is_dir())
+        .map(PathBuf::from)
+        .or_else(|| Some(parent.to_path_buf()))
 }
 
 fn open_vault(root: PathBuf) -> Task<Message> {
     let reading = root.clone();
     Task::perform(
         async move {
-            let index = tokio::task::spawn_blocking(move || Index::open(&reading)).await.ok();
+            let index = tokio::task::spawn_blocking(move || Index::open(&reading))
+                .await
+                .ok();
             std::sync::Arc::new(std::sync::Mutex::new(index))
         },
         move |slot| Message::VaultOpened(root.clone(), slot),

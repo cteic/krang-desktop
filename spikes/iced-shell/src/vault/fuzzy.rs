@@ -16,7 +16,9 @@ fn pass(query: &str, lower: &[char], original: &[char], prefer_starts: bool) -> 
     for wanted in query.chars() {
         let first = (at..lower.len()).find(|&index| lower[index] == wanted)?;
         let found = if prefer_starts {
-            (first..lower.len()).find(|&index| lower[index] == wanted && is_word_start(original, index)).unwrap_or(first)
+            (first..lower.len())
+                .find(|&index| lower[index] == wanted && is_word_start(original, index))
+                .unwrap_or(first)
         } else {
             first
         };
@@ -46,17 +48,32 @@ pub fn score(query: &str, candidate: &str) -> Option<i32> {
         // A character whose lower case is longer: compare without the bonuses.
         return candidate.to_lowercase().contains(query).then_some(1);
     }
-    let best = pass(query, &lower, &original, false)?.max(pass(query, &lower, &original, true).unwrap_or(i32::MIN));
+    let best = pass(query, &lower, &original, false)?
+        .max(pass(query, &lower, &original, true).unwrap_or(i32::MIN));
     // Shorter names win a tie: the query covers more of them.
     Some(best * 4 - i32::try_from(lower.len()).unwrap_or(i32::MAX).min(200) / 8)
 }
 
 /// The best `limit` matches, best first.
-pub fn rank<'a>(query: &str, candidates: impl Iterator<Item = &'a str>, limit: usize) -> Vec<&'a str> {
+pub fn rank<'a>(
+    query: &str,
+    candidates: impl Iterator<Item = &'a str>,
+    limit: usize,
+) -> Vec<&'a str> {
     let query = query.to_lowercase();
-    let mut scored: Vec<(i32, &str)> = candidates.filter_map(|candidate| Some((score(&query, candidate)?, candidate))).collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(b.1)));
-    scored.into_iter().take(limit).map(|(_, candidate)| candidate).collect()
+    let mut scored: Vec<(i32, &str)> = candidates
+        .filter_map(|candidate| Some((score(&query, candidate)?, candidate)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.len().cmp(&b.1.len()))
+            .then(a.1.cmp(b.1))
+    });
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, candidate)| candidate)
+        .collect()
 }
 
 #[cfg(test)]
@@ -71,13 +88,21 @@ mod tests {
 
     #[test]
     fn word_starts_beat_scattered_letters() {
-        let ranked = rank("mn", ["commonplace", "Meeting Notes", "mono"].into_iter(), 3);
+        let ranked = rank(
+            "mn",
+            ["commonplace", "Meeting Notes", "mono"].into_iter(),
+            3,
+        );
         assert_eq!(ranked[0], "Meeting Notes");
     }
 
     #[test]
     fn an_exact_prefix_ranks_first() {
-        let ranked = rank("note 12", ["Note 1234", "Note 12", "Another note 12"].into_iter(), 3);
+        let ranked = rank(
+            "note 12",
+            ["Note 1234", "Note 12", "Another note 12"].into_iter(),
+            3,
+        );
         assert_eq!(ranked[0], "Note 12");
     }
 }

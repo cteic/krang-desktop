@@ -24,17 +24,40 @@ struct Folder<'a> {
     notes: Vec<(&'a str, &'a str)>,
 }
 
-fn walk(folder: &Folder<'_>, prefix: &str, depth: usize, expanded: &HashSet<String>, rows: &mut Vec<Row>) {
+fn walk(
+    folder: &Folder<'_>,
+    prefix: &str,
+    depth: usize,
+    expanded: &HashSet<String>,
+    rows: &mut Vec<Row>,
+) {
     for (name, child) in &folder.folders {
-        let path = if prefix.is_empty() { (*name).to_string() } else { format!("{prefix}/{name}") };
+        let path = if prefix.is_empty() {
+            (*name).to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
         let open = expanded.contains(&path);
-        rows.push(Row { depth, label: (*name).to_string(), kind: RowKind::Folder { path: path.clone(), expanded: open } });
+        rows.push(Row {
+            depth,
+            label: (*name).to_string(),
+            kind: RowKind::Folder {
+                path: path.clone(),
+                expanded: open,
+            },
+        });
         if open {
             walk(child, &path, depth + 1, expanded, rows);
         }
     }
     for (name, path) in &folder.notes {
-        rows.push(Row { depth, label: (*name).to_string(), kind: RowKind::Note { path: (*path).to_string() } });
+        rows.push(Row {
+            depth,
+            label: (*name).to_string(),
+            kind: RowKind::Note {
+                path: (*path).to_string(),
+            },
+        });
     }
 }
 
@@ -65,7 +88,9 @@ pub fn rows(index: &Index, expanded: &HashSet<String>) -> Vec<Row> {
 
 /// The rows to build for a scroll position: the visible ones and a margin.
 pub fn window(total: usize, row_height: f32, offset: f32, height: f32) -> std::ops::Range<usize> {
-    let first = ((offset / row_height).floor().max(0.0) as usize).saturating_sub(10).min(total);
+    let first = ((offset / row_height).floor().max(0.0) as usize)
+        .saturating_sub(10)
+        .min(total);
     let count = (height / row_height).ceil() as usize + 20;
     first..(first + count).min(total)
 }
@@ -82,11 +107,26 @@ mod tests {
             let _ = std::fs::write(root.join(path), "x");
         }
         let index = Index::open(&root);
-        let closed: Vec<String> = rows(&index, &HashSet::new()).into_iter().map(|row| row.label).collect();
+        let closed: Vec<String> = rows(&index, &HashSet::new())
+            .into_iter()
+            .map(|row| row.label)
+            .collect();
         assert_eq!(closed, ["b", "a", "z"]);
         let open: HashSet<String> = ["b".to_string()].into();
-        let labels: Vec<(usize, String)> = rows(&index, &open).into_iter().map(|row| (row.depth, row.label)).collect();
-        assert_eq!(labels, [(0, "b".into()), (1, "c".into()), (1, "n".into()), (0, "a".into()), (0, "z".into())]);
+        let labels: Vec<(usize, String)> = rows(&index, &open)
+            .into_iter()
+            .map(|row| (row.depth, row.label))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (0, "b".into()),
+                (1, "c".into()),
+                (1, "n".into()),
+                (0, "a".into()),
+                (0, "z".into())
+            ]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

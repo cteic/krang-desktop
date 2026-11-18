@@ -56,7 +56,13 @@ pub fn usage_line(usage: &Usage) -> String {
 }
 
 impl ChatPane {
-    pub fn new(agent: Agent, directory: Option<String>, mode: Mode, trusted: bool, transcript: Transcript) -> Self {
+    pub fn new(
+        agent: Agent,
+        directory: Option<String>,
+        mode: Mode,
+        trusted: bool,
+        transcript: Transcript,
+    ) -> Self {
         let mut pane = Self {
             agent,
             directory,
@@ -84,29 +90,56 @@ impl ChatPane {
     }
 
     fn refresh(&mut self) {
-        self.rendered.resize_with(self.transcript.items.len(), || None);
+        self.rendered
+            .resize_with(self.transcript.items.len(), || None);
         for (item, slot) in self.transcript.items.iter().zip(&mut self.rendered) {
             let Item::Assistant { text, .. } = item else {
                 *slot = None;
                 continue;
             };
-            if slot.as_ref().is_none_or(|(length, _)| *length != text.len()) {
+            if slot
+                .as_ref()
+                .is_none_or(|(length, _)| *length != text.len())
+            {
                 *slot = Some((text.len(), markdown::Content::parse(text)));
             }
         }
     }
 
-    pub fn send(&mut self, pane: u64, run: u64, sender: &tokio::sync::mpsc::UnboundedSender<RunEvent>) {
+    pub fn send(
+        &mut self,
+        pane: u64,
+        run: u64,
+        sender: &tokio::sync::mpsc::UnboundedSender<RunEvent>,
+    ) {
         let prompt = self.draft.text().trim().to_string();
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
         self.draft = text_editor::Content::new();
         self.transcript.send(prompt.clone());
-        let request = RunRequest { mode: self.mode, directory: self.directory.clone(), session_id: self.transcript.session_id.clone(), trusted: self.trusted };
+        let request = RunRequest {
+            mode: self.mode,
+            directory: self.directory.clone(),
+            session_id: self.transcript.session_id.clone(),
+            trusted: self.trusted,
+        };
         let directory: Option<PathBuf> = self.directory.as_deref().map(expand_home);
-        match runner::start(self.agent, self.agent.args(&request), directory.as_deref(), prompt, pane, run, sender.clone()) {
-            Ok(started) => self.run = Some(Run { id: run, group: started.group }),
+        match runner::start(
+            self.agent,
+            self.agent.args(&request),
+            directory.as_deref(),
+            prompt,
+            pane,
+            run,
+            sender.clone(),
+        ) {
+            Ok(started) => {
+                self.run = Some(Run {
+                    id: run,
+                    group: started.group,
+                })
+            }
             Err(error) => self.transcript.start_failed(error),
         }
         self.refresh();
@@ -146,7 +179,8 @@ impl ChatPane {
     pub fn view(&self, id: u64) -> Element<'_, Message> {
         let message = move |message: ChatMessage| Message::Chat(id, message);
         let theme = Theme::TokyoNight;
-        let settings = markdown::Settings::with_text_size(14, markdown::Style::from_palette(theme.palette()));
+        let settings =
+            markdown::Settings::with_text_size(14, markdown::Style::from_palette(theme.palette()));
 
         let mut items = column![].spacing(10).padding([10, 14]);
         for (index, item) in self.transcript.items.iter().enumerate() {
@@ -157,20 +191,39 @@ impl ChatPane {
                     .width(Length::Fill)
                     .into(),
                 Item::Assistant { stopped, .. } => {
-                    let body: Element<'_, Message> = match self.rendered.get(index).and_then(Option::as_ref) {
-                        Some((_, content)) => markdown::view(content.items(), settings).map(move |url| message(ChatMessage::Link(url))),
-                        None => text("").into(),
-                    };
+                    let body: Element<'_, Message> =
+                        match self.rendered.get(index).and_then(Option::as_ref) {
+                            Some((_, content)) => markdown::view(content.items(), settings)
+                                .map(move |url| message(ChatMessage::Link(url))),
+                            None => text("").into(),
+                        };
                     if *stopped {
-                        column![body, text("Stopped").size(12).style(text::secondary)].spacing(4).into()
+                        column![body, text("Stopped").size(12).style(text::secondary)]
+                            .spacing(4)
+                            .into()
                     } else {
                         body
                     }
                 }
-                Item::Tool { name, summary, .. } => text(format!("▸ {name} {summary}")).size(12).font(Font::MONOSPACE).style(text::secondary).into(),
-                Item::Note { text: note } => text(note.clone()).size(12).style(text::secondary).into(),
-                Item::Error { text: error } => container(text(error.clone()).size(13).style(text::danger)).padding([6, 10]).style(container::bordered_box).width(Length::Fill).into(),
-                Item::Usage { usage } => text(usage_line(usage)).size(11).style(text::secondary).into(),
+                Item::Tool { name, summary, .. } => text(format!("▸ {name} {summary}"))
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(text::secondary)
+                    .into(),
+                Item::Note { text: note } => {
+                    text(note.clone()).size(12).style(text::secondary).into()
+                }
+                Item::Error { text: error } => {
+                    container(text(error.clone()).size(13).style(text::danger))
+                        .padding([6, 10])
+                        .style(container::bordered_box)
+                        .width(Length::Fill)
+                        .into()
+                }
+                Item::Usage { usage } => text(usage_line(usage))
+                    .size(11)
+                    .style(text::secondary)
+                    .into(),
             };
             items = items.push(element);
         }
@@ -183,14 +236,26 @@ impl ChatPane {
         let total = usage_line(&self.transcript.total);
         let header = row![
             text(self.agent.label()).size(13),
-            text(self.directory.clone().unwrap_or_else(|| String::from("~"))).size(12).style(text::secondary),
+            text(self.directory.clone().unwrap_or_else(|| String::from("~")))
+                .size(12)
+                .style(text::secondary),
             iced::widget::space::horizontal(),
             text(total).size(12).style(text::secondary),
-            text(status).size(12).style(if status == "Failed" { text::danger } else { text::secondary }),
-            button(text(match self.mode { Mode::ReadOnly => "Read only", Mode::Edit => "Edit files" }).size(12))
-                .padding([2, 8])
-                .style(button::secondary)
-                .on_press_maybe((!self.is_running()).then(|| message(ChatMessage::ToggleMode))),
+            text(status).size(12).style(if status == "Failed" {
+                text::danger
+            } else {
+                text::secondary
+            }),
+            button(
+                text(match self.mode {
+                    Mode::ReadOnly => "Read only",
+                    Mode::Edit => "Edit files",
+                })
+                .size(12)
+            )
+            .padding([2, 8])
+            .style(button::secondary)
+            .on_press_maybe((!self.is_running()).then(|| message(ChatMessage::ToggleMode))),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center)
@@ -210,7 +275,9 @@ impl ChatPane {
         };
 
         let action = if self.is_running() {
-            button(text("Stop").size(13)).style(button::danger).on_press(message(ChatMessage::Stop))
+            button(text("Stop").size(13))
+                .style(button::danger)
+                .on_press(message(ChatMessage::Stop))
         } else {
             button(text("Send").size(13)).on_press(message(ChatMessage::Send))
         };
@@ -222,7 +289,10 @@ impl ChatPane {
             .max_height(160)
             .on_action(move |action| message(ChatMessage::Draft(action)))
             .key_binding(move |press| {
-                let enter = matches!(press.key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter));
+                let enter = matches!(
+                    press.key,
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
+                );
                 if enter && !press.modifiers.shift() && !press.modifiers.logo() {
                     Some(text_editor::Binding::Custom(message(ChatMessage::Send)))
                 } else {
@@ -233,8 +303,15 @@ impl ChatPane {
         column![
             header,
             trust,
-            scrollable(items).id(Self::transcript_id(id)).anchor_bottom().height(Length::Fill).width(Length::Fill),
-            row![input, action].spacing(8).padding(8).align_y(iced::Alignment::End),
+            scrollable(items)
+                .id(Self::transcript_id(id))
+                .anchor_bottom()
+                .height(Length::Fill)
+                .width(Length::Fill),
+            row![input, action]
+                .spacing(8)
+                .padding(8)
+                .align_y(iced::Alignment::End),
         ]
         .into()
     }

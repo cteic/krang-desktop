@@ -11,7 +11,9 @@ pub const NEWLINE_WITHOUT_SUBMIT: &[u8] = b"\x1b\r";
 
 /// xterm's modifier parameter: 1 plus shift 1, alt 2, ctrl 4.
 fn modifier_code(modifiers: Modifiers) -> u8 {
-    1 + u8::from(modifiers.shift()) + 2 * u8::from(modifiers.alt()) + 4 * u8::from(modifiers.control())
+    1 + u8::from(modifiers.shift())
+        + 2 * u8::from(modifiers.alt())
+        + 4 * u8::from(modifiers.control())
 }
 
 fn cursor_key(letter: char, modifiers: Modifiers, mode: TermMode) -> Vec<u8> {
@@ -117,7 +119,12 @@ fn control_code(c: char) -> Option<u8> {
 /// `key` is the key without modifiers applied and `text` what the system
 /// typed for it. On macOS Option composes characters, so its text is sent as
 /// it is; elsewhere Alt is Meta and prefixes Escape.
-pub fn encode_key(key: &Key, text: Option<&str>, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
+pub fn encode_key(
+    key: &Key,
+    text: Option<&str>,
+    modifiers: Modifiers,
+    mode: TermMode,
+) -> Option<Vec<u8>> {
     if let Key::Named(named) = key
         && let Some(bytes) = named_key(*named, modifiers, mode)
     {
@@ -213,10 +220,16 @@ pub fn encode_mouse(
             3 + 32
         }
     };
-    code += 4 * u8::from(modifiers.shift()) + 8 * u8::from(modifiers.alt()) + 16 * u8::from(modifiers.control());
+    code += 4 * u8::from(modifiers.shift())
+        + 8 * u8::from(modifiers.alt())
+        + 16 * u8::from(modifiers.control());
     let wheel = matches!(button, MouseButton::WheelUp | MouseButton::WheelDown);
     if mode.contains(TermMode::SGR_MOUSE) {
-        let end = if action == MouseAction::Release { 'm' } else { 'M' };
+        let end = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
         if action == MouseAction::Release && wheel {
             return None;
         }
@@ -245,36 +258,75 @@ mod tests {
     #[test]
     fn letters_and_control_codes() {
         let none = Modifiers::empty();
-        assert_eq!(encode_key(&key("a"), Some("a"), none, TermMode::empty()), Some(b"a".to_vec()));
-        assert_eq!(encode_key(&key("c"), Some("c"), Modifiers::CTRL, TermMode::empty()), Some(vec![3]));
-        assert_eq!(encode_key(&key("["), None, Modifiers::CTRL, TermMode::empty()), Some(vec![0x1b]));
+        assert_eq!(
+            encode_key(&key("a"), Some("a"), none, TermMode::empty()),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(
+            encode_key(&key("c"), Some("c"), Modifiers::CTRL, TermMode::empty()),
+            Some(vec![3])
+        );
+        assert_eq!(
+            encode_key(&key("["), None, Modifiers::CTRL, TermMode::empty()),
+            Some(vec![0x1b])
+        );
     }
 
     #[test]
     fn arrows_follow_the_cursor_key_mode() {
         let up = Key::Named(Named::ArrowUp);
         let none = Modifiers::empty();
-        assert_eq!(encode_key(&up, None, none, TermMode::empty()), Some(b"\x1b[A".to_vec()));
-        assert_eq!(encode_key(&up, None, none, TermMode::APP_CURSOR), Some(b"\x1bOA".to_vec()));
-        assert_eq!(encode_key(&up, None, Modifiers::CTRL, TermMode::APP_CURSOR), Some(b"\x1b[1;5A".to_vec()));
+        assert_eq!(
+            encode_key(&up, None, none, TermMode::empty()),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            encode_key(&up, None, none, TermMode::APP_CURSOR),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            encode_key(&up, None, Modifiers::CTRL, TermMode::APP_CURSOR),
+            Some(b"\x1b[1;5A".to_vec())
+        );
     }
 
     #[test]
     fn shift_enter_is_a_new_line_without_submitting() {
         let enter = Key::Named(Named::Enter);
-        assert_eq!(encode_key(&enter, None, Modifiers::SHIFT, TermMode::empty()), Some(b"\x1b\r".to_vec()));
-        assert_eq!(encode_key(&enter, None, Modifiers::empty(), TermMode::empty()), Some(b"\r".to_vec()));
+        assert_eq!(
+            encode_key(&enter, None, Modifiers::SHIFT, TermMode::empty()),
+            Some(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            encode_key(&enter, None, Modifiers::empty(), TermMode::empty()),
+            Some(b"\r".to_vec())
+        );
     }
 
     #[test]
     fn function_and_editing_keys() {
         let none = Modifiers::empty();
         let mode = TermMode::empty();
-        assert_eq!(encode_key(&Key::Named(Named::F1), None, none, mode), Some(b"\x1bOP".to_vec()));
-        assert_eq!(encode_key(&Key::Named(Named::F5), None, none, mode), Some(b"\x1b[15~".to_vec()));
-        assert_eq!(encode_key(&Key::Named(Named::F12), None, none, mode), Some(b"\x1b[24~".to_vec()));
-        assert_eq!(encode_key(&Key::Named(Named::Delete), None, none, mode), Some(b"\x1b[3~".to_vec()));
-        assert_eq!(encode_key(&Key::Named(Named::Tab), None, Modifiers::SHIFT, mode), Some(b"\x1b[Z".to_vec()));
+        assert_eq!(
+            encode_key(&Key::Named(Named::F1), None, none, mode),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key(&Key::Named(Named::F5), None, none, mode),
+            Some(b"\x1b[15~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&Key::Named(Named::F12), None, none, mode),
+            Some(b"\x1b[24~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&Key::Named(Named::Delete), None, none, mode),
+            Some(b"\x1b[3~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&Key::Named(Named::Tab), None, Modifiers::SHIFT, mode),
+            Some(b"\x1b[Z".to_vec())
+        );
     }
 
     #[test]
@@ -314,9 +366,25 @@ mod tests {
         let none = Modifiers::empty();
         let click = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
         let held = MouseAction::Motion(Some(MouseButton::Left));
-        assert_eq!(encode_mouse(MouseButton::Left, held, 0, 0, none, click), None);
+        assert_eq!(
+            encode_mouse(MouseButton::Left, held, 0, 0, none, click),
+            None
+        );
         let drag = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
-        assert_eq!(encode_mouse(MouseButton::Left, held, 0, 0, none, drag), Some(b"\x1b[<32;1;1M".to_vec()));
-        assert_eq!(encode_mouse(MouseButton::Left, MouseAction::Press, 0, 0, none, TermMode::empty()), None);
+        assert_eq!(
+            encode_mouse(MouseButton::Left, held, 0, 0, none, drag),
+            Some(b"\x1b[<32;1;1M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(
+                MouseButton::Left,
+                MouseAction::Press,
+                0,
+                0,
+                none,
+                TermMode::empty()
+            ),
+            None
+        );
     }
 }

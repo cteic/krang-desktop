@@ -6,7 +6,10 @@ const USAGE: &str = "usage: krang-shell [--layout <file>]... [--fresh]";
 
 fn main() -> iced::Result {
     selftest::mark_process_start();
-    let mut options = Options { selftest: selftest::Plan::from_env(), ..Options::default() };
+    let mut options = Options {
+        selftest: selftest::Plan::from_env(),
+        ..Options::default()
+    };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {

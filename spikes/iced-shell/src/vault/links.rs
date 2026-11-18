@@ -76,7 +76,8 @@ pub fn tags(text: &str) -> Vec<String> {
     for (_, line) in code_free_lines(text) {
         let bytes = line.as_bytes();
         for (index, _) in line.match_indices('#') {
-            let before_ok = index == 0 || bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b'(';
+            let before_ok =
+                index == 0 || bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b'(';
             if !before_ok || in_inline_code(line, index) {
                 continue;
             }
@@ -84,7 +85,8 @@ pub fn tags(text: &str) -> Vec<String> {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'))
                 .collect();
-            if !tag.is_empty() && !tag.chars().all(|c| c.is_ascii_digit()) && !found.contains(&tag) {
+            if !tag.is_empty() && !tag.chars().all(|c| c.is_ascii_digit()) && !found.contains(&tag)
+            {
                 found.push(tag);
             }
         }
@@ -121,7 +123,10 @@ mod tests {
     #[test]
     fn code_is_not_a_link() {
         let text = "`[[not]]` [[yes]]\n```\n[[fenced]]\n```\n[[after]]";
-        let targets: Vec<String> = wikilinks(text).into_iter().map(|link| link.target).collect();
+        let targets: Vec<String> = wikilinks(text)
+            .into_iter()
+            .map(|link| link.target)
+            .collect();
         assert_eq!(targets, ["yes", "after"]);
     }
 

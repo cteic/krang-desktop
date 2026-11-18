@@ -15,7 +15,10 @@ const PAGE_POLICY: &str = "sandbox allow-scripts allow-forms allow-popups allow-
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 fn content_type(path: &Path) -> &'static str {
-    let extension = path.extension().map(|ext| ext.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let extension = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     match extension.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
@@ -40,7 +43,9 @@ fn encode_path(path: &Path) -> String {
     let mut out = String::new();
     for byte in path.to_string_lossy().bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'~' => out.push(char::from(byte)),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'~' => {
+                out.push(char::from(byte))
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -48,7 +53,8 @@ fn encode_path(path: &Path) -> String {
 }
 
 pub fn url_for(path: &Path) -> Option<String> {
-    path.is_absolute().then(|| format!("{ORIGIN}{}", encode_path(path)))
+    path.is_absolute()
+        .then(|| format!("{ORIGIN}{}", encode_path(path)))
 }
 
 pub fn path_of(url: &str) -> Option<PathBuf> {
@@ -68,7 +74,11 @@ fn respond(status: StatusCode, kind: &str, body: Vec<u8>) -> Response<Cow<'stati
 }
 
 fn refuse(status: StatusCode, reason: &str) -> Response<Cow<'static, [u8]>> {
-    respond(status, "text/plain; charset=utf-8", reason.as_bytes().to_vec())
+    respond(
+        status,
+        "text/plain; charset=utf-8",
+        reason.as_bytes().to_vec(),
+    )
 }
 
 pub fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
@@ -83,7 +93,10 @@ pub fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         path.push("index.html");
     }
     match std::fs::metadata(&path) {
-        Ok(meta) if meta.len() > MAX_FILE_BYTES => refuse(StatusCode::PAYLOAD_TOO_LARGE, "the file is larger than 64 MiB"),
+        Ok(meta) if meta.len() > MAX_FILE_BYTES => refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the file is larger than 64 MiB",
+        ),
         Ok(meta) if meta.is_file() => match std::fs::read(&path) {
             Ok(body) => respond(StatusCode::OK, content_type(&path), body),
             Err(error) => refuse(StatusCode::FORBIDDEN, &error.to_string()),
@@ -97,7 +110,10 @@ mod tests {
     use super::*;
 
     fn get(url: &str) -> Response<Cow<'static, [u8]>> {
-        let request = Request::builder().uri(url).body(Vec::new()).unwrap_or_default();
+        let request = Request::builder()
+            .uri(url)
+            .body(Vec::new())
+            .unwrap_or_default();
         serve(&request)
     }
 
@@ -109,12 +125,25 @@ mod tests {
         let url = url_for(&dir.join("sub dir/index.html")).unwrap_or_default();
         let response = get(&url);
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()["Content-Type"], "text/html; charset=utf-8");
-        assert!(response.headers()["Content-Security-Policy"].to_str().is_ok_and(|policy| policy.starts_with("sandbox")));
+        assert_eq!(
+            response.headers()["Content-Type"],
+            "text/html; charset=utf-8"
+        );
+        assert!(
+            response.headers()["Content-Security-Policy"]
+                .to_str()
+                .is_ok_and(|policy| policy.starts_with("sandbox"))
+        );
         assert_eq!(response.body().as_ref(), b"<h1>hi</h1>");
         // A folder serves its index.
-        assert_eq!(get(&url_for(&dir.join("sub dir")).unwrap_or_default()).status(), StatusCode::OK);
-        assert_eq!(get(&format!("{ORIGIN}/no/such/file.html")).status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            get(&url_for(&dir.join("sub dir")).unwrap_or_default()).status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get(&format!("{ORIGIN}/no/such/file.html")).status(),
+            StatusCode::NOT_FOUND
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
