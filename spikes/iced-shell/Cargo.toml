@@ -1,0 +1,50 @@
+[package]
+name = "krang-shell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "AGPL-3.0-only"
+publish = false
+description = "A native spike of the Krang Desktop shell on iced"
+
+[lib]
+name = "krang_shell"
+path = "src/lib.rs"
+
+[[bin]]
+name = "krang-shell"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14.0", features = ["tokio", "advanced", "markdown", "highlighter", "image"] }
+alacritty_terminal = "0.26.0"
+wry = "0.57.2"
+raw-window-handle = "0.6.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+regex = "1"
+open = "5"
+dirs = "6"
+libc = "0.2"
+tokio = { version = "1", features = ["sync", "time", "process", "io-util", "rt", "macros"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+# Drawing in software is unusably slow without optimisation, so debug
+# builds optimise every dependency and leave only this crate unoptimised.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+# Line tables are enough for backtraces, and a smaller binary links faster.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+debug = "line-tables-only"
+
+[patch.crates-io]
+iced_winit = { path = "vendor/iced_winit" }
+iced_graphics = { path = "vendor/iced_graphics" }

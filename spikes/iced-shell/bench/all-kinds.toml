@@ -1,0 +1,38 @@
+# One pane of each kind. bench.sh fills in VAULT and BENCH.
+title = "all kinds"
+
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["left", "right"]
+
+[[panes]]
+id = "left"
+split = "horizontal"
+children = ["shell", "notes"]
+
+[[panes]]
+id = "right"
+split = "horizontal"
+children = ["page", "chat"]
+
+[[panes]]
+id = "shell"
+is_focused = true
+
+[[panes]]
+id = "notes"
+type = "editor"
+path = "VAULT/area-00/Note 0000.md"
+mode = "split"
+
+[[panes]]
+id = "page"
+type = "web"
+url = "BENCH/page.html"
+
+[[panes]]
+id = "chat"
+type = "chat"
+agent = "claude"
+directory = "BENCH"
