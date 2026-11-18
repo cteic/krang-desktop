@@ -275,7 +275,9 @@ impl FilesPane {
             Nav::PageDown => (current + page).min(count - 1),
             Nav::Open => return self.activate(id, current),
             Nav::Left | Nav::Right => {
-                let row = self.tree.rows()[current];
+                let Some(row) = self.tree.rows().get(current).copied() else {
+                    return (self.select(id, 0), None);
+                };
                 let state = self.tree.state(&row);
                 let path = self.tree.path(&row).unwrap_or_default();
                 match (nav, state) {
