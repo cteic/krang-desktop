@@ -1,0 +1,54 @@
+name: spike iced shell
+
+on:
+  pull_request:
+    paths:
+      - "spikes/iced-shell/**"
+      - ".github/workflows/spike-iced-shell.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: spikes/iced-shell
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          workspaces: spikes/iced-shell
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Build
+        run: cargo build --release
+      - name: Bundle
+        run: scripts/bundle-macos.sh
+      - name: Self-test
+        # The runner has a logged-in GUI session, so a window can open. If it
+        # cannot, the step says so and the job still uploads the app.
+        continue-on-error: true
+        env:
+          KRANG_SELFTEST: first-frame
+          KRANG_QUIET: "1"
+          KRANG_STATE_DIR: ${{ runner.temp }}/krang-state
+        run: |
+          perl -e 'alarm 60; exec @ARGV' "target/release/Krang Shell.app/Contents/MacOS/krang-shell" --fresh | tee selftest.txt
+          grep -q first_frame_ms selftest.txt
+      - name: Zip the app
+        run: ditto -c -k --keepParent "target/release/Krang Shell.app" krang-shell-macos.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: krang-shell-macos
+          path: spikes/iced-shell/krang-shell-macos.zip
+          if-no-files-found: error

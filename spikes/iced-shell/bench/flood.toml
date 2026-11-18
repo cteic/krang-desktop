@@ -1,0 +1,37 @@
+# Four terminals print without pause; the fifth, titled quiet, is pinged.
+title = "flood"
+
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["left", "right"]
+
+[[panes]]
+id = "left"
+split = "horizontal"
+children = ["f1", "f2", "quiet"]
+
+[[panes]]
+id = "right"
+split = "horizontal"
+children = ["f3", "f4"]
+
+[[panes]]
+id = "f1"
+commands = ["while :; do seq 1 200000; done"]
+
+[[panes]]
+id = "f2"
+commands = ["while :; do seq 1 200000; done"]
+
+[[panes]]
+id = "f3"
+commands = ["while :; do seq 1 200000; done"]
+
+[[panes]]
+id = "f4"
+commands = ["while :; do seq 1 200000; done"]
+
+[[panes]]
+id = "quiet"
+title = "quiet"

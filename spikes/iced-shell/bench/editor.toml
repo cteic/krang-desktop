@@ -1,0 +1,7 @@
+# An editor over the test vault: a files pane opens the folder as a vault.
+title = "editor"
+
+[[panes]]
+id = "notes"
+type = "files"
+directory = "VAULT"
