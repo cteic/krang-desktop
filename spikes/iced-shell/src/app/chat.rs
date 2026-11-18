@@ -2,9 +2,7 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{
-    Space, button, column, container, markdown, row, scrollable, text, text_editor,
-};
+use iced::widget::{Space, button, column, container, markdown, row, text, text_editor};
 use iced::{Element, Length, Padding};
 
 use crate::chat::event::Usage;
@@ -14,7 +12,7 @@ use crate::chat::{Agent, Mode, RunRequest};
 use crate::shell::layout::expand_home;
 use crate::style::{self, Step, measure, size, space};
 
-use super::Message;
+use super::{Message, scroll};
 
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
@@ -372,17 +370,12 @@ impl ChatPane {
         );
 
         column![
-            scrollable(
+            scroll::anchored(
                 container(items.max_width(measure::READING))
                     .center_x(Length::Fill)
                     .padding(Padding::from([space::HUGE, space::HUGE]).bottom(space::XXL)),
-            )
-            .id(Self::transcript_id(id))
-            .direction(style::scroll_direction())
-            .style(style::scrollbar)
-            .anchor_bottom()
-            .height(Length::Fill)
-            .width(Length::Fill),
+                Self::transcript_id(id),
+            ),
             container(foot.max_width(measure::READING))
                 .center_x(Length::Fill)
                 .padding(Padding::from([space::NONE, space::HUGE]).bottom(space::XL)),

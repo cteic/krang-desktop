@@ -12,11 +12,18 @@
 //! | `terminal-latency`  | Types into the first terminal and times the echo         |
 //! | `web`               | Waits for the first web pane to load                      |
 //! | `showcase`          | Fills the chat pane, then holds; for screenshots          |
+//! | `chat-scroll`       | Fills a chat past its pane and reports where it is scrolled |
 //!
 //! `showcase` sends two messages to the first chat pane, the second one
 //! failing, so a transcript with a tool step, code, a cost and an error is
 //! on screen. `KRANG_SELFTEST_SHOW=palette` then opens the command palette
 //! and `KRANG_SELFTEST_SHOW=switcher` the first editor's quick switcher.
+//!
+//! `chat-scroll` opens a chat in a new tab, sends it messages until the
+//! transcript is taller than the pane, and prints how much of it is out of
+//! sight below the view: while a reply streams, and after it stops. Zero
+//! means the newest line is showing. `KRANG_SELFTEST_SHOW=restored` sends
+//! nothing and measures the chat that came back from the saved workspace.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -26,8 +33,10 @@ use iced::widget::text_editor::{Action, Edit};
 
 use crate::web::host::WebEvent;
 
-use super::chat::ChatMessage;
+use super::chat::{ChatMessage, ChatPane};
 use super::editor::EditorMessage;
+use super::palette::NewPane;
+use super::scroll::{Locate, Place};
 use super::shortcuts::Action as Shortcut;
 use super::terminal::TerminalPane;
 use super::{App, Body, Message, Pane};
@@ -50,6 +59,7 @@ pub enum Plan {
     TerminalLatency,
     Web,
     Showcase,
+    ChatScroll,
 }
 
 impl Plan {
@@ -63,6 +73,7 @@ impl Plan {
             "terminal-latency" => Plan::TerminalLatency,
             "web" => Plan::Web,
             "showcase" => Plan::Showcase,
+            "chat-scroll" => Plan::ChatScroll,
             _ => return None,
         })
     }
@@ -75,6 +86,7 @@ pub enum Step {
     Type(u32),
     TerminalType(u32),
     Show(u32),
+    Measured(&'static str, Place),
     Finish,
 }
 
@@ -292,6 +304,19 @@ pub fn step(app: &mut App, step: Step) -> Task<Message> {
             after(Duration::from_secs(seconds()), Step::Finish),
         ]),
         (Plan::Showcase, Step::Show(number)) => showcase(app, number),
+        (Plan::ChatScroll, Step::Begin) => chat_scroll(app, 0),
+        (Plan::ChatScroll, Step::Show(number)) => chat_scroll(app, number),
+        (Plan::ChatScroll, Step::Measured(name, place)) => {
+            report(
+                &format!("chat_scroll_{name}_below_px"),
+                format!("{:.0}", place.below),
+            );
+            report(
+                &format!("chat_scroll_{name}_hidden_px"),
+                format!("{:.0}", place.hidden),
+            );
+            Task::none()
+        }
         (Plan::Flood, Step::Begin) => {
             report("flood_seconds", seconds());
             Task::batch([
@@ -462,6 +487,66 @@ fn showcase(app: &mut App, number: u32) -> Task<Message> {
             }
         }
         _ => Task::none(),
+    }
+}
+
+fn first_chat(app: &App) -> Option<u64> {
+    find_pane(app, |pane| matches!(pane.body, Body::Chat(_)))
+}
+
+fn say(id: u64, prompt: &str) -> Task<Message> {
+    let paste = Action::Edit(Edit::Paste(std::sync::Arc::new(prompt.to_string())));
+    Task::batch([
+        Task::done(Message::Chat(id, ChatMessage::Draft(paste))),
+        Task::done(Message::Chat(id, ChatMessage::Send)),
+    ])
+}
+
+/// Reads where the first chat's transcript is scrolled to.
+fn measure(app: &App, name: &'static str) -> Task<Message> {
+    let Some(id) = first_chat(app) else {
+        return Task::none();
+    };
+    iced::advanced::widget::operate(Locate::new(ChatPane::transcript_id(id)))
+        .map(move |place| Message::SelfTest(Step::Measured(name, place)))
+}
+
+/// How many short replies fill a chat past a pane of the default window.
+const CHAT_SCROLL_REPLIES: u32 = 4;
+
+fn chat_scroll(app: &mut App, number: u32) -> Task<Message> {
+    let next = |delay: u64| after(Duration::from_millis(delay), Step::Show(number + 1));
+    if std::env::var("KRANG_SELFTEST_SHOW").as_deref() == Ok("restored") {
+        return match number {
+            0 => Task::batch([measure(app, "restored"), next(500)]),
+            _ => Task::done(Message::SelfTest(Step::Finish)),
+        };
+    }
+    if number == 0 {
+        return Task::batch([app.new_tab(NewPane::Chat), next(300)]);
+    }
+    let Some(id) = first_chat(app) else {
+        return Task::done(Message::SelfTest(Step::Finish));
+    };
+    let streaming = CHAT_SCROLL_REPLIES + 1;
+    match number - 1 {
+        sent if sent < CHAT_SCROLL_REPLIES => Task::batch([
+            say(
+                id,
+                &format!("Question {}: what does the import do?", sent + 1),
+            ),
+            next(1200),
+        ]),
+        // The fake agent streams a reply to this for ten seconds.
+        sent if sent == CHAT_SCROLL_REPLIES => {
+            Task::batch([say(id, "Take it slow and explain."), next(3000)])
+        }
+        step if step == streaming => Task::batch([measure(app, "streaming"), next(200)]),
+        step if step == streaming + 1 => {
+            Task::batch([Task::done(Message::Chat(id, ChatMessage::Stop)), next(500)])
+        }
+        step if step == streaming + 2 => Task::batch([measure(app, "settled"), next(300)]),
+        _ => Task::done(Message::SelfTest(Step::Finish)),
     }
 }
 
