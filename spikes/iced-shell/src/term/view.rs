@@ -19,14 +19,15 @@ use iced::alignment::Vertical;
 use iced::keyboard::{self, Key};
 use iced::{Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Theme};
 
+use crate::style;
+
 use super::input::{self, MouseAction, MouseButton};
-use super::palette;
 use super::session::GridSize;
 use super::snapshot::{Cell, Snapshot, Style};
 
 type Paragraph = <iced::Renderer as text::Renderer>::Paragraph;
 
-const LINE_HEIGHT: f32 = 1.25;
+const LINE_HEIGHT: f32 = style::leading::TERMINAL;
 
 #[derive(Debug, Clone)]
 pub enum Input {
@@ -56,6 +57,8 @@ pub struct TerminalView<'a, Message> {
     size: GridSize,
     focused: bool,
     font_size: f32,
+    /// Drawn behind the cells, so the terminal matches the pane it is in.
+    background: Color,
     on_input: Box<dyn Fn(Input) -> Message + 'a>,
 }
 
@@ -65,6 +68,7 @@ impl<'a, Message> TerminalView<'a, Message> {
         size: GridSize,
         focused: bool,
         font_size: f32,
+        background: Color,
         on_input: impl Fn(Input) -> Message + 'a,
     ) -> Self {
         Self {
@@ -72,6 +76,7 @@ impl<'a, Message> TerminalView<'a, Message> {
             size,
             focused,
             font_size,
+            background,
             on_input: Box::new(on_input),
         }
     }
@@ -84,7 +89,7 @@ pub fn cell_size(font_size: f32) -> Size {
         bounds: Size::INFINITE,
         size: Pixels(font_size),
         line_height: text::LineHeight::Relative(LINE_HEIGHT),
-        font: Font::MONOSPACE,
+        font: style::mono(),
         align_x: text::Alignment::Left,
         align_y: Vertical::Top,
         shaping: text::Shaping::Basic,
@@ -149,7 +154,7 @@ fn font(style: Style) -> Font {
         } else {
             iced::font::Style::Normal
         },
-        ..Font::MONOSPACE
+        ..style::mono()
     }
 }
 
@@ -510,6 +515,8 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
             runs: Vec::new(),
         });
         let snapshot = self.snapshot;
+        let scheme = snapshot.scheme;
+        let background = self.background;
 
         renderer.with_layer(bounds, |renderer| {
             renderer.fill_quad(
@@ -517,7 +524,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                     bounds,
                     ..Quad::default()
                 },
-                color(palette::BACKGROUND),
+                background,
             );
 
             for (line, row) in snapshot.rows.iter().enumerate() {
@@ -529,7 +536,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                     while end < row.cells.len() && row.cells[end].style.bg == bg {
                         end += 1;
                     }
-                    if bg != palette::BACKGROUND {
+                    if bg != scheme.background {
                         renderer.fill_quad(
                             Quad {
                                 bounds: Rectangle {
@@ -580,7 +587,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                         !self.focused || cursor.shape == CursorShape::HollowBlock,
                     ),
                 };
-                let cursor_color = color(palette::CURSOR);
+                let cursor_color = color(scheme.cursor);
                 if hollow {
                     renderer.fill_quad(
                         Quad {
@@ -617,7 +624,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                     renderer.fill_paragraph(
                         &run.paragraph,
                         position,
-                        color(palette::FOREGROUND),
+                        color(scheme.foreground),
                         bounds,
                     );
                 }
@@ -650,7 +657,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for TerminalView<'_, Messag
                         wrapping: text::Wrapping::None,
                     },
                     position,
-                    color(palette::BACKGROUND),
+                    background,
                     bounds,
                 );
             }

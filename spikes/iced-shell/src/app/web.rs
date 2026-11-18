@@ -1,8 +1,9 @@
 //! The web pane's toolbar and the space its web view covers.
 
 use iced::widget::{button, column, container, row, text, text_input};
-use iced::{Element, Length, Rectangle};
+use iced::{Element, Length, Padding, Rectangle};
 
+use crate::style::{self, measure, size, space};
 use crate::web::address;
 
 use super::Message;
@@ -52,12 +53,23 @@ impl WebPane {
     pub fn view(&self, id: u64) -> Element<'_, Message> {
         let message = move |message: WebMessage| Message::Web(id, message);
         let nav = |label: &'static str, enabled: bool, on: WebMessage| {
-            button(text(label).size(13))
-                .padding([2, 8])
-                .style(button::text)
-                .on_press_maybe(enabled.then(|| message(on)))
+            button(
+                container(
+                    text(label)
+                        .size(size::HEADING)
+                        .line_height(style::leading::GLYPH)
+                        .style(style::inherit),
+                )
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+            )
+            .width(measure::CONTROL + space::M)
+            .height(measure::CONTROL + space::M)
+            .padding(space::NONE)
+            .style(style::quiet)
+            .on_press_maybe(enabled.then(|| message(on)))
         };
-        let toolbar = row![
+        let mut toolbar = row![
             nav("‹", self.can_back, WebMessage::Back),
             nav("›", self.can_forward, WebMessage::Forward),
             nav(
@@ -70,17 +82,22 @@ impl WebPane {
                 &self.address
             )
             .id(Self::address_id(id))
-            .size(13)
-            .padding([3, 6])
+            .size(size::LABEL)
+            .padding(Padding::from([space::S, space::L]))
+            .style(style::input)
             .on_input(move |value| message(WebMessage::Address(value)))
             .on_submit(message(WebMessage::Go)),
-            text(if self.loading { "Loading" } else { "" }).size(12),
         ]
-        .spacing(4)
+        .spacing(space::XS)
         .align_y(iced::Alignment::Center)
-        .padding([4, 6]);
+        .padding(Padding::from([space::XS, space::L]).bottom(space::M));
+        if self.loading {
+            toolbar = toolbar.push(text("Loading").size(size::META).style(style::muted));
+        }
         let body: Element<'_, Message> = match &self.error {
-            Some(error) => container(text(error.clone())).padding(12).into(),
+            Some(error) => container(text(error.clone()).size(size::BODY).style(style::bad))
+                .padding(space::XXL)
+                .into(),
             None => probe(move |bounds| message(WebMessage::Bounds(bounds))).into(),
         };
         column![
