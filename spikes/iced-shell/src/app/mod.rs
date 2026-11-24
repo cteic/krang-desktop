@@ -232,10 +232,24 @@ impl App {
             }
         };
         let persist = options.layouts.is_empty();
-        let default_vault = std::env::var_os("KRANG_VAULT")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
+        let home = dirs::home_dir();
+        let started_in = std::env::current_dir().ok();
+        // Opened from the Dock, the app starts in `/`. Panes start at home.
+        if started_in
+            .as_deref()
+            .is_some_and(|dir| dir.parent().is_none())
+            && let Some(home) = &home
+        {
+            let _ = std::env::set_current_dir(home);
+        }
+        let obsidian_list = dirs::config_dir()
+            .and_then(|dir| std::fs::read_to_string(dir.join("obsidian/obsidian.json")).ok());
+        let default_vault = crate::vault::default_root(
+            std::env::var_os("KRANG_VAULT").map(PathBuf::from),
+            started_in,
+            home.as_deref(),
+            obsidian_list.as_deref(),
+        );
         let theme_setting = Mode::from_env();
         let mut app = Self {
             window: None,
@@ -445,6 +459,8 @@ impl App {
         let path = path.map(|path| layout::expand_home(&path));
         let root = vault
             .map(|vault| layout::expand_home(&vault))
+            // `/` is no vault: a layout saved by an older build may name it.
+            .filter(|vault| vault.parent().is_some())
             .or_else(|| path.as_deref().and_then(vault_root_for))
             .unwrap_or_else(|| self.default_vault.clone());
         let root = std::fs::canonicalize(&root).unwrap_or(root);

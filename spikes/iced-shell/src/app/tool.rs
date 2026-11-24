@@ -10,6 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::kd::protocol::{ENV_CLI, ENV_PANE, ENV_SOCKET, ENV_TOKEN, Request, Response, pane_name};
 use crate::kd::server::{self, Tokens};
+use crate::kd::shell_env;
 
 /// How long the socket's thread waits for the window to answer.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
@@ -45,6 +46,8 @@ pub struct Tool {
     socket: PathBuf,
     /// The `kd` link, and the directory it is in.
     cli: Option<PathBuf>,
+    /// The zsh startup files are in the link's directory.
+    wrapped: bool,
     tokens: Tokens,
 }
 
@@ -61,6 +64,12 @@ impl Tool {
         let cli = std::env::current_exe()
             .ok()
             .and_then(|program| server::link_tool(&server::tool_dir(&dir), &program).ok());
+        // A profile may replace PATH outright, which would drop `kd`. zsh
+        // reads these files instead and gets the tool back on PATH after.
+        let wrapped = cli
+            .as_deref()
+            .and_then(Path::parent)
+            .is_some_and(|bin| shell_env::write_zsh_dir(bin).is_ok());
         let serving = tokens.clone();
         std::thread::Builder::new()
             .name(String::from("kd-socket"))
@@ -83,6 +92,7 @@ impl Tool {
         Ok(Self {
             socket,
             cli,
+            wrapped,
             tokens,
         })
     }
@@ -109,6 +119,17 @@ impl Tool {
                     _ => format!("{}:/usr/bin:/bin", bin.display()),
                 };
                 env.push((String::from("PATH"), path));
+                let zsh = std::env::var("SHELL").map_or(cfg!(target_os = "macos"), |shell| {
+                    shell.is_empty() || shell_env::is_zsh(&shell)
+                });
+                if self.wrapped && zsh {
+                    env.extend(shell_env::zsh_env(
+                        bin,
+                        bin,
+                        std::env::var("ZDOTDIR").ok().as_deref(),
+                        std::env::var("HOME").ok().as_deref(),
+                    ));
+                }
             }
         }
         env
@@ -122,11 +143,10 @@ impl Tool {
     /// them, and the next start sweeps them away.
     pub fn close(&self) {
         let _ = std::fs::remove_file(&self.socket);
-        if let Some(cli) = &self.cli {
-            let _ = std::fs::remove_file(cli);
-            if let Some(bin) = cli.parent() {
-                let _ = std::fs::remove_dir(bin);
-            }
+        if let Some(cli) = &self.cli
+            && let Some(bin) = cli.parent()
+        {
+            let _ = std::fs::remove_dir_all(bin);
         }
     }
 }

@@ -806,9 +806,13 @@ impl EditorPane {
         column![
             tabs,
             container(
-                text(format!("{} notes", index.len()))
-                    .size(size::META)
-                    .style(style::muted)
+                text(if index.truncated {
+                    format!("First {} notes. This folder holds more.", index.len())
+                } else {
+                    format!("{} notes", index.len())
+                })
+                .size(size::META)
+                .style(style::muted)
             )
             .padding(Padding::from([space::NONE, space::M])),
             body
