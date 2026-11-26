@@ -12,6 +12,7 @@ pub mod selftest;
 mod shortcuts;
 mod terminal;
 mod tool;
+mod usage;
 mod web;
 
 use std::collections::HashMap;
@@ -113,6 +114,7 @@ enum Body {
     Web(WebPane),
     Chat(ChatPane),
     Files(FilesPane),
+    Usage(usage::UsagePane),
 }
 
 struct Pane {
@@ -358,6 +360,7 @@ impl App {
                 mode: EditorMode::Edit,
             },
             NewPane::Web => PaneKind::Web { url: String::new() },
+            NewPane::Usage => PaneKind::Usage,
             NewPane::Files => PaneKind::Files {
                 directory: Some(
                     directory
@@ -368,8 +371,8 @@ impl App {
                 expanded: Vec::new(),
                 hidden: false,
             },
-            NewPane::Chat => PaneKind::Chat {
-                agent: crate::chat::Agent::Claude,
+            NewPane::Chat(agent) => PaneKind::Chat {
+                agent,
                 directory: directory.map(|dir| dir.to_string_lossy().into_owned()),
                 mode: crate::chat::Mode::ReadOnly,
                 trusted: false,
@@ -385,7 +388,7 @@ impl App {
             Body::Editor(pane) => Some(pane.root.clone()),
             Body::Chat(pane) => pane.directory.as_deref().map(layout::expand_home),
             Body::Files(pane) => Some(pane.tree.root().to_path_buf()),
-            Body::Web(_) => None,
+            Body::Web(_) | Body::Usage(_) => None,
         }
     }
 
@@ -436,6 +439,7 @@ impl App {
                 trusted,
                 transcript,
             } => Body::Chat(ChatPane::new(agent, directory, mode, trusted, transcript)),
+            PaneKind::Usage => Body::Usage(usage::UsagePane::default()),
         };
         self.panes.insert(
             id,
@@ -566,6 +570,7 @@ impl App {
                 trusted: chat.trusted,
                 transcript: chat.transcript.clone(),
             },
+            Body::Usage(_) => PaneKind::Usage,
         };
         Some(PaneSpec {
             title: pane.title.clone(),
@@ -683,6 +688,7 @@ impl App {
                 .unwrap_or_else(|| String::from("web")),
             Body::Chat(chat) => format!("chat · {}", chat.agent.label()),
             Body::Files(files) => files.title(),
+            Body::Usage(_) => String::from("usage"),
         })
     }
 
@@ -1003,7 +1009,12 @@ impl App {
     fn drop_pane(&mut self, id: u64) {
         if let Some(mut pane) = self.panes.remove(&id) {
             match &mut pane.body {
-                Body::Chat(chat) => chat.stop(),
+                Body::Chat(chat) => {
+                    chat.stop();
+                    if let Some(tool) = &self.tool {
+                        tool.revoke(id);
+                    }
+                }
                 Body::Web(_) => self.web.close(id),
                 Body::Editor(editor) => {
                     if editor.dirty {
@@ -1015,7 +1026,7 @@ impl App {
                         tool.revoke(id);
                     }
                 }
-                Body::Files(_) => {}
+                Body::Files(_) | Body::Usage(_) => {}
             }
         }
     }
@@ -1045,6 +1056,7 @@ impl App {
                             Body::Web(_) => "web",
                             Body::Chat(_) => "chat",
                             Body::Files(_) => "files",
+                            Body::Usage(_) => "usage",
                         };
                         Some(kd::PaneInfo {
                             id: kd::pane_name(id),
@@ -1589,6 +1601,11 @@ impl App {
                     // scrolled back.
                     if chat.receive(event) {
                         self.save();
+                        for pane in self.panes.values_mut() {
+                            if let Body::Usage(usage) = &mut pane.body {
+                                usage.refresh();
+                            }
+                        }
                     }
                 }
             }
@@ -1830,7 +1847,12 @@ impl App {
             ChatMessage::Draft(action) => chat.draft.perform(action),
             ChatMessage::Send => {
                 self.next_id += 1;
-                chat.send(id, run, &self.run_sender);
+                let link = self
+                    .tool
+                    .as_ref()
+                    .filter(|_| chat.agent.takes_kd())
+                    .and_then(|tool| tool.agent_link(id, chat.mode == crate::chat::Mode::ReadOnly));
+                chat.send(id, run, link, &self.run_sender);
                 self.save();
                 return iced::advanced::widget::operate(scroll::to_newest(
                     ChatPane::transcript_id(id),
@@ -1849,6 +1871,10 @@ impl App {
             }
             ChatMessage::Trust => {
                 chat.trusted = true;
+                self.save();
+            }
+            ChatMessage::NextAgent => {
+                chat.next_agent();
                 self.save();
             }
             ChatMessage::Link(url) => {
@@ -2122,6 +2148,11 @@ impl App {
                 ),
                 chat.status_note(),
             ),
+            Body::Usage(usage) => (
+                "Usage",
+                String::from("tokens and cost by agent"),
+                usage.status_note(),
+            ),
         };
         let context = match &pane.title {
             Some(title) => title.clone(),
@@ -2364,6 +2395,7 @@ impl App {
                 Some(Body::Web(web)) => web.view(id),
                 Some(Body::Chat(chat)) => chat.view(id, self.mode, focused),
                 Some(Body::Files(files)) => files.view(id),
+                Some(Body::Usage(usage)) => usage.view(),
                 None => Space::new().into(),
             };
             let (kind, context, note) = self.pane_status(id);

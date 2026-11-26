@@ -577,6 +577,7 @@ fn report_panes(app: &App, name: &str) {
         .map(|pane| match &pane.body {
             Body::Terminal(_) => String::from("terminal"),
             Body::Chat(_) => String::from("chat"),
+            Body::Usage(_) => String::from("usage"),
             Body::Files(files) => format!("files:{}", files.selected().unwrap_or("")),
             Body::Editor(editor) => format!("editor:{}", editor.path.as_deref().unwrap_or("")),
             Body::Web(web) => format!(
@@ -807,7 +808,10 @@ fn chat_scroll(app: &mut App, number: u32) -> Task<Message> {
         };
     }
     if number == 0 {
-        return Task::batch([app.new_tab(NewPane::Chat), next(300)]);
+        return Task::batch([
+            app.new_tab(NewPane::Chat(crate::chat::Agent::Claude)),
+            next(300),
+        ]);
     }
     let Some(id) = first_chat(app) else {
         return Task::done(Message::SelfTest(Step::Finish));

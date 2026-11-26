@@ -14,11 +14,12 @@ kd drives the app from inside a terminal pane.
   kd view <path> [--down]             open a file in an editor, or a folder in a files pane
   kd web <url-or-path> [--down]       open a web pane
   kd term [dir] [--down] [-- cmd...]  open a terminal, and type a first command into it
-  kd chat [--agent claude|codex] [dir] [--down]
+  kd chat [--agent claude|codex|gemini|qwen|local] [dir] [--down]
                                       open a chat pane
   kd title <text>                     set this pane's title
   kd title --clear                    clear it
   kd panes                            print the window's tabs and panes as JSON
+  kd mcp                              serve these commands as MCP tools on stdin and stdout
 
 New panes open to the right of the calling pane, or below it with --down.
 Relative paths are taken from the directory kd runs in.
@@ -160,11 +161,14 @@ pub fn parse(args: &[String], cwd: &Path) -> Result<Parsed, String> {
             // `--agent codex` puts the agent's name among the plain words.
             let at = args.iter().position(|arg| arg == "--agent");
             let named = at.and_then(|at| args.get(at + 1)).map(String::as_str);
-            let agent = match (at, named) {
+            let agent = match (at, named.and_then(Agent::from_name)) {
                 (None, _) => Agent::Claude,
-                (Some(_), Some("claude")) => Agent::Claude,
-                (Some(_), Some("codex")) => Agent::Codex,
-                (Some(_), _) => return Err(String::from("--agent takes claude or codex")),
+                (Some(_), Some(agent)) => agent,
+                (Some(_), None) => {
+                    return Err(String::from(
+                        "--agent takes claude, codex, gemini, qwen or local",
+                    ));
+                }
             };
             let down = take_down(&flags, &["--agent"])?;
             let mut plain = plain;
@@ -243,6 +247,11 @@ impl Caller {
 
 /// Runs `kd` with the arguments after its name, and returns its exit code.
 pub fn run(args: &[String]) -> i32 {
+    if let Some((name, rest)) = args.split_first()
+        && name == "mcp"
+    {
+        return super::mcp::run(rest);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let command = match parse(args, &cwd) {
         Ok(Parsed::Help) => {
@@ -409,6 +418,22 @@ mod tests {
                 agent: Agent::Codex,
                 directory: Some(String::from("/work/demo/api")),
                 down: true
+            })
+        );
+        assert_eq!(
+            sent("chat --agent gemini"),
+            Some(Command::Chat {
+                agent: Agent::Gemini,
+                directory: Some(String::from("/work/demo")),
+                down: false
+            })
+        );
+        assert_eq!(
+            sent("chat --agent local"),
+            Some(Command::Chat {
+                agent: Agent::Local,
+                directory: Some(String::from("/work/demo")),
+                down: false
             })
         );
         assert!(parsed("chat --agent").is_err());

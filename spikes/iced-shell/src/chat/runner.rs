@@ -56,10 +56,14 @@ pub fn agent_path(home: Option<&Path>, inherited: Option<&str>) -> String {
 
 /// The program for an agent: the override from the environment when set,
 /// which is how the tests run a fake agent, or the first match on the path.
+/// Local is this app's own binary, whatever it is called.
 pub fn find_agent(agent: Agent, path: &str) -> Option<PathBuf> {
     if let Some(program) = std::env::var_os(agent.override_env()).filter(|value| !value.is_empty())
     {
         return Some(PathBuf::from(program));
+    }
+    if agent == Agent::Local {
+        return std::env::current_exe().ok();
     }
     path.split(':')
         .map(|dir| Path::new(dir).join(agent.program()))
@@ -72,15 +76,24 @@ pub struct Started {
     pub group: i32,
 }
 
+/// What the agent is started with, beside its prompt.
+#[derive(Debug, Clone, Default)]
+pub struct Launch {
+    pub args: Vec<String>,
+    /// Variables added after the app's own `kd` ones are removed.
+    pub env: Vec<(String, String)>,
+}
+
 pub fn start(
     agent: Agent,
-    args: Vec<String>,
+    launch: Launch,
     directory: Option<&Path>,
     prompt: String,
     pane: u64,
     run: u64,
     sender: UnboundedSender<RunEvent>,
 ) -> Result<Started, String> {
+    let Launch { args, env } = launch;
     let home = dirs::home_dir();
     let path = agent_path(home.as_deref(), std::env::var("PATH").ok().as_deref());
     let program = find_agent(agent, &path)
@@ -95,6 +108,9 @@ pub fn start(
         .env_remove(crate::kd::protocol::ENV_PANE)
         .env_remove(crate::kd::protocol::ENV_TOKEN)
         .env_remove(crate::kd::protocol::ENV_CLI)
+        // What it gets instead is its own chat pane's secret, for the `kd`
+        // MCP server it may start.
+        .envs(env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -232,7 +248,10 @@ mod tests {
         unsafe { std::env::set_var(Agent::Claude.override_env(), &script) };
         let started = start(
             Agent::Claude,
-            args,
+            Launch {
+                args,
+                env: Vec::new(),
+            },
             Some(&dir),
             "hello\n".into(),
             1,

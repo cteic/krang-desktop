@@ -12,6 +12,11 @@ fn main() -> iced::Result {
         let args: Vec<String> = started_as.collect();
         std::process::exit(krang_shell::kd::cli::run(&args));
     }
+    // With this flag, the program is the Local chat agent for one turn.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(krang_shell::chat::local::HELPER_FLAG) {
+        std::process::exit(krang_shell::chat::local::run_helper(&args[1..]));
+    }
     selftest::mark_process_start();
     let mut options = Options {
         selftest: selftest::Plan::from_env(),

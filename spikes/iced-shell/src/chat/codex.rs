@@ -39,8 +39,44 @@ pub fn args(request: &RunRequest) -> Vec<String> {
         }
         args.extend(["-s".into(), sandbox.into()]);
     }
+    if let Some(kd) = &request.kd {
+        args.extend(kd_config(kd));
+    }
     args.push("-".into());
     args
+}
+
+/// Codex's config for the `kd` server. Codex hands an MCP server only the
+/// variables it is told to, so the three the secret travels in are named.
+fn kd_config(kd: &super::KdLink) -> Vec<String> {
+    let quote = |text: &str| serde_json::Value::from(text).to_string();
+    let list = |items: &[&str]| {
+        let quoted: Vec<String> = items.iter().map(|item| quote(item)).collect();
+        format!("[{}]", quoted.join(","))
+    };
+    let server = format!("mcp_servers.{}", super::KD_SERVER);
+    let env = [
+        crate::kd::protocol::ENV_SOCKET,
+        crate::kd::protocol::ENV_PANE,
+        crate::kd::protocol::ENV_TOKEN,
+    ];
+    [
+        format!("{server}.command={}", quote(&kd.cli)),
+        format!("{server}.args=[\"mcp\"]"),
+        format!("{server}.env_vars={}", list(&env)),
+        format!("{server}.enabled_tools={}", list(kd.tools())),
+    ]
+    .into_iter()
+    // `codex exec` never asks, so a tool that needs approval fails. Only
+    // the tools that show things are approved; `kd_term` and `kd_chat`
+    // stay refused, as Codex's own shell would be.
+    .chain(
+        super::KD_SAFE_TOOLS
+            .iter()
+            .map(|tool| format!("{server}.tools.{tool}.approval_mode=\"approve\"")),
+    )
+    .flat_map(|setting| [String::from("-c"), setting])
+    .collect()
 }
 
 fn tool(item: &Value, name: &str, summary: String) -> AgentEvent {
@@ -150,12 +186,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_read_only_chat_gets_the_safe_kd_tools_approved() {
+        let request = RunRequest {
+            mode: Mode::ReadOnly,
+            directory: None,
+            session_id: None,
+            trusted: false,
+            kd: Some(crate::chat::KdLink {
+                cli: String::from("/run/kd"),
+                safe: true,
+            }),
+        };
+        let args = args(&request);
+        let has = |setting: &str| args.iter().any(|arg| arg == setting);
+        assert!(has("mcp_servers.kd.command=\"/run/kd\""));
+        assert!(has(
+            "mcp_servers.kd.env_vars=[\"KRANG_SOCKET\",\"KRANG_PANE_ID\",\"KRANG_PANE_TOKEN\"]"
+        ));
+        assert!(has(
+            "mcp_servers.kd.enabled_tools=[\"kd_view\",\"kd_web\",\"kd_panes\",\"kd_title\"]"
+        ));
+        assert!(has(
+            "mcp_servers.kd.tools.kd_view.approval_mode=\"approve\""
+        ));
+        assert!(!args.iter().any(|arg| arg.contains("kd_term")));
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+    }
+
+    #[test]
     fn first_message_and_follow_up_arguments() {
         let first = RunRequest {
             mode: Mode::ReadOnly,
             directory: Some("/w".into()),
             session_id: None,
             trusted: false,
+            kd: None,
         };
         assert_eq!(
             args(&first).join(" "),
