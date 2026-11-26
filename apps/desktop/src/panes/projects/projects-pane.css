@@ -1,0 +1,203 @@
+.projects-pane {
+  --projects-active: #58a6ff;
+  --projects-ready: #40c057;
+  --projects-backlog: #6e7681;
+  --projects-closed: #30363d;
+  --projects-urgent: #ff6b6b;
+  --projects-blocked: #f0b429;
+
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font: var(--ui-font);
+  color: var(--text);
+  background: var(--bg);
+}
+
+.projects-header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 4px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.projects-totals {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.projects-toggle,
+.projects-read-at,
+.projects-updated,
+.projects-empty,
+.projects-priority {
+  color: var(--muted);
+}
+
+.projects-refresh,
+.projects-head,
+.projects-issue {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.projects-refresh {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.projects-refresh:hover,
+.projects-head:hover,
+.projects-issue:hover {
+  background: var(--panel);
+}
+
+.projects-error {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--projects-urgent);
+  border-bottom: 1px solid var(--line);
+}
+
+.projects-empty {
+  margin: 0;
+  padding: 8px;
+}
+
+.projects-list,
+.projects-issues {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.projects-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.projects-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.projects-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.projects-head:focus-visible,
+.projects-issue:focus-visible,
+.projects-refresh:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.projects-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-chips {
+  display: flex;
+  gap: 6px;
+}
+
+.projects-chip {
+  color: var(--muted);
+}
+
+.projects-chip-active {
+  color: var(--projects-active);
+}
+
+.projects-chip-urgent {
+  color: var(--projects-urgent);
+}
+
+.projects-chip-blocked {
+  color: var(--projects-blocked);
+}
+
+.projects-bar {
+  display: flex;
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--panel);
+}
+
+.projects-bar-active {
+  background: var(--projects-active);
+}
+
+.projects-bar-ready {
+  background: var(--projects-ready);
+}
+
+.projects-bar-backlog {
+  background: var(--projects-backlog);
+}
+
+.projects-bar-closed {
+  background: var(--projects-closed);
+}
+
+.projects-detail {
+  padding: 0 8px 6px 16px;
+}
+
+.projects-issue {
+  display: grid;
+  grid-template-columns: 4.5em minmax(0, 1fr) auto 4.5em;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 4px;
+  text-align: left;
+}
+
+.projects-issue-id {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.projects-issue-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-stage-active {
+  color: var(--projects-active);
+}
+
+.projects-stage-ready {
+  color: var(--projects-ready);
+}
+
+.projects-stage-backlog,
+.projects-stage-closed {
+  color: var(--muted);
+}
+
+.projects-updated {
+  margin: 4px 0 0;
+}

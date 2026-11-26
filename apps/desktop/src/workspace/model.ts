@@ -51,8 +51,19 @@ export interface GraphContent {
   view: string | null;
 }
 
+/** Every krang project and its issues, read from the krang work store. */
+export interface ProjectsContent {
+  type: 'projects';
+}
+
 export type PaneContent =
-  TerminalContent | FilesContent | EditorContent | WebContent | ChatContent | GraphContent;
+  | TerminalContent
+  | FilesContent
+  | EditorContent
+  | WebContent
+  | ChatContent
+  | GraphContent
+  | ProjectsContent;
 
 export type PaneType = PaneContent['type'];
 
@@ -125,6 +136,7 @@ const FALLBACK_TITLES: Record<PaneType, string> = {
   web: 'web',
   chat: 'chat',
   graph: 'graph',
+  projects: 'projects',
 };
 
 function lastSegment(path: string): string {

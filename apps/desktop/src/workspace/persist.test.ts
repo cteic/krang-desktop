@@ -119,6 +119,22 @@ describe('serializeWorkspace and parseWorkspace', () => {
     expect(contents).toContainEqual({ type: 'graph', directory: '~/vault', view: 'Overview' });
   });
 
+  it('keeps a projects pane', () => {
+    const start = build();
+    const workspace = workspaceReducer(start, {
+      type: 'split',
+      paneId: activeTab(start)?.focusedId ?? '',
+      direction: 'row',
+      content: { type: 'projects' },
+    });
+    const restored = parseWorkspace(serializeWorkspace(workspace));
+    const contents = restored?.tabs.flatMap((tab) =>
+      leavesOf(tab.root).map((leaf) => leaf.content),
+    );
+
+    expect(contents).toContainEqual({ type: 'projects' });
+  });
+
   it('rejects text that is not a saved workspace', () => {
     expect(parseWorkspace('')).toBeNull();
     expect(parseWorkspace('{not json')).toBeNull();

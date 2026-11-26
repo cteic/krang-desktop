@@ -169,6 +169,17 @@ type = "graph"
     ]);
   });
 
+  it('reads a projects pane, which needs nothing else', () => {
+    const layout = parseLayout(`
+name = "work"
+[[panes]]
+id = "board"
+type = "projects"
+`);
+
+    expect(leavesOf(layout.root).map((leaf) => leaf.content)).toEqual([{ type: 'projects' }]);
+  });
+
   it('reads the example tour of the graph pane', () => {
     const text = readFileSync(new URL('../../examples/lab.toml', import.meta.url), 'utf8');
     const layout = parseLayout(text);

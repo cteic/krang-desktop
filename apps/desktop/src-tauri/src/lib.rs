@@ -6,6 +6,7 @@ mod ipc;
 mod links;
 mod local_files;
 mod menu;
+mod projects;
 mod pty;
 mod shell_env;
 mod startup;
@@ -76,6 +77,7 @@ pub fn run() {
         .manage(agents::AgentState::default())
         .manage(WindowLayouts::default())
         .invoke_handler(tauri::generate_handler![
+            projects::projects_read,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,
