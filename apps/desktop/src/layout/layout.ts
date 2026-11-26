@@ -27,7 +27,7 @@ const paneSchema = z.object({
   id: z.string().min(1),
   split: z.enum(['vertical', 'horizontal']).optional(),
   children: z.array(z.string().min(1)).min(1).optional(),
-  type: z.enum(['terminal', 'files', 'editor', 'web', 'chat', 'graph']).optional(),
+  type: z.enum(['terminal', 'files', 'editor', 'web', 'chat', 'graph', 'projects']).optional(),
   title: z.string().min(1).optional(),
   directory: z.string().min(1).optional(),
   is_focused: z.boolean().optional(),
@@ -151,6 +151,8 @@ function contentOf(entry: PaneEntry): PaneContent {
         // "all" is the view a graph pane opens on, so it needs no name.
         view: entry.view === undefined || entry.view === 'all' ? null : entry.view,
       };
+    case 'projects':
+      return { type };
   }
 }
 

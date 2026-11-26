@@ -5,6 +5,7 @@ import { EditorPane } from './editor/editor-pane';
 import { FilesPane } from './files/files-pane';
 import { GraphPane } from './graph/graph-pane';
 import type { PaneProps } from './pane-props';
+import { ProjectsPane } from './projects/projects-pane';
 import { TerminalPane } from './terminal/terminal-pane';
 import { WebPane } from './web/web-pane';
 
@@ -23,5 +24,7 @@ export function PaneBody({ content, ...rest }: PaneProps<PaneContent>) {
       return <ChatPane content={content} {...rest} />;
     case 'graph':
       return <GraphPane content={content} {...rest} />;
+    case 'projects':
+      return <ProjectsPane content={content} {...rest} />;
   }
 }

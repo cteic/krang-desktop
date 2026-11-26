@@ -10,7 +10,8 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@codemirror/commands": "catalog:",
@@ -33,6 +34,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@playwright/test": "catalog:",
     "@tauri-apps/cli": "catalog:",
     "@testing-library/dom": "catalog:",
     "@testing-library/react": "catalog:",

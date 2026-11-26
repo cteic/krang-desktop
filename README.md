@@ -30,6 +30,7 @@ run beside itself, then flags its tab for attention.
 | Web      | A page from a URL, a dev server or an HTML file on disk                    |
 | Chat     | A chat window over Claude Code or Codex, using the login each already has  |
 | Graph    | The questions, claims and evidence of a Discourse Graphs vault, as a graph |
+| Projects | Every krang project: what is active, ready, blocked and closed             |
 
 Panes live in tabs, tabs live in windows. Split, resize, magnify and close
 panes while you work. A plain window reopens with the tabs and panes you left.
@@ -84,6 +85,7 @@ path = "~/src/project/README.md"
 | `web`      | `url` (a URL, `localhost:3000`, or a path to an HTML file)      |
 | `chat`     | `agent` (`claude` or `codex`), `directory`, `mode` (see below)  |
 | `graph`    | `directory` (the vault), `view` (`all` or a canvas file name)   |
+| `projects` | none. It reads `krang issue ls`, so `krang` must be installed   |
 
 Every pane also takes `title` and `is_focused`. A split takes `sizes`, one
 relative size per child: `sizes = [1, 2]` gives the second child two thirds.

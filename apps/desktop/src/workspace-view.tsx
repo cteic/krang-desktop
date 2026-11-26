@@ -30,6 +30,7 @@ const NEW_PANE_CHOICES: NewPaneChoice[] = [
   { label: 'Web', content: { type: 'web', url: '' } },
   { label: 'Chat', content: { type: 'chat', agent: null, directory: null } },
   { label: 'Graph', content: { type: 'graph', directory: null, view: null } },
+  { label: 'Projects', content: { type: 'projects' } },
 ];
 
 function percent(value: number): string {

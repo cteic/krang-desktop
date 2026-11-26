@@ -37,6 +37,7 @@ const contentSchema: z.ZodType<PaneContent> = z.discriminatedUnion('type', [
     directory: z.string().nullable(),
     view: z.string().nullable(),
   }),
+  z.object({ type: z.literal('projects') }),
 ]);
 
 const leafSchema = z.object({
