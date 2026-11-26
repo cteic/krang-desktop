@@ -1,0 +1,16 @@
+# A busy terminal beside an editor; the self-test moves the divider.
+title = "resize"
+
+[[panes]]
+id = "root"
+split = "vertical"
+children = ["busy", "notes"]
+
+[[panes]]
+id = "busy"
+commands = ["while :; do seq 1 200000; done"]
+
+[[panes]]
+id = "notes"
+type = "editor"
+path = "VAULT/area-00/Note 0000.md"

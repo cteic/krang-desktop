@@ -1,0 +1,6 @@
+# One quiet terminal, pinged by the flood self-test.
+title = "quiet"
+
+[[panes]]
+id = "quiet"
+title = "quiet"
