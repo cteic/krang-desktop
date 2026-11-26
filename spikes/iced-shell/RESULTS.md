@@ -65,6 +65,13 @@ unlocked, windows opened with `KRANG_QUIET=1`. One run each on 18 November
 | Vault search, 5,001 notes | 0.2 to 16.8 ms | four queries |
 | Terminal key to frame (median / p99) | 10.7 / 17.4 ms | `KRANG_SELFTEST=terminal-latency`, 60 keys |
 | Local HTML page loaded | 328 ms after launch | `KRANG_SELFTEST=web` |
+| Files pane, a folder with 50,020 entries: read and sort | 66 ms, off the window's thread | `KRANG_SELFTEST=files` |
+| The same folder: build the rows | 0.33 ms | one pass over the listing |
+| The same folder: open to first frame | 84 ms | from adding the pane |
+| The same folder: Page Down to frame (median / p99 / max) | 2.9 / 3.4 / 3.5 ms | 60 presses; the update itself takes 0.01 ms |
+| Idle CPU with that folder open beside a terminal | 0% | CPU time unchanged at 0.19 s over 20 s; 0 idle wake-ups in a 5 s `top` sample |
+| Warm start to first frame with the `kd` socket, median of 5 | 134.9 ms | 176.9 (the first run of a new build), 134.9, 138.4, 127.9, 121.4. Five runs an hour earlier gave a median of 120.5 |
+| Chat transcript out of sight below the view while a reply streams | 0 px, was 616 px | `KRANG_SELFTEST=chat-scroll` before and after the fix |
 
 The frame figures sit near one or two 60 Hz refresh intervals, so the
 display, not the app, sets them.
@@ -111,7 +118,12 @@ but not exercised here.
 | Session restore: layout, tabs, terminal directory, open note, URL, chat transcript | done | run: two runs sharing a state directory restored 2 tabs, split ratios, a terminal in `/tmp`, the open note and the chat with its session id; test (`store`, `layout`) |
 | `--layout <file>` in the current app's TOML format | done | test (`layout` reads the README's example), run with four layouts |
 | Drag a pane onto another to move it | done | code (iced's `pane_grid` drag) |
-| Several windows, deep links, the `kd` pane tool | not done | out of scope for the spike |
+| Name a tab, and keep the name across a restart | done | run (`KRANG_SELFTEST=tabs` twice on one state folder printed `demo \| Planning \| terminal` at the end of the first run and at the start of the second) |
+| Move a tab from the palette | done | run (the same self-test), test (`tabs`) |
+| Move a tab by dragging it | done | code; the drag itself was not driven by a test |
+| Save a tab as a layout that `--layout` reads | done | test (`a_tab_saved_as_a_layout_reads_back_the_same`, `a_saved_layout_is_found_by_its_name_and_reads_back`), run |
+| The `kd` pane tool | done, first cut | see section 6 |
+| Several windows, deep links, a menu bar | not done | not in this change |
 
 ### 1. Terminal
 
@@ -152,7 +164,7 @@ but not exercised here.
 | Codex stream format | done | test; the fake agent speaks it too |
 | Trust prompt, read-only and edit modes | done | shot, test (arguments match the current app's) |
 | Fake CLI with an error and a slow case | done | `scripts/fake-agent`, selected by `KRANG_CLAUDE_BIN` and `KRANG_CODEX_BIN` |
-| The transcript follows new output | partial | it snaps to the end on each event, but sometimes one item short |
+| The transcript follows new output | done | run (`KRANG_SELFTEST=chat-scroll`: 0 px below the view while a reply streams, after it stops, and when the chat comes back from the saved workspace), test (`scroll`) |
 
 ### 3. Web pane
 
@@ -194,6 +206,32 @@ iced gives through `window::run`.
 | Cmd+End in the 50,000-line note | partial | the cursor moves to the end but the view does not follow; in a 2,000-line note it does |
 | Preview of a very long note | partial | the first 600 blocks; iced lays out every block of a column each frame |
 | Live preview in one pane (Obsidian's default) | not done | needs a custom editor widget that draws Markdown inline with editable source; iced's `text_editor` can only colour spans. Estimate: three to four weeks |
+
+### 5. Files pane
+
+| Feature | State | Evidence |
+| --- | --- | --- |
+| A pane of its own kind, rooted at a folder | done | run, test (`files::tree`) |
+| A folder is read when it is opened | done | test (`nothing_is_read_until_a_folder_is_opened`) |
+| Markers for file kinds, from the style module | done | code (`style::file_marker`), test (`files::kind`) |
+| Hidden files toggle | done | test, code (button, Cmd+Shift+., palette) |
+| Git status letters | done | test against a real repository (`a_real_repository_reports_its_changes`); one `git status --porcelain=v1 -z` per refresh, off the window's thread |
+| Keyboard: arrows, Enter, Home, End, Page keys | done | run (the self-test pages down 60 times and the selection lands on row 1,278), code for the rest |
+| A file opens by its type | done | run: clicking `docs/guide.md`, `site/index.html`, `Makefile` and `src/main.rs` left the tab as `files \| web:index.html \| editor:src/main.rs`; test (`a_file_opens_by_its_type`) |
+| Session restore of the folder and the open folders | done | run: a second start printed the folder, `docs,site,src` open and 12 rows |
+| Fast with 50,000 entries | done | run, see the table above |
+| Refresh when the disk changes | partial | no watcher. The pane reads again when it gets the keyboard, on Cmd+R and from its button. The `notify` crate is CC0-1.0, which is not on this project's list of licences, so it was not added |
+
+### 6. The `kd` pane tool
+
+| Feature | State | Evidence |
+| --- | --- | --- |
+| `view`, `web`, `term`, `chat`, `title`, `panes` | done | run: a script in a terminal pane ran all six with exit code 0, and `kd panes` then listed the terminal, editor, web, files, second terminal and chat panes |
+| The app's binary under the name `kd`, on the pane's `PATH` | done | run (`which kd` in the pane), test |
+| Socket only its owner can use | done | test (folder 700, socket 600, a folder that is a link is refused) |
+| A request without its pane's secret is refused | done | test (wrong, empty, shortened, another pane's, an unknown pane, a closed pane); run (`KRANG_PANE_TOKEN=wrong` and another pane's id both exit 1) |
+| One line of JSON each way, bounded | done | test (`protocol`, a 64 KiB line is refused, junk does not stop the loop) |
+| `badge`, `layout`, `graph`, the vault commands | not done | not in this first cut |
 
 ## Benchmarks
 
@@ -290,12 +328,14 @@ Unicode-3.0, or offer one of those as a choice (`cargo metadata`).
 | `gtk` (Linux only) | 0.18.2 | MIT | WebKitGTK's main loop |
 | `raw-window-handle` | 0.6.2 | MIT OR Apache-2.0 OR Zlib | handing the window to wry |
 | `tokio` | 1.54.1 | MIT | channels, timers, the chat runner |
-| `serde`, `serde_json` | 1.0 | MIT OR Apache-2.0 | workspace file, agent streams |
-| `toml` | 1.2.1 | MIT OR Apache-2.0 | layout files |
+| `serde`, `serde_json` | 1.0 | MIT OR Apache-2.0 | workspace file, agent streams, the `kd` protocol |
+| `toml` | 1.2.1 | MIT OR Apache-2.0 | reading and writing layout files |
 | `regex` | 1.13.2 | MIT OR Apache-2.0 | URLs in terminal text |
 | `open` | 5.4.5 | MIT | opening links |
 | `dirs` | 6.0.0 | MIT OR Apache-2.0 | the state folder |
-| `libc` | 0.2.191 | MIT OR Apache-2.0 | process groups, `proc_pidinfo` |
+| `libc` | 0.2.191 | MIT OR Apache-2.0 | process groups, `proc_pidinfo`, who is at the other end of the `kd` socket |
+
+The files pane and `kd` added no dependency.
 
 Through iced: `cosmic-text` (MIT OR Apache-2.0), `pulldown-cmark` (MIT),
 `syntect` (MIT), `tiny-skia` (BSD-3-Clause), `wgpu` (MIT OR Apache-2.0).
@@ -338,11 +378,12 @@ For one engineer who knows the current app, after this spike:
 | Terminal polish: IME, scrollback search, cursor blink, font settings, kitty keyboard | 2 weeks |
 | Web pane made solid on macOS: focus, Edit menu, downloads, devtools, popups | 2 to 3 weeks |
 | Editor: own widget for live preview, virtualised preview, large-note scrolling | 4 to 5 weeks |
-| Files pane as its own pane | 1 week |
+| Files pane: done, bar a watcher for changes on disk, renaming and deleting | 2 to 3 days |
 | Graph pane (the discourse graph view and writes) | 3 to 4 weeks |
-| `kd` pane tool, Unix socket, deep links, several windows, menus | 2 weeks |
+| `kd`: the six pane commands are done; `badge`, `layout`, `graph` and the vault commands remain | 3 to 4 days |
+| Deep links, several windows, menus | 1 to 2 weeks |
 | Settings, theming, packaging, signing and notarisation | 1 to 2 weeks |
-| **Total** | **about 15 to 19 weeks** |
+| **Total** | **about 14 to 19 weeks** |
 
 ## Unverified
 
@@ -367,3 +408,18 @@ macOS first, since it is the target:
 5. The web pane drawing a page on Linux.
 6. Pane drag and drop, quick switcher, find, and following a wikilink to a
    missing note, which are built and compile but were not driven by a test.
+7. The files pane, tab naming and `kd` on a real screen. The screen was
+   locked while they were built, so `screencapture` could not run. They
+   were checked in pictures the app drew itself (`KRANG_SELFTEST_SHOT`),
+   which leave out an editor's text and web views. Not seen at all: a file
+   from the files pane showing in the editor and in a web pane (the
+   self-test printed which pane took it), and the pointer's hover states.
+8. Dragging a tab and double-clicking one with a real pointer. The
+   self-test sends the messages those gestures send.
+9. The files pane's arrow, Home, End and Enter keys from a real keyboard.
+   The self-test calls the same code for Page Down only.
+10. `kd` under a shell profile that rebuilds `PATH`, and `kd` called from a
+    pane in a tab that is not shown.
+11. In the app's own pictures a status line's text runs past its controls
+    when the folder's path is long and the pane is narrow. Whether a real
+    screen shows the same was not checked.

@@ -27,7 +27,15 @@ pub struct Index {
     by_name: HashMap<String, Vec<String>>,
     /// Normalised target name to the paths of notes that link to it.
     backlinks: HashMap<String, BTreeSet<String>>,
+    /// The folder held more than the index takes, so some notes are left out.
+    pub truncated: bool,
 }
+
+/// The most notes an index holds, and the most folders it looks in. A
+/// folder that is not a vault, such as a home folder, stops here instead of
+/// reading the whole disk into memory.
+pub const MAX_NOTES: usize = 20_000;
+const MAX_FOLDERS: usize = 50_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
@@ -72,11 +80,17 @@ fn read_note(path: String, text: String) -> Note {
 }
 
 /// Every `.md` file under `root`, skipping hidden folders such as `.obsidian`
-/// and `.git`, and never following a symbolic link.
-fn markdown_files(root: &Path) -> Vec<PathBuf> {
+/// and `.git`, and never following a symbolic link. The flag says the
+/// limits cut the walk short.
+fn markdown_files(root: &Path, max_notes: usize, max_folders: usize) -> (Vec<PathBuf>, bool) {
     let mut found = Vec::new();
     let mut pending = vec![root.to_path_buf()];
+    let mut folders = 0;
     while let Some(dir) = pending.pop() {
+        folders += 1;
+        if folders > max_folders {
+            return (found, true);
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -92,11 +106,14 @@ fn markdown_files(root: &Path) -> Vec<PathBuf> {
             if kind.is_dir() {
                 pending.push(path);
             } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                if found.len() == max_notes {
+                    return (found, true);
+                }
                 found.push(path);
             }
         }
     }
-    found
+    (found, false)
 }
 
 pub fn relative(root: &Path, path: &Path) -> Option<String> {
@@ -114,7 +131,7 @@ impl Index {
     /// Reads every note. Files are read on all cores, since a large vault
     /// spends most of its open time here.
     pub fn open(root: &Path) -> Self {
-        let files = markdown_files(root);
+        let (files, truncated) = markdown_files(root, MAX_NOTES, MAX_FOLDERS);
         let workers = std::thread::available_parallelism()
             .map_or(4, usize::from)
             .min(8);
@@ -140,6 +157,7 @@ impl Index {
         });
         let mut index = Index {
             root: root.to_path_buf(),
+            truncated,
             ..Index::default()
         };
         for note in notes {
@@ -361,6 +379,18 @@ mod tests {
             Some("sub/Gamma.md")
         );
         assert!(index.resolve("Missing").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_walk_stops_at_its_limits() {
+        let (root, _) = vault();
+        let (all, cut) = markdown_files(&root, 10, 10);
+        assert_eq!((all.len(), cut), (3, false));
+        let (some, cut) = markdown_files(&root, 2, 10);
+        assert_eq!((some.len(), cut), (2, true));
+        let (_, cut) = markdown_files(&root, 10, 1);
+        assert!(cut);
         let _ = std::fs::remove_dir_all(root);
     }
 

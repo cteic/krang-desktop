@@ -68,6 +68,26 @@ pub fn wait(theme: &Theme) -> text::Style {
     }
 }
 
+/// A meaning a colour carries, for text that is told what it reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Ok,
+    Bad,
+    Wait,
+    Accent,
+    Muted,
+}
+
+pub fn toned(tone: Tone) -> fn(&Theme) -> text::Style {
+    match tone {
+        Tone::Ok => ok,
+        Tone::Bad => bad,
+        Tone::Wait => wait,
+        Tone::Accent => accent,
+        Tone::Muted => muted,
+    }
+}
+
 /// Takes the colour of the surface it is on: the status line sets it.
 pub fn inherit(_theme: &Theme) -> text::Style {
     text::Style { color: None }
@@ -236,6 +256,35 @@ pub fn tab(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             button::Status::Hovered => flat(tokens.ink, Some(tokens.recess), radius::M),
             button::Status::Pressed => flat(tokens.ink, Some(tokens.line), radius::M),
             _ => flat(ink, None, radius::M),
+        }
+    }
+}
+
+/// What the pointer is doing to a surface that is not a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    Idle,
+    Hovered,
+    /// Held down and being moved.
+    Dragged,
+}
+
+/// A tab that can be dragged among the others. It looks like [`tab`], and
+/// stays lit while it is held.
+pub fn tab_surface(selected: bool, held: Held) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let tokens = tokens(theme);
+        let (ink, background) = match held {
+            Held::Dragged => (tokens.ink, Some(tokens.line)),
+            Held::Hovered => (tokens.ink, Some(tokens.recess)),
+            Held::Idle if selected => (tokens.ink, None),
+            Held::Idle => (tokens.muted, None),
+        };
+        container::Style {
+            text_color: Some(ink),
+            background: background.map(Background::Color),
+            border: border::rounded(radius::M),
+            ..container::Style::default()
         }
     }
 }
@@ -624,11 +673,12 @@ pub fn source(
 /// The least contrast for text, from WCAG 2 level AA.
 const TEXT_CONTRAST: f32 = 4.5;
 
-/// The settings for highlighting Markdown source in a mode.
-pub fn source_settings(mode: Mode) -> iced::highlighter::Settings {
+/// The settings for highlighting source in a mode. `syntax` names the
+/// language by its file extension: `md` for a note.
+pub fn source_settings(mode: Mode, syntax: &str) -> iced::highlighter::Settings {
     iced::highlighter::Settings {
         theme: highlight(mode),
-        token: String::from("md"),
+        token: syntax.to_string(),
     }
 }
 
@@ -790,6 +840,63 @@ pub fn icon<'a, Message: 'a>(icon: Icon, focused: bool) -> Element<'a, Message> 
         .height(measure::ICON_HEIGHT)
         .style(frame)
         .into()
+}
+
+/// What stands in front of a name in the files pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marker {
+    /// A folder that is closed, and one that is open.
+    Closed,
+    Open,
+    /// An open folder whose contents are still being read.
+    Loading,
+    /// An open folder that could not be read.
+    Unreadable,
+    /// A file, with a short tag for its kind, or none.
+    Tag(&'static str),
+}
+
+/// The marker of a row in the files pane, in a column of fixed width so
+/// the names line up. `selected` is the row's.
+pub fn file_marker<'a, Message: 'a>(marker: Marker, selected: bool) -> Element<'a, Message> {
+    let (label, tone) = match marker {
+        Marker::Closed => ("▸", None),
+        Marker::Open => ("▾", None),
+        Marker::Loading => ("…", Some(Tone::Muted)),
+        Marker::Unreadable => ("!", Some(Tone::Bad)),
+        Marker::Tag(tag) => (tag, Some(Tone::Muted)),
+    };
+    let glyph = matches!(marker, Marker::Closed | Marker::Open);
+    let label = text(label)
+        .size(if glyph { size::LABEL } else { size::TAG })
+        .font(if glyph { ui() } else { mono() })
+        .wrapping(text::Wrapping::None);
+    container(match tone {
+        Some(tone) if !selected => label.style(toned(tone)),
+        _ => label.style(inherit),
+    })
+    .width(measure::FILE_MARK)
+    .into()
+}
+
+/// The letter that says what git has seen change in a row of the files
+/// pane. On a selected row it takes the row's own ink.
+pub fn change_mark<'a, Message: 'a>(
+    letter: &'static str,
+    tone: Tone,
+    selected: bool,
+) -> Element<'a, Message> {
+    let letter = text(letter)
+        .font(super::mono_strong())
+        .size(size::META)
+        .wrapping(text::Wrapping::None);
+    container(if selected {
+        letter.style(inherit)
+    } else {
+        letter.style(toned(tone))
+    })
+    .width(measure::CHANGE_MARK)
+    .into()
 }
 
 /// A square button for a status line, holding an icon or a close mark.

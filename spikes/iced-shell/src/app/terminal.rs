@@ -30,6 +30,7 @@ impl TerminalPane {
         sender: &Sender,
         commands: &[String],
         mode: Mode,
+        env: Vec<(String, String)>,
     ) -> Self {
         let directory = directory.filter(|dir| dir.is_dir());
         let spawned = Session::spawn(
@@ -38,6 +39,7 @@ impl TerminalPane {
                 directory: directory.as_deref(),
                 size,
                 scheme: Scheme::of(mode),
+                env,
             },
             sender.clone(),
         );
