@@ -260,3 +260,68 @@ describe('a chat pane mode', () => {
     expect(parseWorkspace(withChat('preview'))).toBeNull();
   });
 });
+
+describe('a chat pane history', () => {
+  const HISTORY = {
+    sessionId: 's-1',
+    running: true,
+    truncated: false,
+    items: [
+      { kind: 'user', text: 'hi' },
+      { kind: 'tool', name: 'Read', summary: 'a.ts' },
+      { kind: 'assistant', text: 'Hel', stopped: false },
+      { kind: 'note', text: 'odd line' },
+      { kind: 'error', text: 'no quota' },
+      { kind: 'cost', costUsd: 0.0421 },
+      { kind: 'cost', costUsd: null },
+      { kind: 'interrupted' },
+    ],
+  } as const;
+
+  function withHistory(change: (text: string) => string = (text) => text): string {
+    const start = createWorkspace(defaultDraft());
+    const paneId = activeTab(start)?.focusedId ?? '';
+    return change(
+      serializeWorkspace(
+        workspaceReducer(start, {
+          type: 'replace-content',
+          paneId,
+          content: {
+            type: 'chat',
+            agent: 'claude',
+            directory: '~/v',
+            history: { ...HISTORY, items: [...HISTORY.items] },
+          },
+        }),
+      ),
+    );
+  }
+
+  it('survives a save and a load, with its session id and whether a run was going', () => {
+    const restored = parseWorkspace(withHistory());
+    const tab = restored === null ? null : activeTab(restored);
+    expect(tab === null ? null : leavesOf(tab.root)[0]?.content).toEqual({
+      type: 'chat',
+      agent: 'claude',
+      directory: '~/v',
+      history: HISTORY,
+    });
+  });
+
+  it('is refused when an item is of a kind it does not know', () => {
+    const text = withHistory((saved) => saved.replace('"kind":"note"', '"kind":"command"'));
+    expect(parseWorkspace(text)).toBeNull();
+  });
+
+  it('is refused when a cost is not a sum of money', () => {
+    const negative = withHistory((saved) => saved.replace('"costUsd":0.0421', '"costUsd":-1'));
+    const words = withHistory((saved) => saved.replace('"costUsd":0.0421', '"costUsd":"free"'));
+    expect(parseWorkspace(negative)).toBeNull();
+    expect(parseWorkspace(words)).toBeNull();
+  });
+
+  it('is refused when the session id is not text', () => {
+    const text = withHistory((saved) => saved.replace('"sessionId":"s-1"', '"sessionId":7'));
+    expect(parseWorkspace(text)).toBeNull();
+  });
+});

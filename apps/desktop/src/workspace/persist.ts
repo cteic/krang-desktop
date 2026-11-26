@@ -13,6 +13,23 @@ import type { PaneContent, PaneTree, Tab, Workspace } from './model';
 
 const VERSION = 1;
 
+const chatHistoryItemSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('user'), text: z.string() }),
+  z.object({ kind: z.literal('assistant'), text: z.string(), stopped: z.boolean() }),
+  z.object({ kind: z.literal('tool'), name: z.string(), summary: z.string() }),
+  z.object({ kind: z.literal('note'), text: z.string() }),
+  z.object({ kind: z.literal('error'), text: z.string() }),
+  z.object({ kind: z.literal('cost'), costUsd: z.number().nonnegative().nullable() }),
+  z.object({ kind: z.literal('interrupted') }),
+]);
+
+const chatHistorySchema = z.object({
+  sessionId: z.string().nullable(),
+  running: z.boolean(),
+  truncated: z.boolean(),
+  items: z.array(chatHistoryItemSchema),
+});
+
 const contentSchema: z.ZodType<PaneContent> = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('terminal'),
@@ -31,6 +48,7 @@ const contentSchema: z.ZodType<PaneContent> = z.discriminatedUnion('type', [
     agent: z.string().nullable(),
     directory: z.string().nullable(),
     mode: z.enum(CHAT_MODES).optional(),
+    history: chatHistorySchema.optional(),
   }),
   z.object({
     type: z.literal('graph'),

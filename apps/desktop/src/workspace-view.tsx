@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, PointerEvent as ReactPointerEvent } from 'react';
 
 import { accentFor, badgeColorFor } from './accent';
+import { type AddPaneChoice, AddPaneMenu } from './add-pane-menu';
 import { PaneBody } from './panes/pane-body';
 import type { PaneActions } from './panes/pane-props';
 import { computeGeometry } from './workspace/geometry';
 import type { DividerLine, Rect } from './workspace/geometry';
 import { contentForSplit } from './workspace/menu-actions';
 import { leavesOf, paneTitle } from './workspace/model';
-import type { LeafNode, PaneContent, Tab, Workspace } from './workspace/model';
+import type { LeafNode, Tab, Workspace } from './workspace/model';
 import { defaultDraft } from './workspace/reducer';
 import type { WorkspaceAction } from './workspace/reducer';
 
@@ -18,12 +19,7 @@ export interface WorkspaceViewProps {
   debug: boolean;
 }
 
-interface NewPaneChoice {
-  label: string;
-  content: PaneContent;
-}
-
-const NEW_PANE_CHOICES: NewPaneChoice[] = [
+const NEW_PANE_CHOICES: AddPaneChoice[] = [
   { label: 'Terminal', content: { type: 'terminal', directory: null, commands: [] } },
   { label: 'Files', content: { type: 'files', directory: null } },
   { label: 'Editor', content: { type: 'editor', path: null } },
@@ -96,26 +92,15 @@ export function WorkspaceView({ workspace, dispatch, debug }: WorkspaceViewProps
           +
         </button>
         <div className="tab-bar-space" />
-        {NEW_PANE_CHOICES.map((choice) => (
-          <button
-            className="new-pane"
-            type="button"
-            key={choice.label}
-            disabled={active === undefined}
-            onClick={() => {
-              if (active !== undefined) {
-                dispatch({
-                  type: 'split',
-                  paneId: active.focusedId,
-                  direction: 'row',
-                  content: choice.content,
-                });
-              }
-            }}
-          >
-            + {choice.label}
-          </button>
-        ))}
+        <AddPaneMenu
+          choices={NEW_PANE_CHOICES}
+          disabled={active === undefined}
+          onAdd={(content) => {
+            if (active !== undefined) {
+              dispatch({ type: 'split', paneId: active.focusedId, direction: 'row', content });
+            }
+          }}
+        />
       </div>
       <div className="tab-area">
         {workspace.tabs.map((tab) => (

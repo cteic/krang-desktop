@@ -162,6 +162,9 @@ function resultEvents(value: unknown): AgentEvent[] {
   }
   const failed = isError === true || (subtype !== undefined && subtype !== 'success');
   if (failed) {
+    if (parsed.data.total_cost_usd !== undefined) {
+      events.push({ type: 'cost', costUsd: parsed.data.total_cost_usd });
+    }
     const detail = errors !== undefined && errors.length > 0 ? errors.join('\n') : result;
     const message = detail !== undefined && detail !== '' ? detail : (subtype ?? 'The run failed');
     events.push({ type: 'error', message });

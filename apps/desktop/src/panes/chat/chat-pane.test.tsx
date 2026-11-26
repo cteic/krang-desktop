@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { parseLayout } from '../../layout/layout';
-import { type ChatContent, leavesOf } from '../../workspace/model';
+import { type ChatContent, activeTab, leavesOf } from '../../workspace/model';
+import { parseWorkspace, serializeWorkspace } from '../../workspace/persist';
+import { createWorkspace, defaultDraft, workspaceReducer } from '../../workspace/reducer';
 import type { PaneActions } from '../pane-props';
 
 import { ChatPane } from './chat-pane';
@@ -144,6 +146,37 @@ function type(text: string) {
 function sendMessage(text: string) {
   type(text);
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+}
+
+/** Every chat content the pane handed to the workspace, oldest first. */
+function savedContents(actions: PaneActions): ChatContent[] {
+  return vi
+    .mocked(actions.replaceContent)
+    .mock.calls.flatMap(([content]) => (content.type === 'chat' ? [content] : []));
+}
+
+function lastSaved(actions: PaneActions): ChatContent {
+  const saved = savedContents(actions).at(-1);
+  if (saved === undefined) {
+    throw new Error('the pane saved no content');
+  }
+  return saved;
+}
+
+/** The content as it comes back after the app quits and opens again. */
+function afterReopen(content: ChatContent): ChatContent {
+  const start = createWorkspace(defaultDraft());
+  const paneId = activeTab(start)?.focusedId ?? '';
+  const saved = serializeWorkspace(
+    workspaceReducer(start, { type: 'replace-content', paneId, content }),
+  );
+  const restored = parseWorkspace(saved);
+  const tab = restored === null ? null : activeTab(restored);
+  const reopened = tab === null ? undefined : leavesOf(tab.root)[0]?.content;
+  if (reopened === undefined || reopened.type !== 'chat') {
+    throw new Error('the saved workspace did not come back with its chat');
+  }
+  return reopened;
 }
 
 function texts(selector: string): string[] {
@@ -403,7 +436,7 @@ describe('ChatPane', () => {
     rerender({ content: { type: 'chat', agent: 'codex', directory: '/work/demo' } });
     expect(texts('.chat-user')).toEqual(['to codex']);
     expect(commandCalls('agent_cancel')).toEqual([]);
-    expect(actions.replaceContent).toHaveBeenCalledTimes(1);
+    expect(savedContents(actions).filter((saved) => saved.history === undefined)).toHaveLength(1);
   });
 
   it('reads Codex lines and resumes the thread on a follow-up', () => {
@@ -539,6 +572,46 @@ describe('ChatPane', () => {
     expect(actions.setBadge).toHaveBeenLastCalledWith(null);
   });
 
+  it('badges a background run that exits with an error as failed, not done', () => {
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    exit(lastRun(), 1, 'Error: not logged in\n');
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+    expect(actions.setBadge).not.toHaveBeenCalledWith({ text: 'done', color: null });
+  });
+
+  it('badges a background run that a signal ended as failed', () => {
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    exit(lastRun(), null);
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+    expect(actions.setBadge).not.toHaveBeenCalledWith({ text: 'done', color: null });
+  });
+
+  it('badges a background run that reports an error and exits with code 0 as failed', () => {
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    const run = lastRun();
+    feed(run, { type: 'result', subtype: 'error_during_execution', is_error: true });
+    exit(run);
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+    expect(actions.setBadge).not.toHaveBeenCalledWith({ text: 'done', color: null });
+  });
+
+  it('badges a background run that could not start as failed', async () => {
+    tauri.invoke.mockImplementation((command: string) =>
+      command === 'agent_run'
+        ? Promise.reject(new Error('claude is not installed'))
+        : Promise.resolve(),
+    );
+    const { actions } = renderPane({ active: false });
+    sendMessage('hi');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(actions.setBadge).toHaveBeenCalledWith({ text: 'failed', color: '#ff7b72' });
+  });
+
   it('does not badge a run that finishes while the pane is active', () => {
     const { actions } = renderPane({ active: true });
     sendMessage('hi');
@@ -594,6 +667,189 @@ describe('ChatPane', () => {
 
     expect(document.querySelector('.chat-assistant img')).toBeNull();
     expect(screen.getByText('image: chart')).toBeTruthy();
+  });
+});
+
+describe('ChatPane run cost', () => {
+  it('shows what a Claude Code run reported it cost', () => {
+    renderPane();
+    sendMessage('hi');
+    const run = lastRun();
+    feed(run, {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Hi',
+      session_id: 's-1',
+      total_cost_usd: 0.0421,
+    });
+    expect(texts('.chat-cost')).toEqual([]);
+    exit(run);
+    expect(texts('.chat-cost')).toEqual(['Cost: $0.0421']);
+  });
+
+  it('shows the cost as unknown for Codex, which reports none', () => {
+    renderPane({ content: { type: 'chat', agent: 'codex', directory: '/work/demo' } });
+    sendMessage('hi');
+    const run = lastRun();
+    feed(
+      run,
+      { type: 'thread.started', thread_id: 'th-9' },
+      { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'Done.' } },
+      { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } },
+    );
+    exit(run);
+    expect(texts('.chat-cost')).toEqual(['Cost: unknown']);
+  });
+
+  it('shows the cost as unknown for a run that failed before reporting one', () => {
+    renderPane();
+    sendMessage('hi');
+    exit(lastRun(), 1, 'Error: not logged in\n');
+    expect(texts('.chat-cost')).toEqual(['Cost: unknown']);
+  });
+
+  it("keeps each run's cost through a quit and a reopen", () => {
+    const { actions } = renderPane();
+    sendMessage('one');
+    const first = lastRun();
+    feed(first, { type: 'result', subtype: 'success', session_id: 's-1', total_cost_usd: 0.01 });
+    exit(first);
+    sendMessage('two');
+    const second = lastRun();
+    feed(second, { type: 'result', subtype: 'success', session_id: 's-1' });
+    exit(second);
+    const saved = lastSaved(actions);
+
+    cleanup();
+    renderPane({ content: afterReopen(saved) });
+    expect(texts('.chat-cost')).toEqual(['Cost: $0.0100', 'Cost: unknown']);
+  });
+});
+
+describe('ChatPane saved chat', () => {
+  it('restores the transcript and the session after a quit and a reopen', () => {
+    const { actions } = renderPane();
+    sendMessage('hi');
+    const first = lastRun();
+    feed(
+      first,
+      { type: 'system', subtype: 'init', session_id: 's-1' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
+    );
+    exit(first);
+    const saved = lastSaved(actions);
+    expect(saved.history).toMatchObject({ sessionId: 's-1', running: false, truncated: false });
+
+    cleanup();
+    tauri.invoke.mockClear();
+    renderPane({ content: afterReopen(saved) });
+
+    expect(texts('.chat-user')).toEqual(['hi']);
+    expect(texts('.chat-assistant')).toEqual(['Hello']);
+    expect(document.querySelector('.chat-interrupted')).toBeNull();
+    expect(runs()).toEqual([]);
+
+    sendMessage('again');
+    expect(lastRun().args.slice(-2)).toEqual(['--resume', 's-1']);
+  });
+
+  it('saves the start of a run at once, so a quit just after it is remembered', () => {
+    const { actions } = renderPane();
+    sendMessage('hi');
+    expect(lastSaved(actions).history).toMatchObject({
+      running: true,
+      items: [{ kind: 'user', text: 'hi' }],
+    });
+  });
+
+  it('shows a run that was in progress at quit as interrupted, and never restarts it', () => {
+    vi.useFakeTimers();
+    const first = renderPane();
+    sendMessage('hi');
+    feed(lastRun(), { type: 'system', subtype: 'init', session_id: 's-1' }, delta('Hel'));
+    const midRun = { ...lastSaved(first.actions) };
+    first.rerender({ content: midRun });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    const saved = lastSaved(first.actions);
+    expect(saved.history).toMatchObject({ running: true, sessionId: 's-1' });
+    expect(saved.history?.items).toEqual([
+      { kind: 'user', text: 'hi' },
+      { kind: 'assistant', text: 'Hel', stopped: false },
+    ]);
+
+    cleanup();
+    tauri.invoke.mockClear();
+    const { actions } = renderPane({ content: afterReopen(saved) });
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(texts('.chat-interrupted')).toEqual([
+      'Interrupted. This run did not finish and was not restarted.',
+    ]);
+    expect(texts('.chat-assistant')).toEqual(['Hel']);
+    expect(texts('.chat-cost')).toEqual(['Cost: unknown']);
+    expect(runs()).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(screen.queryByText('Working…')).toBeNull();
+    // The mark is saved, so it is still there after the next quit.
+    expect(lastSaved(actions).history).toMatchObject({ running: false });
+    expect(lastSaved(actions).history?.items).toContainEqual({ kind: 'interrupted' });
+
+    sendMessage('carry on');
+    expect(runs()).toHaveLength(1);
+    expect(lastRun().args.slice(-2)).toEqual(['--resume', 's-1']);
+  });
+
+  it('forgets the saved chat on New chat', () => {
+    const { actions } = renderPane();
+    sendMessage('hi');
+    exit(lastRun());
+    expect(lastSaved(actions).history).toBeDefined();
+
+    // The workspace hands the saved content back to the pane.
+    cleanup();
+    const reopened = renderPane({ content: lastSaved(actions) });
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    expect(lastSaved(reopened.actions).history).toBeUndefined();
+  });
+
+  it('says when a restored chat came back without its oldest messages', () => {
+    renderPane({
+      content: {
+        type: 'chat',
+        agent: null,
+        directory: '/work/demo',
+        history: {
+          sessionId: null,
+          running: false,
+          truncated: true,
+          items: [{ kind: 'user', text: 'hi' }],
+        },
+      },
+    });
+    expect(screen.getByText(/Earlier messages were not kept/)).toBeTruthy();
+  });
+
+  it('does not pass on a saved session id that could be read as an option', () => {
+    renderPane({
+      content: {
+        type: 'chat',
+        agent: null,
+        directory: '/work/demo',
+        history: {
+          sessionId: '--dangerously-skip-permissions',
+          running: false,
+          truncated: false,
+          items: [{ kind: 'user', text: 'hi' }],
+        },
+      },
+    });
+    sendMessage('again');
+    expect(lastRun().args).toEqual(CLAUDE_FIRST_ARGS);
   });
 });
 
