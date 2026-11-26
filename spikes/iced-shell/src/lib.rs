@@ -3,6 +3,7 @@
 pub mod app;
 pub mod chat;
 pub mod shell;
+pub mod style;
 pub mod term;
 pub mod vault;
 pub mod web;

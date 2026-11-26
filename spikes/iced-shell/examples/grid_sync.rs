@@ -9,6 +9,7 @@ use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
+use krang_shell::term::palette::Scheme;
 use krang_shell::term::snapshot::Snapshot;
 
 fn time(rounds: u32, mut f: impl FnMut()) -> Duration {
@@ -45,7 +46,7 @@ fn main() {
         std::hint::black_box(term.grid().clone());
     });
     let snapshot = time(rounds, || {
-        std::hint::black_box(Snapshot::take(&term));
+        std::hint::black_box(Snapshot::take(&term, &Scheme::default()));
     });
     println!("terminal {columns}x{lines}, 10000 lines of scrollback, full");
     println!(

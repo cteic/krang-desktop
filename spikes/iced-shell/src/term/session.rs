@@ -15,6 +15,7 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty;
 
 use super::events::{EventProxy, Sender};
+use super::palette::Scheme;
 use super::snapshot::{Snapshot, grid_point};
 
 /// Lines of history kept per terminal. This bounds a terminal's memory
@@ -44,6 +45,7 @@ pub struct Spawn<'a> {
     pub id: u64,
     pub directory: Option<&'a Path>,
     pub size: GridSize,
+    pub scheme: Scheme,
 }
 
 pub struct Session {
@@ -53,6 +55,7 @@ pub struct Session {
     pid: u32,
     size: GridSize,
     snapshot: Snapshot,
+    scheme: Scheme,
     /// Output arrived while the terminal was not on screen.
     stale: bool,
 }
@@ -107,7 +110,7 @@ impl Session {
         // The loop thread owns the pty. It ends on `Msg::Shutdown`, and
         // dropping the pty hangs up the shell and reaps it.
         let _ = event_loop.spawn();
-        let snapshot = Snapshot::take(&term.lock());
+        let snapshot = Snapshot::take(&term.lock(), &spawn.scheme);
         Ok(Self {
             term,
             proxy,
@@ -115,6 +118,7 @@ impl Session {
             pid,
             size: spawn.size,
             snapshot,
+            scheme: spawn.scheme,
             stale: false,
         })
     }
@@ -149,9 +153,17 @@ impl Session {
         }
     }
 
+    /// Redraws in other colours, when the app goes light or dark.
+    pub fn set_scheme(&mut self, scheme: Scheme) {
+        if self.scheme != scheme {
+            self.scheme = scheme;
+            self.refresh();
+        }
+    }
+
     fn refresh(&mut self) {
         let term = self.term.lock();
-        self.snapshot = Snapshot::take(&term);
+        self.snapshot = Snapshot::take(&term, &self.scheme);
         self.stale = false;
     }
 

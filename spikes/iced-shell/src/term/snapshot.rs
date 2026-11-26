@@ -14,7 +14,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
-use super::palette;
+use super::palette::{self, Scheme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
@@ -66,10 +66,12 @@ pub struct Snapshot {
     pub mode: TermMode,
     pub display_offset: usize,
     pub links: Vec<String>,
+    /// The colours the cells were resolved against.
+    pub scheme: Scheme,
 }
 
 impl Snapshot {
-    pub fn take<T: EventListener>(term: &Term<T>) -> Self {
+    pub fn take<T: EventListener>(term: &Term<T>, scheme: &Scheme) -> Self {
         let columns = term.columns();
         let screen_lines = term.screen_lines();
         let content = term.renderable_content();
@@ -81,8 +83,8 @@ impl Snapshot {
         let blank = Cell {
             c: ' ',
             style: Style {
-                fg: palette::FOREGROUND,
-                bg: palette::BACKGROUND,
+                fg: scheme.foreground,
+                bg: scheme.background,
                 bold: false,
                 italic: false,
                 underline: false,
@@ -114,16 +116,16 @@ impl Snapshot {
                 continue;
             }
             let bold = flags.contains(Flags::BOLD);
-            let mut fg = palette::resolve(cell.fg, colors, bold);
-            let mut bg = palette::resolve(cell.bg, colors, false);
+            let mut fg = palette::resolve(cell.fg, colors, bold, scheme);
+            let mut bg = palette::resolve(cell.bg, colors, false, scheme);
             if flags.contains(Flags::DIM) {
-                fg = palette::dim(fg);
+                fg = palette::dim(fg, scheme);
             }
             if flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
             }
             if selection.is_some_and(|range| range.contains(indexed.point)) {
-                bg = palette::SELECTION;
+                bg = scheme.selection;
             }
             let c = if flags.contains(Flags::HIDDEN) {
                 ' '
@@ -180,6 +182,7 @@ impl Snapshot {
             mode,
             display_offset,
             links,
+            scheme: *scheme,
         }
     }
 
@@ -235,7 +238,7 @@ mod tests {
     #[test]
     fn copies_text_and_true_colour() {
         let term = term_with(20, 3, b"plain \x1b[1;38;2;10;20;30mbold\x1b[0m");
-        let snapshot = Snapshot::take(&term);
+        let snapshot = Snapshot::take(&term, &Scheme::default());
         assert_eq!(snapshot.row_text(0).trim_end(), "plain bold");
         let cell = snapshot.rows[0].cells[6];
         assert!(cell.style.bold);
@@ -253,9 +256,25 @@ mod tests {
     #[test]
     fn inverse_swaps_colours() {
         let term = term_with(10, 2, b"\x1b[7mx");
-        let cell = Snapshot::take(&term).rows[0].cells[0];
-        assert_eq!(cell.style.fg, palette::BACKGROUND);
-        assert_eq!(cell.style.bg, palette::FOREGROUND);
+        let cell = Snapshot::take(&term, &Scheme::default()).rows[0].cells[0];
+        assert_eq!(cell.style.fg, Scheme::default().background);
+        assert_eq!(cell.style.bg, Scheme::default().foreground);
+    }
+
+    #[test]
+    fn default_colours_come_from_the_scheme() {
+        use crate::style::Mode;
+
+        let term = term_with(10, 2, b"x\x1b[31my");
+        for mode in [Mode::Dark, Mode::Light] {
+            let scheme = Scheme::of(mode);
+            let snapshot = Snapshot::take(&term, &scheme);
+            let cells = &snapshot.rows[0].cells;
+            assert_eq!(cells[0].style.fg, scheme.foreground);
+            assert_eq!(cells[0].style.bg, scheme.background);
+            assert_eq!(cells[1].style.fg, scheme.ansi[1]);
+            assert_eq!(snapshot.scheme, scheme);
+        }
     }
 
     #[test]
@@ -265,15 +284,15 @@ mod tests {
             output.extend_from_slice(format!("line {line}\r\n").as_bytes());
         }
         let term = term_with(40, 10, &output);
-        let snapshot = Snapshot::take(&term);
+        let snapshot = Snapshot::take(&term, &Scheme::default());
         assert_eq!(snapshot.rows.len(), 10);
         assert_eq!(snapshot.row_text(8).trim_end(), "line 4999");
     }
 
     #[test]
     fn an_unchanged_row_keeps_its_hash() {
-        let first = Snapshot::take(&term_with(10, 3, b"same\r\nold"));
-        let second = Snapshot::take(&term_with(10, 3, b"same\r\nnew"));
+        let first = Snapshot::take(&term_with(10, 3, b"same\r\nold"), &Scheme::default());
+        let second = Snapshot::take(&term_with(10, 3, b"same\r\nnew"), &Scheme::default());
         assert_eq!(first.rows[0].hash, second.rows[0].hash);
         assert_ne!(first.rows[1].hash, second.rows[1].hash);
     }
@@ -281,7 +300,7 @@ mod tests {
     #[test]
     fn the_alternate_screen_and_a_hidden_cursor_show_in_the_mode() {
         let term = term_with(10, 3, b"\x1b[?1049h\x1b[?25l");
-        let snapshot = Snapshot::take(&term);
+        let snapshot = Snapshot::take(&term, &Scheme::default());
         assert!(snapshot.mode.contains(TermMode::ALT_SCREEN));
         assert!(snapshot.cursor.is_none());
     }
@@ -293,7 +312,7 @@ mod tests {
             2,
             b"\x1b]8;;https://example.org/a\x1b\\here\x1b]8;;\x1b\\ x",
         );
-        let snapshot = Snapshot::take(&term);
+        let snapshot = Snapshot::take(&term, &Scheme::default());
         assert_eq!(
             snapshot.link_at(0, 2).as_deref(),
             Some("https://example.org/a")

@@ -17,8 +17,10 @@ use std::time::Instant;
 
 use alacritty_terminal::event::Event as TermSignal;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{button, column, container, mouse_area, row, stack, text, text_input};
-use iced::{Element, Length, Subscription, Task, Theme, keyboard, window};
+use iced::widget::{
+    Space, button, column, container, mouse_area, row, scrollable, stack, text, text_input,
+};
+use iced::{Element, Length, Padding, Size, Subscription, Task, Theme, keyboard, window};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::chat::runner::RunEvent;
@@ -26,7 +28,9 @@ use crate::shell::layout::{
     self, Axis, EditorMode, PaneKind, PaneSpec, TabSpec, Tree, WORKSPACE_VERSION, Workspace,
 };
 use crate::shell::store;
+use crate::style::{self, Icon, Mode, measure, size, space};
 use crate::term::events::{self, TermEvent};
+use crate::term::palette::Scheme;
 use crate::term::session::GridSize;
 use crate::term::view::{Input, cell_size};
 use crate::vault::index::Index;
@@ -63,6 +67,11 @@ pub enum Message {
     WebPump,
     Editor(u64, EditorMessage),
     VaultOpened(PathBuf, std::sync::Arc<std::sync::Mutex<Option<Index>>>),
+    /// A status line control: the action runs on that pane, focused first.
+    PaneAction(u64, Action),
+    /// The system went light or dark.
+    SystemTheme(iced::theme::Mode),
+    Resized(Size),
     PaneClicked(pane_grid::Pane),
     PaneResized(pane_grid::ResizeEvent),
     PaneDragged(pane_grid::DragEvent),
@@ -113,18 +122,43 @@ pub struct App {
     state_dir: Option<PathBuf>,
     default_vault: PathBuf,
     selftest: Option<selftest::SelfTest>,
+    /// Light or dark, fixed by `KRANG_THEME` or else following the system.
+    mode: Mode,
+    theme_setting: Option<Mode>,
+    theme: Theme,
+    /// The window's width, which decides where the tabs go.
+    width: f32,
 }
 
 const PALETTE_INPUT: &str = "palette-input";
 const NOWHERE: &str = "no-widget";
 
+/// The window's size at start: `KRANG_WINDOW_SIZE`, written `1280x800`, or
+/// the default.
+fn window_size() -> (f32, f32) {
+    style::window_size(std::env::var("KRANG_WINDOW_SIZE").ok().as_deref())
+        .unwrap_or(style::DEFAULT_WINDOW)
+}
+
 pub fn run(options: Options) -> iced::Result {
     iced::application(move || App::boot(options.clone()), App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
-        .theme(|_: &App| Theme::TokyoNight)
+        .theme(|app: &App| app.theme.clone())
+        .style(|_: &App, theme: &Theme| {
+            let tokens = style::tokens(theme);
+            iced::theme::Style {
+                background_color: tokens.bg,
+                text_color: tokens.ink,
+            }
+        })
+        .default_font(style::ui())
+        .settings(iced::Settings {
+            default_text_size: style::default_text_size(),
+            ..iced::Settings::default()
+        })
         .exit_on_close_request(false)
-        .window_size((1280.0, 800.0))
+        .window_size(window_size())
         .run()
 }
 
@@ -156,6 +190,7 @@ impl App {
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+        let theme_setting = Mode::from_env();
         let mut app = Self {
             window: None,
             tabs: Vec::new(),
@@ -174,6 +209,10 @@ impl App {
             state_dir,
             default_vault,
             selftest: options.selftest.map(selftest::SelfTest::new),
+            mode: Mode::choose(theme_setting, iced::theme::Mode::None),
+            theme_setting,
+            theme: Mode::choose(theme_setting, iced::theme::Mode::None).theme(),
+            width: window_size().0,
         };
 
         let mut tasks = vec![window::oldest().and_then(|id| {
@@ -181,6 +220,9 @@ impl App {
                 Message::WindowReady(id, ParentWindow::from_window(window))
             })
         })];
+        if theme_setting.is_none() {
+            tasks.push(iced::system::theme().map(Message::SystemTheme));
+        }
         let mut specs: Vec<TabSpec> = Vec::new();
         let mut active = 0;
         for path in &options.layouts {
@@ -283,6 +325,7 @@ impl App {
                     default_size(),
                     &self.term_sender,
                     &commands,
+                    self.mode,
                 ))
             }
             PaneKind::Editor { vault, path, mode } => {
@@ -469,6 +512,25 @@ impl App {
             && let Err(error) = store::save(dir, &self.workspace())
         {
             eprintln!("krang-shell: could not save the workspace: {error}");
+        }
+    }
+
+    /// Goes light or dark: the theme, and every terminal's colours.
+    fn set_mode(&mut self, mode: Mode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.theme = mode.theme();
+        let scheme = Scheme::of(mode);
+        for pane in self.panes.values_mut() {
+            if let Body::Terminal(TerminalPane {
+                session: Some(session),
+                ..
+            }) = &mut pane.body
+            {
+                session.set_scheme(scheme);
+            }
         }
     }
 
@@ -962,6 +1024,7 @@ impl App {
                         size,
                         &self.term_sender,
                         &[],
+                        self.mode,
                     );
                 }
             }
@@ -993,6 +1056,20 @@ impl App {
                     }
                 }
             }
+            Message::PaneAction(id, action) => {
+                let pane = self
+                    .tab()
+                    .grid
+                    .iter()
+                    .find(|(_, known)| **known == id)
+                    .map(|(pane, _)| *pane);
+                if let Some(pane) = pane {
+                    self.tab_mut().focus = Some(pane);
+                    return self.shortcut(action);
+                }
+            }
+            Message::SystemTheme(system) => self.set_mode(Mode::choose(self.theme_setting, system)),
+            Message::Resized(size) => self.width = size.width,
             Message::PaneClicked(pane) => {
                 if self.tab().focus != Some(pane) {
                     return self.focus(pane);
@@ -1313,7 +1390,11 @@ impl App {
                 _ => None,
             }),
             window::close_requests().map(Message::CloseRequested),
+            window::resize_events().map(|(_, size)| Message::Resized(size)),
         ];
+        if self.theme_setting.is_none() {
+            subscriptions.push(iced::system::theme_changes().map(Message::SystemTheme));
+        }
         if cfg!(target_os = "linux") && !self.web.is_empty() {
             // WebKitGTK only: see `host::pump`. macOS needs no timer.
             subscriptions.push(
@@ -1337,133 +1418,362 @@ impl App {
         Subscription::batch(subscriptions)
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let mut tabs = row![].spacing(2).padding([4, 6]);
-        for (index, tab) in self.tabs.iter().enumerate() {
-            let focus_title = tab
-                .focus
-                .and_then(|pane| tab.grid.get(pane))
-                .and_then(|id| self.pane_title(*id));
-            let label = format!(
-                "{}  {}",
-                index + 1,
-                focus_title.unwrap_or_else(|| tab.title.clone())
-            );
-            tabs = tabs.push(
-                row![
-                    button(text(label).size(12).wrapping(text::Wrapping::None))
-                        .padding([3, 10])
-                        .style(if index == self.active {
-                            button::primary
-                        } else {
-                            button::secondary
-                        })
-                        .on_press(Message::SelectTab(index)),
-                    button(text("×").size(12))
-                        .padding([3, 6])
-                        .style(button::text)
-                        .on_press(Message::CloseTab(index)),
-                ]
-                .spacing(0),
-            );
-        }
+    /// What a pane's status line says: its kind, what it is working on, and
+    /// a short note at the right.
+    fn pane_status(&self, id: u64) -> (&'static str, String, String) {
+        let Some(pane) = self.panes.get(&id) else {
+            return ("", String::new(), String::new());
+        };
+        let (kind, context, note) = match &pane.body {
+            Body::Terminal(terminal) => (
+                "Terminal",
+                terminal
+                    .working_directory()
+                    .map(|directory| style::tilde(&directory))
+                    .or_else(|| terminal.title.clone())
+                    .unwrap_or_default(),
+                TerminalPane::shell_name(),
+            ),
+            Body::Editor(editor) => (
+                "Editor",
+                match &editor.path {
+                    Some(path) => format!("{path}{}", if editor.dirty { " •" } else { "" }),
+                    None => String::from("No note open"),
+                },
+                editor.title_of_vault(),
+            ),
+            Body::Web(web) => (
+                "Web",
+                web.title
+                    .clone()
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| web.address.clone()),
+                String::from(if web.loading { "Loading" } else { "" }),
+            ),
+            Body::Chat(chat) => (
+                "Chat",
+                format!(
+                    "{}, {}",
+                    chat.agent.label(),
+                    chat.directory.as_deref().unwrap_or("~")
+                ),
+                chat.status_note(),
+            ),
+        };
+        let context = match &pane.title {
+            Some(title) => title.clone(),
+            None => context,
+        };
+        (
+            kind,
+            style::clip_start(&context, measure::CONTEXT_CHARS),
+            note,
+        )
+    }
 
+    fn tab_label(&self, tab: &Tab) -> String {
+        let focus_title = tab
+            .focus
+            .and_then(|pane| tab.grid.get(pane))
+            .and_then(|id| self.pane_title(*id));
+        style::clip_end(
+            &focus_title.unwrap_or_else(|| tab.title.clone()),
+            measure::TAB_TITLE_CHARS,
+        )
+    }
+
+    /// The panes of the shown tab, listed under it in the rail.
+    fn outline(&self) -> Element<'_, Message> {
         let tab = self.tab();
-        let focus = tab.focus;
-        let grid = PaneGrid::new(&tab.grid, |pane, id, _maximized| {
-            let focused = focus == Some(pane);
-            let id = *id;
-            let title = self.pane_title(id).unwrap_or_default();
-            let body: Element<'_, Message> = match self.panes.get(&id).map(|pane| &pane.body) {
-                Some(Body::Terminal(terminal)) => terminal.view(id, focused),
-                Some(Body::Editor(editor)) => {
-                    editor.view(id, self.vaults.get(&editor.root).and_then(Option::as_ref))
-                }
-                Some(Body::Web(web)) => web.view(id),
-                Some(Body::Chat(chat)) => chat.view(id),
-                None => text("").into(),
+        let mut items = column![].spacing(space::XXS);
+        for pane in leaf_panes(tab.grid.layout()) {
+            let Some(id) = tab.grid.get(pane) else {
+                continue;
             };
-            let title_bar = pane_grid::TitleBar::new(text(title).size(12).style(if focused {
-                text::primary
-            } else {
-                text::secondary
-            }))
-            .controls(pane_grid::Controls::new(
-                button(text("×").size(12))
-                    .padding([0, 6])
-                    .style(button::text)
-                    .on_press(Message::ClosePane(id)),
-            ))
-            .padding([2, 8])
-            .style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
-                container::Style::default().background(if focused {
-                    palette.background.strong.color
-                } else {
-                    palette.background.weak.color
-                })
-            });
-            pane_grid::Content::new(body)
-                .title_bar(title_bar)
-                .style(move |theme: &Theme| {
-                    let palette = theme.extended_palette();
-                    container::Style::default()
-                        .background(palette.background.base.color)
-                        .border(iced::Border {
-                            color: if focused {
-                                palette.primary.strong.color
-                            } else {
-                                palette.background.strong.color
-                            },
-                            width: 1.0,
-                            radius: 0.0.into(),
-                        })
-                })
-        })
-        .spacing(4)
-        .on_click(Message::PaneClicked)
-        .on_drag(Message::PaneDragged)
-        .on_resize(8, Message::PaneResized);
-
-        let mut layers = stack![column![
-            tabs,
-            container(grid).padding([0, 4]).height(Length::Fill)
-        ]];
-        if let Some(palette) = &self.palette {
-            let mut list = column![
-                text_input("Type a command", &palette.query)
-                    .id(PALETTE_INPUT)
-                    .size(14)
-                    .on_input(Message::PaletteQuery)
-                    .on_submit(Message::PaletteRun(None))
-            ]
-            .spacing(2);
-            for (index, command) in palette.matches.iter().enumerate() {
-                list = list.push(
-                    button(text(palette::label(*command)).size(13))
-                        .width(Length::Fill)
-                        .style(if index == palette.selected {
-                            button::primary
-                        } else {
-                            button::text
-                        })
-                        .on_press(Message::PaletteRun(Some(*command))),
+            let current = tab.focus == Some(pane);
+            let (kind, _, _) = self.pane_status(*id);
+            let mut label = row![].spacing(space::M).align_y(iced::Alignment::Center);
+            if current {
+                label = label.push(
+                    container(style::mark())
+                        .height(size::LABEL)
+                        .width(measure::MARK),
                 );
             }
-            layers = layers.push(
-                mouse_area(
-                    container(
-                        container(list)
-                            .width(520)
-                            .padding(8)
-                            .style(container::bordered_box),
-                    )
-                    .center_x(Length::Fill)
-                    .padding(60)
-                    .height(Length::Fill),
-                )
-                .on_press(Message::Shortcut(Action::Escape)),
+            label = label.push(
+                text(kind)
+                    .size(size::LABEL)
+                    .font(if current {
+                        style::ui_strong()
+                    } else {
+                        style::ui()
+                    })
+                    .style(style::inherit),
             );
+            items = items.push(
+                button(label)
+                    .width(Length::Fill)
+                    .padding(Padding::from([space::XS, space::M]))
+                    .style(style::outline_item(current))
+                    .on_press(Message::PaneClicked(pane)),
+            );
+        }
+        container(row![style::guide(), items].spacing(space::M))
+            .padding(Padding::default().left(space::XL).bottom(space::M))
+            .into()
+    }
+
+    fn tab_button(&self, index: usize, tab: &Tab, fill: bool) -> Element<'_, Message> {
+        let selected = index == self.active;
+        let label = text(self.tab_label(tab))
+            .size(size::BODY)
+            .font(if selected {
+                style::ui_strong()
+            } else {
+                style::ui()
+            })
+            .style(style::inherit)
+            .wrapping(text::Wrapping::None);
+        let select = button(label)
+            .padding(Padding::from([space::S, space::L]))
+            .style(style::tab(selected))
+            .on_press(Message::SelectTab(index));
+        let close = button(
+            container(style::close_mark())
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(measure::CONTROL)
+        .height(measure::CONTROL)
+        .padding(space::NONE)
+        .style(style::quiet)
+        .on_press(Message::CloseTab(index));
+        row![
+            if fill {
+                select.width(Length::Fill)
+            } else {
+                select
+            },
+            close
+        ]
+        .spacing(space::XXS)
+        .align_y(iced::Alignment::Center)
+        .into()
+    }
+
+    fn add_pane_button(&self, with_keys: bool) -> Element<'_, Message> {
+        let mut label = row![
+            text("Add pane")
+                .size(size::BODY)
+                .font(style::ui_strong())
+                .style(style::inherit)
+        ]
+        .align_y(iced::Alignment::Center);
+        if with_keys {
+            label = label
+                .push(Space::new().width(Length::Fill))
+                .push(style::keys("Cmd+K"));
+        }
+        button(label)
+            .padding(Padding::from([space::M, space::L]))
+            .style(style::secondary)
+            .on_press(Message::Shortcut(Action::Palette))
+            .into()
+    }
+
+    /// The tabs down the left of a wide window. The shown tab lists its
+    /// panes under it.
+    fn rail(&self) -> Element<'_, Message> {
+        let mut tabs = column![].spacing(space::XXS);
+        for (index, tab) in self.tabs.iter().enumerate() {
+            tabs = tabs.push(self.tab_button(index, tab, true));
+            if index == self.active {
+                tabs = tabs.push(self.outline());
+            }
+        }
+        tabs = tabs.push(
+            button(text("New tab").size(size::BODY).style(style::inherit))
+                .width(Length::Fill)
+                .padding(Padding::from([space::S, space::L]))
+                .style(style::tab(false))
+                .on_press(Message::Shortcut(Action::NewTab)),
+        );
+        column![
+            scrollable(tabs)
+                .direction(style::scroll_direction())
+                .style(style::scrollbar)
+                .height(Length::Fill),
+            container(self.add_pane_button(true)).width(Length::Fill),
+        ]
+        .spacing(space::L)
+        .padding(
+            Padding::from([space::XL, space::L])
+                .bottom(space::L)
+                .right(space::L),
+        )
+        .width(measure::RAIL)
+        .into()
+    }
+
+    /// The tabs across the top of a narrow window.
+    fn tab_bar(&self) -> Element<'_, Message> {
+        let mut tabs = row![].spacing(space::XS).align_y(iced::Alignment::Center);
+        for (index, tab) in self.tabs.iter().enumerate() {
+            tabs = tabs.push(self.tab_button(index, tab, false));
+        }
+        row![
+            scrollable(tabs)
+                .direction(style::scroll_direction_across())
+                .style(style::scrollbar)
+                .width(Length::Fill),
+            self.add_pane_button(false),
+        ]
+        .spacing(space::L)
+        .padding(Padding::from([space::M, space::L]))
+        .align_y(iced::Alignment::Center)
+        .into()
+    }
+
+    fn panes_view(&self) -> PaneGrid<'_, Message> {
+        let tab = self.tab();
+        let focus = tab.focus;
+        let magnified = tab.grid.maximized().is_some();
+        PaneGrid::new(&tab.grid, move |pane, id, _maximized| {
+            let focused = focus == Some(pane);
+            let id = *id;
+            let body: Element<'_, Message> = match self.panes.get(&id).map(|pane| &pane.body) {
+                Some(Body::Terminal(terminal)) => terminal.view(id, focused, self.mode),
+                Some(Body::Editor(editor)) => editor.view(
+                    id,
+                    self.vaults.get(&editor.root).and_then(Option::as_ref),
+                    self.mode,
+                    focused,
+                ),
+                Some(Body::Web(web)) => web.view(id),
+                Some(Body::Chat(chat)) => chat.view(id, self.mode, focused),
+                None => Space::new().into(),
+            };
+            let (kind, context, note) = self.pane_status(id);
+            let act = |icon: Icon, action: Action| {
+                style::control(
+                    style::icon(icon, focused),
+                    focused,
+                    Message::PaneAction(id, action),
+                )
+            };
+            let close = || style::control(style::close_mark(), focused, Message::ClosePane(id));
+            let magnify = || {
+                act(
+                    if magnified {
+                        Icon::Restore
+                    } else {
+                        Icon::Magnify
+                    },
+                    Action::Magnify,
+                )
+            };
+            let full = container(
+                row![
+                    text(note)
+                        .size(size::META)
+                        .style(style::inherit)
+                        .wrapping(text::Wrapping::None),
+                    Space::new().width(space::XS),
+                    act(Icon::SplitRight, Action::SplitRight),
+                    act(Icon::SplitDown, Action::SplitDown),
+                    magnify(),
+                    close(),
+                ]
+                .spacing(space::XXS)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding(Padding::default().left(space::L))
+            .style(style::status_end(focused));
+            let compact = container(
+                row![magnify(), close()]
+                    .spacing(space::XXS)
+                    .align_y(iced::Alignment::Center),
+            )
+            .padding(Padding::default().left(space::L))
+            .style(style::status_end(focused));
+            let title_bar = pane_grid::TitleBar::new(
+                container(style::named(kind, context))
+                    .height(measure::CONTROL)
+                    .align_y(iced::Alignment::Center),
+            )
+            .controls(pane_grid::Controls::dynamic(full, compact))
+            .always_show_controls()
+            .padding(Padding::from([space::XS, space::M]).left(space::XL))
+            .style(style::status_line(focused));
+            pane_grid::Content::new(body)
+                .title_bar(title_bar)
+                .style(style::pane(focused))
+        })
+        .spacing(space::L)
+        .style(style::splits)
+        .on_click(Message::PaneClicked)
+        .on_drag(Message::PaneDragged)
+        .on_resize(measure::SPLIT_LEEWAY, Message::PaneResized)
+    }
+
+    fn palette_view<'a>(&'a self, palette: &'a Palette) -> Element<'a, Message> {
+        let query = text_input("Type a command", &palette.query)
+            .id(PALETTE_INPUT)
+            .size(size::QUERY)
+            .padding(space::NONE)
+            .style(style::bare_input)
+            .on_input(Message::PaletteQuery)
+            .on_submit(Message::PaletteRun(None));
+        let choices = palette
+            .matches
+            .iter()
+            .enumerate()
+            .map(|(index, command)| {
+                let selected = index == palette.selected;
+                style::choice_row(
+                    palette::label(*command),
+                    palette::keys(*command)
+                        .map(|keys| style::choice_note(keys.to_string(), selected)),
+                    selected,
+                    Message::PaletteRun(Some(*command)),
+                )
+            })
+            .collect();
+        mouse_area(style::overlay(
+            style::panel(
+                query,
+                choices,
+                &[("Enter", "run"), ("Up, Down", "choose"), ("Esc", "close")],
+                measure::PALETTE,
+            ),
+            measure::OVERLAY_TOP,
+        ))
+        .on_press(Message::Shortcut(Action::Escape))
+        .into()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let narrow = self.width < measure::NARROW;
+        let grid = container(self.panes_view())
+            .height(Length::Fill)
+            .padding(if narrow {
+                Padding::from([space::NONE, space::L]).bottom(space::L)
+            } else {
+                Padding::from([space::L, space::L]).left(space::NONE)
+            });
+        let body: Element<'_, Message> = if narrow {
+            column![self.tab_bar(), grid].into()
+        } else {
+            row![self.rail(), grid].into()
+        };
+        let mut layers = stack![
+            container(body)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(style::window)
+        ];
+        if let Some(palette) = &self.palette {
+            layers = layers.push(self.palette_view(palette));
         }
         layers.into()
     }
