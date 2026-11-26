@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::chat::KdLink;
 use crate::kd::protocol::{ENV_CLI, ENV_PANE, ENV_SOCKET, ENV_TOKEN, Request, Response, pane_name};
-use crate::kd::server::{self, Tokens};
+use crate::kd::server::{self, Scope, Tokens};
 use crate::kd::shell_env;
 
 /// How long the socket's thread waits for the window to answer.
@@ -133,6 +134,25 @@ impl Tool {
             }
         }
         env
+    }
+
+    /// What a chat pane's agent gets: the `kd mcp` server to start, and the
+    /// variables that carry a fresh secret for that pane. A read-only chat's
+    /// secret covers only the commands that show things. None when the tool
+    /// has no link to run.
+    pub fn agent_link(&self, pane: u64, safe: bool) -> Option<(KdLink, Vec<(String, String)>)> {
+        let cli = self.cli.as_ref()?.to_string_lossy().into_owned();
+        let scope = if safe { Scope::Safe } else { Scope::Full };
+        let token = self.tokens.issue_scoped(pane, scope).ok()?;
+        let env = vec![
+            (
+                String::from(ENV_SOCKET),
+                self.socket.to_string_lossy().into_owned(),
+            ),
+            (String::from(ENV_PANE), pane_name(pane)),
+            (String::from(ENV_TOKEN), token),
+        ];
+        Some((KdLink { cli, safe }, env))
     }
 
     pub fn revoke(&self, pane: u64) {

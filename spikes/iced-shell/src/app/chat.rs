@@ -127,6 +127,7 @@ impl ChatPane {
         &mut self,
         pane: u64,
         run: u64,
+        kd: Option<(crate::chat::KdLink, Vec<(String, String)>)>,
         sender: &tokio::sync::mpsc::UnboundedSender<RunEvent>,
     ) {
         let prompt = self.draft.text().trim().to_string();
@@ -140,11 +141,15 @@ impl ChatPane {
             directory: self.directory.clone(),
             session_id: self.transcript.session_id.clone(),
             trusted: self.trusted,
+            kd: kd.as_ref().map(|(link, _)| link.clone()),
         };
         let directory: Option<PathBuf> = self.directory.as_deref().map(expand_home);
         match runner::start(
             self.agent,
-            self.agent.args(&request),
+            runner::Launch {
+                args: self.agent.args(&request),
+                env: kd.map(|(_, env)| env).unwrap_or_default(),
+            },
             directory.as_deref(),
             prompt,
             pane,
@@ -481,9 +486,9 @@ mod tests {
         pane.next_agent();
         assert_eq!(pane.agent, Agent::Gemini);
         pane.next_agent();
-        assert_eq!(pane.agent, Agent::Local);
+        assert_eq!(pane.agent, Agent::Qwen);
         pane.transcript.send(String::from("hi"));
         pane.next_agent();
-        assert_eq!(pane.agent, Agent::Local);
+        assert_eq!(pane.agent, Agent::Qwen);
     }
 }

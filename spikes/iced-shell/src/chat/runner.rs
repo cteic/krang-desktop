@@ -76,15 +76,24 @@ pub struct Started {
     pub group: i32,
 }
 
+/// What the agent is started with, beside its prompt.
+#[derive(Debug, Clone, Default)]
+pub struct Launch {
+    pub args: Vec<String>,
+    /// Variables added after the app's own `kd` ones are removed.
+    pub env: Vec<(String, String)>,
+}
+
 pub fn start(
     agent: Agent,
-    args: Vec<String>,
+    launch: Launch,
     directory: Option<&Path>,
     prompt: String,
     pane: u64,
     run: u64,
     sender: UnboundedSender<RunEvent>,
 ) -> Result<Started, String> {
+    let Launch { args, env } = launch;
     let home = dirs::home_dir();
     let path = agent_path(home.as_deref(), std::env::var("PATH").ok().as_deref());
     let program = find_agent(agent, &path)
@@ -99,6 +108,9 @@ pub fn start(
         .env_remove(crate::kd::protocol::ENV_PANE)
         .env_remove(crate::kd::protocol::ENV_TOKEN)
         .env_remove(crate::kd::protocol::ENV_CLI)
+        // What it gets instead is its own chat pane's secret, for the `kd`
+        // MCP server it may start.
+        .envs(env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -236,7 +248,10 @@ mod tests {
         unsafe { std::env::set_var(Agent::Claude.override_env(), &script) };
         let started = start(
             Agent::Claude,
-            args,
+            Launch {
+                args,
+                env: Vec::new(),
+            },
             Some(&dir),
             "hello\n".into(),
             1,

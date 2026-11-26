@@ -28,7 +28,7 @@ pub enum Command {
     SaveLayout,
 }
 
-pub const COMMANDS: [(Command, &str); 29] = [
+pub const COMMANDS: [(Command, &str); 31] = [
     (
         Command::Add(NewPane::Terminal, false),
         "Add a terminal pane on the right",
@@ -52,6 +52,10 @@ pub const COMMANDS: [(Command, &str); 29] = [
     (
         Command::Add(NewPane::Chat(Agent::Gemini), false),
         "Add a Gemini chat pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Qwen), false),
+        "Add a Qwen Code chat pane on the right (local model)",
     ),
     (
         Command::Add(NewPane::Chat(Agent::Local), false),
@@ -81,6 +85,10 @@ pub const COMMANDS: [(Command, &str); 29] = [
     (
         Command::Add(NewPane::Chat(Agent::Gemini), true),
         "Add a Gemini chat pane below",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Qwen), true),
+        "Add a Qwen Code chat pane below (local model)",
     ),
     (
         Command::Add(NewPane::Chat(Agent::Local), true),

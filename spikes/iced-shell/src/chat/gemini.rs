@@ -130,6 +130,7 @@ mod tests {
             directory: Some("/w".into()),
             session_id: session.map(String::from),
             trusted,
+            kd: None,
         }
     }
 

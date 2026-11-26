@@ -79,7 +79,7 @@ so start the binary inside the bundle directly as above.
 
 ### Chat agents
 
-A chat pane talks to one of four agents. The palette has an "Add a ... chat
+A chat pane talks to one of five agents. The palette has an "Add a ... chat
 pane" command for each, `kd chat --agent` and layouts take the lowercase
 name, and the agent's name in the pane's footer switches an empty chat to
 the next one.
@@ -89,16 +89,23 @@ the next one.
 | Claude Code | `claude` | `claude -p --output-format stream-json ...`     | `--permission-mode plan` / `acceptEdits` |
 | Codex       | `codex`  | `codex exec --json ...`                         | `-s read-only` / `workspace-write` |
 | Gemini      | `gemini` | `gemini --output-format stream-json ...`        | `--approval-mode plan` / `auto_edit` |
+| Qwen Code   | `qwen`   | `qwen --output-format stream-json ...` on Ollama | `--approval-mode plan` / `auto-edit` |
 | Local       | `local`  | this app's own binary as `krang-shell --local-agent` | text only, no tools          |
 
-Each one keeps its session between messages: Claude and Gemini with
-`--resume`, Codex with `exec resume`. No mode turns off an agent's own
+Each one keeps its session between messages: Claude, Gemini and Qwen Code
+with `--resume`, Codex with `exec resume`. No mode turns off an agent's own
 permission checks, so nothing runs with `yolo` or a skipped sandbox.
 
 Gemini reads the prompt on standard input and runs headless. Gemini CLI
 refuses to run headless in a folder it has not trusted, so until you press
 Trust in the pane it gets no `--skip-trust`, and a run there fails unless
 the folder is already trusted in Gemini itself.
+
+Qwen Code is an agent with tools that runs a model on your own Ollama,
+through its OpenAI-style endpoint at `$OLLAMA_HOST/v1`. Install it with
+`npm install -g @qwen-code/qwen-code`. Its turns cost nothing, so the usage
+pane counts them as free. Until you press Trust it runs with `--safe-mode`,
+which keeps the folder's own context files, hooks and MCP servers out.
 
 Local sends the conversation to Ollama's `/api/chat` with streaming on,
 over plain http with no extra dependency. It costs nothing, and the pane
@@ -110,7 +117,8 @@ listening, the chat shows "Ollama is not running at ..." as a failed run.
 | ------------------- | --------------------------------------------- | ------------------------ |
 | `OLLAMA_HOST`       | Where Ollama listens, `host:port` or `http://host:port` | `http://127.0.0.1:11434` |
 | `KRANG_LOCAL_MODEL` | The Ollama model the Local agent uses         | `qwen3.5:9b-q8_0`        |
-| `KRANG_CLAUDE_BIN`, `KRANG_CODEX_BIN`, `KRANG_GEMINI_BIN`, `KRANG_LOCAL_BIN` | Another program to run as that agent, such as the fake agent | the first match on the PATH, or this app for Local |
+| `KRANG_QWEN_MODEL`  | The Ollama model Qwen Code uses               | `qwen3.6:35b-a3b-coding-mxfp8` |
+| `KRANG_CLAUDE_BIN`, `KRANG_CODEX_BIN`, `KRANG_GEMINI_BIN`, `KRANG_QWEN_BIN`, `KRANG_LOCAL_BIN` | Another program to run as that agent, such as the fake agent | the first match on the PATH, or this app for Local |
 
 A thinking model such as the default thinks before it writes, and the pane
 shows only the answer, so the first words can take a while.
@@ -243,7 +251,7 @@ always matches the app.
 | `kd view <path> [--down]` | Opens a file in an editor, or a folder in a files pane | `kd view src/main.rs` |
 | `kd web <url-or-path> [--down]` | Opens a web pane | `kd web http://localhost:3000` |
 | `kd term [dir] [--down] [-- command...]` | Opens a terminal, and types a first command into it | `kd term api -- pnpm dev` |
-| `kd chat [--agent claude\|codex] [dir] [--down]` | Opens a chat pane | `kd chat --agent codex` |
+| `kd chat [--agent claude\|codex\|gemini\|qwen\|local] [dir] [--down]` | Opens a chat pane | `kd chat --agent codex` |
 | `kd title <text>`, `kd title --clear` | Sets or clears this pane's title | `kd title "api tests"` |
 | `kd panes` | Prints the window's tabs and panes as JSON | `kd panes` |
 | `kd mcp` | Serves these commands as MCP tools on standard input and output | `claude mcp add krang -- kd mcp` |
@@ -308,8 +316,30 @@ Gemini CLI, in `.gemini/settings.json` for one project or
 - The agent finds `kd` on the pane's `PATH`.
 - Outside a pane, every tool call fails with a message that says so. The
   server keeps running.
-- A chat pane's agent gets none of the pane's variables, so the tools fail
-  there too.
+- A chat pane's agent gets the `kd` server from the app, with no setup.
+  See the next section.
+
+### kd in a chat pane
+
+Each time a chat pane sends a message, the app makes that pane a new
+secret and starts the agent with the `kd` MCP server. The secret travels
+in the agent's environment, never in its arguments.
+
+A read-only chat's secret covers only `kd_view`, `kd_web`, `kd_panes` and
+`kd_title`. The app refuses `kd_term` and `kd_chat` from it, so a read-only
+agent cannot type into a new terminal or start an agent that may edit.
+
+| Agent | Read only | Edit |
+| ----- | --------- | ---- |
+| Claude Code | no `kd`: plan mode refuses every MCP tool | the four safe tools run unasked |
+| Codex | the four safe tools | the four safe tools run unasked |
+| Qwen Code | the four safe tools, once the folder is trusted | the same |
+| Gemini, Local | no `kd` | no `kd` |
+
+In edit mode the secret covers every command, but `kd_term` and `kd_chat`
+still need the agent's own approval. A headless agent cannot ask, so they
+are refused, as its own shell commands are. Gemini CLI takes an MCP server
+only from its settings files, so it gets no `kd` yet.
 
 The app sets these in every terminal pane's shell:
 

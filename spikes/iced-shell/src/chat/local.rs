@@ -425,6 +425,7 @@ mod tests {
             directory: None,
             session_id: None,
             trusted: false,
+            kd: None,
         };
         assert_eq!(args(&first), ["--local-agent"]);
         let next = RunRequest {

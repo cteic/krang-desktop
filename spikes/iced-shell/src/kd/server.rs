@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::protocol::{MAX_LINE_BYTES, Request, Response, decode_request, encode};
+use super::protocol::{Command, MAX_LINE_BYTES, Request, Response, decode_request, encode};
 
 /// How long the app waits for a client to finish its line. Without it a
 /// client that connects and says nothing would hold a thread for ever.
@@ -46,21 +46,46 @@ fn same(a: &str, b: &str) -> bool {
     a.iter().zip(b).fold(0_u8, |seen, (x, y)| seen | (x ^ y)) == 0
 }
 
+/// What a secret lets its holder do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every command: a terminal pane's shell, or an agent that may edit.
+    Full,
+    /// Commands that only show things: view, web, panes and title. A
+    /// read-only chat's agent gets this, so it cannot type into a new
+    /// terminal or start an agent that may edit.
+    Safe,
+}
+
+impl Scope {
+    pub fn permits(self, command: &Command) -> bool {
+        match self {
+            Scope::Full => true,
+            Scope::Safe => !matches!(command, Command::Term { .. } | Command::Chat { .. }),
+        }
+    }
+}
+
 /// The secret of each pane that may use the tool.
 #[derive(Debug, Clone, Default)]
 pub struct Tokens {
-    by_pane: Arc<Mutex<HashMap<u64, String>>>,
+    by_pane: Arc<Mutex<HashMap<u64, (String, Scope)>>>,
 }
 
 impl Tokens {
-    /// Makes a pane's secret, replacing one it had.
+    /// Makes a pane's secret with every command, replacing one it had.
     pub fn issue(&self, pane: u64) -> io::Result<String> {
+        self.issue_scoped(pane, Scope::Full)
+    }
+
+    /// Makes a pane's secret for the commands in `scope`, replacing one it had.
+    pub fn issue_scoped(&self, pane: u64, scope: Scope) -> io::Result<String> {
         let token = random_token()?;
         let mut by_pane = self
             .by_pane
             .lock()
             .map_err(|_| io::Error::other("the pane secrets are poisoned"))?;
-        by_pane.insert(pane, token.clone());
+        by_pane.insert(pane, (token.clone(), scope));
         Ok(token)
     }
 
@@ -72,11 +97,18 @@ impl Tokens {
     }
 
     pub fn allows(&self, pane: u64, token: &str) -> bool {
-        self.by_pane
-            .lock()
-            .ok()
-            .and_then(|by_pane| by_pane.get(&pane).map(|known| same(known, token)))
-            .unwrap_or(false)
+        self.scope(pane, token).is_some()
+    }
+
+    /// What the secret lets its holder do, or None when it is not the
+    /// pane's secret.
+    pub fn scope(&self, pane: u64, token: &str) -> Option<Scope> {
+        self.by_pane.lock().ok().and_then(|by_pane| {
+            by_pane
+                .get(&pane)
+                .filter(|(known, _)| same(known, token))
+                .map(|(_, scope)| *scope)
+        })
     }
 }
 
@@ -255,8 +287,11 @@ where
     };
     // One message for a pane that is unknown and for a secret that is
     // wrong, so the answer does not say which panes exist.
-    if !tokens.allows(request.pane, &request.token) {
+    let Some(scope) = tokens.scope(request.pane, &request.token) else {
         return Response::err("the request does not carry this pane's secret");
+    };
+    if !scope.permits(&request.command) {
+        return Response::err("a read-only chat may only use view, web, panes and title");
     }
     handler(request)
 }
@@ -478,6 +513,36 @@ mod tests {
             .map(|app| app.opened.clone())
             .unwrap_or_default();
         assert_eq!(opened, ["view /demo/README.md true"]);
+    }
+
+    #[test]
+    fn a_safe_secret_shows_things_but_never_runs_them() {
+        let running = start("safe");
+        if let Ok(mut app) = running.app.lock() {
+            app.titles.insert(5, None);
+        }
+        let token = running
+            .tokens
+            .issue_scoped(5, Scope::Safe)
+            .unwrap_or_default();
+        let view = Command::View {
+            path: String::from("/demo/README.md"),
+            down: false,
+        };
+        assert_eq!(ask(&running, 5, &token, view), Ok(Response::done()));
+        let refused = Response::err("a read-only chat may only use view, web, panes and title");
+        let term = Command::Term {
+            directory: None,
+            command: Some(String::from("rm -rf ~")),
+            down: false,
+        };
+        assert_eq!(ask(&running, 5, &token, term), Ok(refused.clone()));
+        let chat = Command::Chat {
+            agent: crate::chat::Agent::Claude,
+            directory: None,
+            down: false,
+        };
+        assert_eq!(ask(&running, 5, &token, chat), Ok(refused));
     }
 
     #[test]

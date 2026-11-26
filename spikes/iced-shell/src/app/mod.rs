@@ -1009,7 +1009,12 @@ impl App {
     fn drop_pane(&mut self, id: u64) {
         if let Some(mut pane) = self.panes.remove(&id) {
             match &mut pane.body {
-                Body::Chat(chat) => chat.stop(),
+                Body::Chat(chat) => {
+                    chat.stop();
+                    if let Some(tool) = &self.tool {
+                        tool.revoke(id);
+                    }
+                }
                 Body::Web(_) => self.web.close(id),
                 Body::Editor(editor) => {
                     if editor.dirty {
@@ -1842,7 +1847,12 @@ impl App {
             ChatMessage::Draft(action) => chat.draft.perform(action),
             ChatMessage::Send => {
                 self.next_id += 1;
-                chat.send(id, run, &self.run_sender);
+                let link = self
+                    .tool
+                    .as_ref()
+                    .filter(|_| chat.agent.takes_kd())
+                    .and_then(|tool| tool.agent_link(id, chat.mode == crate::chat::Mode::ReadOnly));
+                chat.send(id, run, link, &self.run_sender);
                 self.save();
                 return iced::advanced::widget::operate(scroll::to_newest(
                     ChatPane::transcript_id(id),

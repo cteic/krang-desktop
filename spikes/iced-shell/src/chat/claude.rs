@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::event::{AgentEvent, Line, Usage, one_line, parse_json_line, str_at};
-use super::{Mode, RunRequest};
+use super::{KD_SAFE_TOOLS, KD_SERVER, Mode, RunRequest};
 
 /// The input fields that say most about a tool call, most telling first.
 const SUMMARY_KEYS: [&str; 9] = [
@@ -48,12 +48,33 @@ pub fn args(request: &RunRequest) -> Vec<String> {
         // for it: the directory's own settings stay out until the person says yes.
         args.extend(["--setting-sources".into(), "user".into()]);
     }
+    // Plan mode refuses every MCP tool, allowed or not, so a read-only chat
+    // gets no `kd` server: it would only cost the tool list's tokens.
+    let kd = request.kd.as_ref().filter(|_| request.mode == Mode::Edit);
+    if let Some(kd) = kd {
+        args.extend(["--mcp-config".into(), kd.mcp_config()]);
+    }
     args.push("--disallowedTools".into());
     args.extend(DENIED_TOOLS.map(String::from));
+    let mut allowed: Vec<String> = Vec::new();
     if request.mode == Mode::Edit {
+        allowed.extend(EDIT_ALLOWED_TOOLS.map(String::from));
+    }
+    if let Some(kd) = kd {
+        // Only the tools that show things run without a question. In print
+        // mode a question is a no, so `kd_term` and `kd_chat` stay as
+        // guarded as Claude's own shell.
+        allowed.extend(
+            KD_SAFE_TOOLS
+                .iter()
+                .filter(|tool| kd.tools().contains(tool))
+                .map(|tool| format!("mcp__{KD_SERVER}__{tool}")),
+        );
+    }
+    if !allowed.is_empty() {
         // The flag takes every word up to the next flag, so it goes last but for `--resume`.
         args.push("--allowedTools".into());
-        args.extend(EDIT_ALLOWED_TOOLS.map(String::from));
+        args.extend(allowed);
     }
     if let Some(session) = &request.session_id {
         args.extend(["--resume".into(), session.clone()]);
@@ -211,12 +232,34 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_an_edit_chat_gets_kd_and_only_its_safe_tools_run_unasked() {
+        let link = crate::chat::KdLink {
+            cli: String::from("/run/kd"),
+            safe: false,
+        };
+        let read_only = RunRequest {
+            kd: Some(link.clone()),
+            ..request(Mode::ReadOnly, None, true)
+        };
+        assert!(!args(&read_only).iter().any(|arg| arg == "--mcp-config"));
+        let edit = RunRequest {
+            kd: Some(link),
+            ..request(Mode::Edit, None, true)
+        };
+        let args = args(&edit);
+        assert!(args.iter().any(|arg| arg == "--mcp-config"));
+        assert!(args.iter().any(|arg| arg == "mcp__kd__kd_view"));
+        assert!(!args.iter().any(|arg| arg.contains("kd_term")));
+    }
+
     fn request(mode: Mode, session: Option<&str>, trusted: bool) -> RunRequest {
         RunRequest {
             mode,
             directory: None,
             session_id: session.map(String::from),
             trusted,
+            kd: None,
         }
     }
 

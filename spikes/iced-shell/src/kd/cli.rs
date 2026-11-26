@@ -14,7 +14,7 @@ kd drives the app from inside a terminal pane.
   kd view <path> [--down]             open a file in an editor, or a folder in a files pane
   kd web <url-or-path> [--down]       open a web pane
   kd term [dir] [--down] [-- cmd...]  open a terminal, and type a first command into it
-  kd chat [--agent claude|codex|gemini|local] [dir] [--down]
+  kd chat [--agent claude|codex|gemini|qwen|local] [dir] [--down]
                                       open a chat pane
   kd title <text>                     set this pane's title
   kd title --clear                    clear it
@@ -165,7 +165,9 @@ pub fn parse(args: &[String], cwd: &Path) -> Result<Parsed, String> {
                 (None, _) => Agent::Claude,
                 (Some(_), Some(agent)) => agent,
                 (Some(_), None) => {
-                    return Err(String::from("--agent takes claude, codex, gemini or local"));
+                    return Err(String::from(
+                        "--agent takes claude, codex, gemini, qwen or local",
+                    ));
                 }
             };
             let down = take_down(&flags, &["--agent"])?;
