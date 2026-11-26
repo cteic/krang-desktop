@@ -56,10 +56,14 @@ pub fn agent_path(home: Option<&Path>, inherited: Option<&str>) -> String {
 
 /// The program for an agent: the override from the environment when set,
 /// which is how the tests run a fake agent, or the first match on the path.
+/// Local is this app's own binary, whatever it is called.
 pub fn find_agent(agent: Agent, path: &str) -> Option<PathBuf> {
     if let Some(program) = std::env::var_os(agent.override_env()).filter(|value| !value.is_empty())
     {
         return Some(PathBuf::from(program));
+    }
+    if agent == Agent::Local {
+        return std::env::current_exe().ok();
     }
     path.split(':')
         .map(|dir| Path::new(dir).join(agent.program()))

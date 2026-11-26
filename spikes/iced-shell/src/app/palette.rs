@@ -1,5 +1,6 @@
 //! The command palette: every window action, and a pane of each kind.
 
+use crate::chat::Agent;
 use crate::vault::fuzzy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7,8 +8,9 @@ pub enum NewPane {
     Terminal,
     Editor,
     Web,
-    Chat,
+    Chat(Agent),
     Files,
+    Usage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +28,7 @@ pub enum Command {
     SaveLayout,
 }
 
-pub const COMMANDS: [(Command, &str); 22] = [
+pub const COMMANDS: [(Command, &str); 29] = [
     (
         Command::Add(NewPane::Terminal, false),
         "Add a terminal pane on the right",
@@ -40,8 +42,20 @@ pub const COMMANDS: [(Command, &str); 22] = [
         "Add a web pane on the right",
     ),
     (
-        Command::Add(NewPane::Chat, false),
-        "Add a chat pane on the right",
+        Command::Add(NewPane::Chat(Agent::Claude), false),
+        "Add a Claude Code chat pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Codex), false),
+        "Add a Codex chat pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Gemini), false),
+        "Add a Gemini chat pane on the right",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Local), false),
+        "Add a Local model chat pane on the right (text only)",
     ),
     (
         Command::Add(NewPane::Files, false),
@@ -56,8 +70,27 @@ pub const COMMANDS: [(Command, &str); 22] = [
         "Add a Markdown editor pane below",
     ),
     (Command::Add(NewPane::Web, true), "Add a web pane below"),
-    (Command::Add(NewPane::Chat, true), "Add a chat pane below"),
+    (
+        Command::Add(NewPane::Chat(Agent::Claude), true),
+        "Add a Claude Code chat pane below",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Codex), true),
+        "Add a Codex chat pane below",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Gemini), true),
+        "Add a Gemini chat pane below",
+    ),
+    (
+        Command::Add(NewPane::Chat(Agent::Local), true),
+        "Add a Local model chat pane below (text only)",
+    ),
     (Command::Add(NewPane::Files, true), "Add a files pane below"),
+    (
+        Command::Add(NewPane::Usage, false),
+        "Add a usage pane on the right: tokens and cost by agent",
+    ),
     (
         Command::NewTab(NewPane::Terminal),
         "New tab with a terminal",
@@ -160,6 +193,28 @@ mod tests {
         assert_eq!(palette.chosen(), Some(Command::Add(NewPane::Web, true)));
         palette.step(-1);
         assert!(palette.chosen().is_some());
+    }
+
+    #[test]
+    fn every_agent_has_a_chat_pane_command() {
+        for agent in Agent::ALL {
+            for down in [false, true] {
+                assert!(!label(Command::Add(NewPane::Chat(agent), down)).is_empty());
+            }
+        }
+        let mut palette = Palette::new();
+        palette.query = "gemini chat right".into();
+        palette.filter();
+        assert_eq!(
+            palette.chosen(),
+            Some(Command::Add(NewPane::Chat(Agent::Gemini), false))
+        );
+        palette.query = "local chat below".into();
+        palette.filter();
+        assert_eq!(
+            palette.chosen(),
+            Some(Command::Add(NewPane::Chat(Agent::Local), true))
+        );
     }
 
     #[test]

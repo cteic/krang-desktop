@@ -68,6 +68,8 @@ pub enum PaneKind {
         #[serde(default)]
         transcript: Transcript,
     },
+    /// What each agent used, read from the token ledger.
+    Usage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +166,7 @@ fn pane_kind(id: &str, table: &toml::Table) -> Result<PaneKind, String> {
                 _ => EditorMode::Edit,
             },
         },
+        "usage" => PaneKind::Usage,
         "files" => PaneKind::Files {
             directory: text(table, "directory"),
             expanded: Vec::new(),
@@ -180,10 +183,10 @@ fn pane_kind(id: &str, table: &toml::Table) -> Result<PaneKind, String> {
             url: text(table, "url").unwrap_or_default(),
         },
         "chat" => PaneKind::Chat {
-            agent: match text(table, "agent").as_deref() {
-                Some("codex") => Agent::Codex,
-                _ => Agent::Claude,
-            },
+            agent: text(table, "agent")
+                .as_deref()
+                .and_then(Agent::from_name)
+                .unwrap_or_default(),
             directory: text(table, "directory"),
             mode: match text(table, "mode").as_deref() {
                 Some("edit") => chat::Mode::Edit,
@@ -364,6 +367,7 @@ fn leaf_table(spec: &PaneSpec) -> toml::Table {
             set("type", Some("files"));
             set("directory", directory.as_deref());
         }
+        PaneKind::Usage => set("type", Some("usage")),
         PaneKind::Chat {
             agent,
             directory,
@@ -371,13 +375,7 @@ fn leaf_table(spec: &PaneSpec) -> toml::Table {
             ..
         } => {
             set("type", Some("chat"));
-            set(
-                "agent",
-                Some(match agent {
-                    Agent::Claude => "claude",
-                    Agent::Codex => "codex",
-                }),
-            );
+            set("agent", Some(agent.name()));
             set("directory", directory.as_deref());
             set(
                 "mode",
@@ -770,6 +768,28 @@ mode = "edit"
         // Sizes in the file are out of a thousand, and never squeeze a pane out.
         assert!((file_ratio(0.3712) - 0.371).abs() < 1e-6);
         assert!((file_ratio(0.99) - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn every_agent_reads_back_from_a_layout() {
+        for agent in Agent::ALL {
+            let file = format!(
+                "[[panes]]\nid = \"c\"\ntype = \"chat\"\nagent = \"{}\"\n",
+                agent.name()
+            );
+            let read = parse_layout(&file).map(|tab| tab.tree.leaves()[0].kind.clone());
+            assert!(
+                matches!(&read, Ok(PaneKind::Chat { agent: got, .. }) if *got == agent),
+                "{file}"
+            );
+            if let Ok(tab) = parse_layout(&file) {
+                let again = write_layout(&tab).unwrap_or_default();
+                assert!(
+                    again.contains(&format!("agent = \"{}\"", agent.name())),
+                    "{again}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -77,6 +77,44 @@ window to use it. This is a six-line patch to the vendored `iced_winit`, see
 [vendor/README.md](vendor/README.md). `open -a` activates an app on its own,
 so start the binary inside the bundle directly as above.
 
+### Chat agents
+
+A chat pane talks to one of four agents. The palette has an "Add a ... chat
+pane" command for each, `kd chat --agent` and layouts take the lowercase
+name, and the agent's name in the pane's footer switches an empty chat to
+the next one.
+
+| Agent       | Name     | Runs                                            | Read only / edit                  |
+| ----------- | -------- | ----------------------------------------------- | --------------------------------- |
+| Claude Code | `claude` | `claude -p --output-format stream-json ...`     | `--permission-mode plan` / `acceptEdits` |
+| Codex       | `codex`  | `codex exec --json ...`                         | `-s read-only` / `workspace-write` |
+| Gemini      | `gemini` | `gemini --output-format stream-json ...`        | `--approval-mode plan` / `auto_edit` |
+| Local       | `local`  | this app's own binary as `krang-shell --local-agent` | text only, no tools          |
+
+Each one keeps its session between messages: Claude and Gemini with
+`--resume`, Codex with `exec resume`. No mode turns off an agent's own
+permission checks, so nothing runs with `yolo` or a skipped sandbox.
+
+Gemini reads the prompt on standard input and runs headless. Gemini CLI
+refuses to run headless in a folder it has not trusted, so until you press
+Trust in the pane it gets no `--skip-trust`, and a run there fails unless
+the folder is already trusted in Gemini itself.
+
+Local sends the conversation to Ollama's `/api/chat` with streaming on,
+over plain http with no extra dependency. It costs nothing, and the pane
+shows its tokens at $0. It keeps each conversation in
+`local-chats/<session>.json` in the state folder below. If Ollama is not
+listening, the chat shows "Ollama is not running at ..." as a failed run.
+
+| Variable            | What it sets                                  | Default                  |
+| ------------------- | --------------------------------------------- | ------------------------ |
+| `OLLAMA_HOST`       | Where Ollama listens, `host:port` or `http://host:port` | `http://127.0.0.1:11434` |
+| `KRANG_LOCAL_MODEL` | The Ollama model the Local agent uses         | `qwen3.5:9b-q8_0`        |
+| `KRANG_CLAUDE_BIN`, `KRANG_CODEX_BIN`, `KRANG_GEMINI_BIN`, `KRANG_LOCAL_BIN` | Another program to run as that agent, such as the fake agent | the first match on the PATH, or this app for Local |
+
+A thinking model such as the default thinks before it writes, and the pane
+shows only the answer, so the first words can take a while.
+
 ### Chat without an account
 
 The chat pane runs the `claude` or `codex` command it finds on the PATH.
@@ -179,6 +217,18 @@ A folder as a tree. Add one from the palette (**Add a files pane**), with
 - The pane reads its folder again when it gets the keyboard, on Cmd+R, and
   with its **Refresh** button. It does not watch the disk: see RESULTS.md.
 
+## The usage pane
+
+Each reply a chat pane finishes is written to `ledger.jsonl`, beside the
+saved workspace: the agent, the folder, the tokens in and out, and the cost
+when the agent reports one. The usage pane (Cmd+K, "Add a usage pane") sums
+the ledger by agent for the last 24 hours, the last 7 days and all time, and
+says what share of the tokens went to agents that cost nothing. It reads the
+ledger again whenever a chat reply ends.
+
+Codex reports tokens but no price, so its cost shows as unknown and its
+tokens never count as free.
+
 ## kd: drive the app from a terminal pane
 
 `kd` is a command for programs that run in a terminal pane. A script or a
@@ -196,6 +246,7 @@ always matches the app.
 | `kd chat [--agent claude\|codex] [dir] [--down]` | Opens a chat pane | `kd chat --agent codex` |
 | `kd title <text>`, `kd title --clear` | Sets or clears this pane's title | `kd title "api tests"` |
 | `kd panes` | Prints the window's tabs and panes as JSON | `kd panes` |
+| `kd mcp` | Serves these commands as MCP tools on standard input and output | `claude mcp add krang -- kd mcp` |
 
 - A new pane opens to the right of the pane that called, or below it with
   `--down`. The keyboard stays where it was.
@@ -221,6 +272,44 @@ always matches the app.
   ]
 }
 ```
+
+### Use kd from any agent
+
+`kd mcp` is an MCP server. A coding agent started in a terminal pane gets
+the tools `kd_view`, `kd_web`, `kd_term`, `kd_chat`, `kd_title` and
+`kd_panes`, with the same arguments as the commands above. Register it
+once.
+
+Claude Code:
+
+```sh
+claude mcp add krang -- kd mcp
+```
+
+Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.krang]
+command = "kd"
+args = ["mcp"]
+```
+
+Gemini CLI, in `.gemini/settings.json` for one project or
+`~/.gemini/settings.json` for all:
+
+```json
+{
+  "mcpServers": {
+    "krang": { "command": "kd", "args": ["mcp"] }
+  }
+}
+```
+
+- The agent finds `kd` on the pane's `PATH`.
+- Outside a pane, every tool call fails with a message that says so. The
+  server keeps running.
+- A chat pane's agent gets none of the pane's variables, so the tools fail
+  there too.
 
 The app sets these in every terminal pane's shell:
 

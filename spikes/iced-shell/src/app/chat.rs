@@ -5,11 +5,12 @@ use std::path::PathBuf;
 use iced::widget::{Space, button, column, container, markdown, row, text, text_editor};
 use iced::{Element, Length, Padding};
 
-use crate::chat::event::Usage;
+use crate::chat::event::{AgentEvent, Usage};
 use crate::chat::runner::{self, RunEvent, RunOutput};
 use crate::chat::transcript::{Item, Status, Transcript};
 use crate::chat::{Agent, Mode, RunRequest};
 use crate::shell::layout::expand_home;
+use crate::shell::ledger;
 use crate::style::{self, Step, measure, size, space};
 
 use super::{Message, scroll};
@@ -21,6 +22,8 @@ pub enum ChatMessage {
     Stop,
     ToggleMode,
     Trust,
+    /// Switch an empty chat to the next agent.
+    NextAgent,
     Link(String),
 }
 
@@ -88,6 +91,19 @@ impl ChatPane {
 
     pub fn is_running(&self) -> bool {
         self.run.is_some()
+    }
+
+    /// Whether the agent can still change. A session belongs to one agent,
+    /// so only a chat with nothing in it can switch.
+    pub fn can_switch_agent(&self) -> bool {
+        !self.is_running() && self.transcript.items.is_empty()
+    }
+
+    pub fn next_agent(&mut self) {
+        if self.can_switch_agent() {
+            self.agent = self.agent.next();
+            self.transcript.session_id = None;
+        }
     }
 
     fn refresh(&mut self) {
@@ -163,6 +179,9 @@ impl ChatPane {
         let ended = match event.output {
             RunOutput::Line(line) => {
                 for agent_event in self.agent.parse_line(&line) {
+                    if let AgentEvent::Done(usage) = &agent_event {
+                        self.record(*usage);
+                    }
                     self.transcript.apply(agent_event);
                 }
                 false
@@ -175,6 +194,21 @@ impl ChatPane {
         };
         self.refresh();
         ended
+    }
+
+    /// Writes a finished turn to the token ledger. A ledger that cannot be
+    /// written never stops the chat.
+    fn record(&self, usage: Usage) {
+        if usage.is_empty() {
+            return;
+        }
+        let Some(dir) = crate::shell::store::state_dir() else {
+            return;
+        };
+        let entry = ledger::Entry::now(self.agent, self.directory.clone(), usage);
+        if let Err(error) = ledger::append(&dir, &entry) {
+            eprintln!("krang-shell: could not write the token ledger: {error}");
+        }
     }
 
     /// The note at the right of the pane's status line: what the agent is
@@ -287,9 +321,22 @@ impl ChatPane {
             .style(style::muted)
             .width(Length::Fill),
             button(
-                text(match self.mode {
-                    Mode::ReadOnly => "Read only",
-                    Mode::Edit => "Can edit files",
+                text(self.agent.label())
+                    .size(size::LABEL)
+                    .style(style::inherit)
+                    .wrapping(text::Wrapping::None)
+            )
+            .padding(Padding::from([space::XXS, space::M]))
+            .style(style::quiet)
+            .on_press_maybe(
+                self.can_switch_agent()
+                    .then(|| message(ChatMessage::NextAgent))
+            ),
+            button(
+                text(match (self.agent.has_tools(), self.mode) {
+                    (false, _) => "No tools",
+                    (true, Mode::ReadOnly) => "Read only",
+                    (true, Mode::Edit) => "Can edit files",
                 })
                 .size(size::LABEL)
                 .style(style::inherit)
@@ -297,7 +344,10 @@ impl ChatPane {
             )
             .padding(Padding::from([space::XXS, space::M]))
             .style(style::quiet)
-            .on_press_maybe((!self.is_running()).then(|| message(ChatMessage::ToggleMode))),
+            .on_press_maybe(
+                (self.agent.has_tools() && !self.is_running())
+                    .then(|| message(ChatMessage::ToggleMode))
+            ),
         ]
         .spacing(space::L)
         .align_y(iced::Alignment::Center);
@@ -344,7 +394,7 @@ impl ChatPane {
             });
 
         let mut foot = column![].spacing(space::M);
-        if self.agent == Agent::Claude && !self.trusted {
+        if self.agent.asks_trust() && !self.trusted {
             foot = foot.push(
                 container(
                     row![
@@ -412,5 +462,28 @@ impl<'a> markdown::Viewer<'a, String> for ProseViewer {
         _lines: &'a [markdown::Text],
     ) -> Element<'a, String> {
         style::code_block(code, self.focused)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_empty_chat_switches_agent() {
+        let mut pane = ChatPane::new(
+            Agent::Codex,
+            None,
+            Mode::ReadOnly,
+            false,
+            Transcript::default(),
+        );
+        pane.next_agent();
+        assert_eq!(pane.agent, Agent::Gemini);
+        pane.next_agent();
+        assert_eq!(pane.agent, Agent::Local);
+        pane.transcript.send(String::from("hi"));
+        pane.next_agent();
+        assert_eq!(pane.agent, Agent::Local);
     }
 }
