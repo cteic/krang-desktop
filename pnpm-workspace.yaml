@@ -2,6 +2,23 @@ packages:
   - apps/*
   - packages/*
 
+# Supply-chain baseline from cteic/foundry docs/install-policy.md.
+
+# Refuse releases younger than 3 days, the same wait Renovate uses.
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - '@cteic/*'
+minimumReleaseAgeStrict: true
+
+# Fail the install when a dependency has an install script nobody approved.
+strictDepBuilds: true
+
+# Fail the install when a release has weaker provenance than earlier ones.
+trustPolicy: no-downgrade
+
+# Only direct dependencies may come from git or tarball URLs.
+blockExoticSubdeps: true
+
 engineStrict: true
 
 catalog:
